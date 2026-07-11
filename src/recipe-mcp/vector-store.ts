@@ -35,6 +35,13 @@ export interface SearchResult {
   score: number;
 }
 
+/** Minimal note-metadata shape returned by `getNote` (id/title/body only — no hash/modifiedAt). */
+export interface StoredNote {
+  id: string;
+  title: string;
+  body: string;
+}
+
 export interface SearchOptions {
   limit?: number;
   exclude_ids?: string[];
@@ -154,6 +161,14 @@ export class VectorStore {
       .prepare("SELECT hash FROM notes WHERE id = ?")
       .get(id) as Pick<NoteRow, "hash"> | undefined;
     return row?.hash;
+  }
+
+  /** The stored id/title/body for a note id, or null if never upserted (note-metadata accessor for get_recipe). */
+  getNote(id: string): StoredNote | null {
+    const row = this.db
+      .prepare("SELECT id, title, body FROM notes WHERE id = ?")
+      .get(id) as StoredNote | undefined;
+    return row ?? null;
   }
 
   /**

@@ -130,6 +130,51 @@ describe("VectorStore", () => {
     expect(store.getStoredHash("note-nonexistent")).toBeUndefined();
   });
 
+  describe("getNote", () => {
+    it("returns null for an id that has never been upserted", () => {
+      store = makeStore();
+      expect(store.getNote("missing")).toBeNull();
+    });
+
+    it("returns the stored id/title/body for an upserted note", () => {
+      store = makeStore();
+      store.upsert("note-a", [1, 0, 0], {
+        title: "A Title",
+        body: "A body",
+        hash: "hash-a",
+        modifiedAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+
+      expect(store.getNote("note-a")).toEqual({
+        id: "note-a",
+        title: "A Title",
+        body: "A body",
+      });
+    });
+
+    it("reflects the latest metadata after an upsert on an existing id", () => {
+      store = makeStore();
+      store.upsert("note-a", [1, 0, 0], {
+        title: "Original Title",
+        body: "original body",
+        hash: "hash-1",
+        modifiedAt: new Date("2026-01-01T00:00:00.000Z"),
+      });
+      store.upsert("note-a", [0, 1, 0], {
+        title: "Updated Title",
+        body: "updated body",
+        hash: "hash-2",
+        modifiedAt: new Date("2026-01-02T00:00:00.000Z"),
+      });
+
+      expect(store.getNote("note-a")).toEqual({
+        id: "note-a",
+        title: "Updated Title",
+        body: "updated body",
+      });
+    });
+  });
+
   it("creates schema on open and survives being reopened against the same file path", () => {
     const path = `${process.env.TMPDIR ?? "/tmp"}/recipe-index-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
     const first = new VectorStore({ path, dimensions: 3 });
