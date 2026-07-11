@@ -21,8 +21,23 @@ import { Cron } from "croner";
  *    behavior if omitted: silently skip (still guarded; just no callback).
  */
 
-/** Injected hook invoked at each weekly trigger. Must not throw persistent process-crashing errors uncaught; the Scheduler awaits it but does not catch errors itself (callers/E3 own their own error handling). */
+/**
+ * Injected hook invoked at each weekly trigger (and by `triggerNow()`).
+ *
+ * Error containment differs by call path:
+ *  - SCHEDULED trigger (the weekly Sunday fire): if this throws/rejects, the
+ *    Scheduler contains the error — catches it (via croner's `catch` option)
+ *    and logs it through `SchedulerOptions.logger` — so a single failing
+ *    generation run can never crash the resident daemon; the weekly schedule
+ *    keeps running.
+ *  - `triggerNow()` / `fireOnStart` (the explicit test-fire path): the error
+ *    is NOT contained here — it propagates to the awaiting caller so a test
+ *    fire's failure can be observed directly.
+ */
 export type OnTriggerHook = () => Promise<void>;
+
+/** Minimal logger surface the Scheduler needs; defaults to `console`. */
+export type SchedulerLogger = Pick<Console, "warn">;
 
 export interface SchedulerOptions {
   /** IANA timezone (e.g. "America/Chicago") the weekly trigger is pinned to. */
@@ -33,6 +48,8 @@ export interface SchedulerOptions {
   onTrigger: OnTriggerHook;
   /** Called (synchronously) when a trigger fires while a previous `onTrigger` run is still in-flight; the overlapping run is skipped, not queued. */
   onOverlap?: () => void;
+  /** Invoked with any error `onTrigger` throws/rejects with during a SCHEDULED fire (never for `triggerNow()`, which rejects to its caller instead); defaults to `console`. Never receives or logs secret values — only the error itself. */
+  logger?: SchedulerLogger;
 }
 
 const TRIGGER_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -61,6 +78,7 @@ export class Scheduler {
   private readonly timezone: string;
   private readonly onTrigger: OnTriggerHook;
   private readonly onOverlap?: () => void;
+  private readonly logger: SchedulerLogger;
   private job: Cron | null = null;
   private busy = false;
 
@@ -69,6 +87,7 @@ export class Scheduler {
     this.timezone = options.timezone;
     this.onTrigger = options.onTrigger;
     this.onOverlap = options.onOverlap;
+    this.logger = options.logger ?? console;
   }
 
   /**
@@ -97,7 +116,24 @@ export class Scheduler {
     }
     this.job = new Cron(
       this.pattern,
-      { timezone: this.timezone, protect: true },
+      {
+        timezone: this.timezone,
+        protect: true,
+        // Contains errors from SCHEDULED fires only: croner wraps its call to
+        // our callback in its own try/catch when `catch` is set, so a
+        // throwing/rejecting `onTrigger` is logged here instead of becoming
+        // an unhandled rejection that would crash the resident daemon. This
+        // does NOT apply to `triggerNow()`, which calls `guardedTrigger()`
+        // directly (bypassing croner's own trigger path) and so still
+        // rejects to its caller.
+        catch: (error: unknown) => {
+          this.logger.warn(
+            `Scheduler: onTrigger threw during a scheduled fire; the error is contained (logged, not rethrown) so the daemon keeps running and the weekly schedule stays active: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        },
+      },
       () => this.guardedTrigger(),
     );
   }

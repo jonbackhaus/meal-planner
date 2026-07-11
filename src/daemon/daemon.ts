@@ -75,6 +75,7 @@ export async function runDaemon(
       logger.warn(
         "Scheduler: a trigger fired while a previous onTrigger run was still in progress; skipping the overlapping run.",
       ),
+    logger,
   });
   scheduler.start();
 

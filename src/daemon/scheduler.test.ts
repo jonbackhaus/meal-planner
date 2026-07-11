@@ -211,4 +211,81 @@ describe("Scheduler", () => {
       expect(onTrigger).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe("scheduled-trigger error containment", () => {
+    it("contains an onTrigger error on a SCHEDULED fire: no unhandled rejection, the error is logged, and the schedule stays active for the next fire", async () => {
+      vi.useFakeTimers();
+      const unhandledRejections: unknown[] = [];
+      const onUnhandledRejection = (reason: unknown): void => {
+        unhandledRejections.push(reason);
+      };
+      process.on("unhandledRejection", onUnhandledRejection);
+
+      try {
+        // Pin fake "now" a few seconds before the next Sunday trigger.
+        // (Croner internally chunks long waits into <=30s re-scheduled
+        // timers; starting far from the trigger — e.g. from a Tuesday —
+        // would need thousands of chunked re-schedules to reach it, which
+        // is extremely slow to replay even under fake timers. Starting
+        // close to the trigger keeps this test fast without weakening what
+        // it proves: the containment behavior under test lives entirely in
+        // the `catch` handler passed to croner in `start()`, independent of
+        // how far away the trigger was.)
+        const reference = new Date("2026-02-28T12:00:00Z"); // Sat (America/Chicago)
+        vi.setSystemTime(reference);
+
+        let callCount = 0;
+        const onTrigger = vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            throw new Error("boom: generation failed on the real Sunday fire");
+          }
+        });
+        const logger = { warn: vi.fn() };
+
+        const scheduler = new Scheduler({
+          timezone: "America/Chicago",
+          triggerTime: "06:00",
+          onTrigger,
+          logger,
+        });
+
+        const firstTrigger = scheduler.nextRun(reference) as Date;
+        expect(
+          firstTrigger.getTime() - reference.getTime(),
+        ).toBeLessThanOrEqual(24 * 60 * 60 * 1000); // sanity: trigger is same-day-ish, not multiple days out
+
+        scheduler.start();
+
+        // Advance just past the scheduled trigger and flush microtasks so
+        // the throwing onTrigger's promise chain (including our try/catch
+        // inside croner's `catch` option) fully resolves.
+        await vi.advanceTimersByTimeAsync(
+          firstTrigger.getTime() - reference.getTime() + 1000,
+        );
+
+        expect(onTrigger).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(String(logger.warn.mock.calls[0]?.[0])).toMatch(
+          /contained.*boom: generation failed on the real Sunday fire/s,
+        );
+        // The scheduler must still be active (not torn down by the error)...
+        expect(scheduler.isActive()).toBe(true);
+        // ...and must still be able to run onTrigger again: the re-entrant
+        // `busy` guard was correctly reset (via guardedTrigger's `finally`)
+        // despite the previous run's error, so the daemon is not wedged.
+        await scheduler.triggerNow();
+        expect(onTrigger).toHaveBeenCalledTimes(2);
+
+        // No unhandled rejection was ever produced by the throwing scheduled
+        // fire (this is what would crash the resident daemon process).
+        expect(unhandledRejections).toEqual([]);
+
+        scheduler.stop();
+      } finally {
+        process.off("unhandledRejection", onUnhandledRejection);
+        vi.useRealTimers();
+      }
+    });
+  });
 });
