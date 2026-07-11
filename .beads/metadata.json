@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "meal_planner",
+  "project_id": "07857bd3-daee-410c-b902-9a4a5a214654"
+}
