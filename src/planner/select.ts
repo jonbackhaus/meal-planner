@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { extractJsonObject } from "../lib/json-extraction.js";
+import { summarizeZodError } from "../lib/zod-errors.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import { buildSelectionPrompt, type PlannerInput } from "./input.js";
 
@@ -30,13 +31,15 @@ import { buildSelectionPrompt, type PlannerInput } from "./input.js";
  *    grocery/Todoist line items downstream.
  */
 export const VegPathSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("inherent") }),
-  z.object({ kind: z.literal("separable"), note: z.string() }),
-  z.object({
-    kind: z.literal("second_dish"),
-    recipe_id: z.string(),
-    title: z.string(),
-  }),
+  z.object({ kind: z.literal("inherent") }).strict(),
+  z.object({ kind: z.literal("separable"), note: z.string() }).strict(),
+  z
+    .object({
+      kind: z.literal("second_dish"),
+      recipe_id: z.string(),
+      title: z.string(),
+    })
+    .strict(),
 ]);
 export type VegPath = z.infer<typeof VegPathSchema>;
 
@@ -46,15 +49,17 @@ export type VegPath = z.infer<typeof VegPathSchema>;
  * is the semantic `validate()` in 8zs.4, NOT enforced by this shape schema.
  * `day` is v1.0's literal `null` — day-of-week assignment is v2.0 scope.
  */
-export const SelectedMealSchema = z.object({
-  slot_type: z.enum(["constrained", "relaxed"]),
-  recipe_id: z.string(),
-  title: z.string(),
-  day: z.null(),
-  veg: VegPathSchema,
-  flags: z.array(z.string()),
-  rationale: z.string(),
-});
+export const SelectedMealSchema = z
+  .object({
+    slot_type: z.enum(["constrained", "relaxed"]),
+    recipe_id: z.string(),
+    title: z.string(),
+    day: z.null(),
+    veg: VegPathSchema,
+    flags: z.array(z.string()),
+    rationale: z.string(),
+  })
+  .strict();
 export type SelectedMeal = z.infer<typeof SelectedMealSchema>;
 
 /**
@@ -62,11 +67,13 @@ export type SelectedMeal = z.infer<typeof SelectedMealSchema>;
  * `slots.constrained + slots.relaxed` — that count check is also 8zs.4's
  * semantic `validate()`, not this shape schema.
  */
-export const WeekPlanSchema = z.object({
-  week_key: z.string(),
-  meals: z.array(SelectedMealSchema),
-  summary: z.string().optional(),
-});
+export const WeekPlanSchema = z
+  .object({
+    week_key: z.string(),
+    meals: z.array(SelectedMealSchema),
+    summary: z.string().optional(),
+  })
+  .strict();
 export type WeekPlan = z.infer<typeof WeekPlanSchema>;
 
 /**
@@ -85,34 +92,27 @@ export class PlanSelectionError extends Error {
   }
 }
 
-function summarizeZodError(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `- ${issue.path.join(".") || "(root)"}: ${issue.message}`)
-    .join("\n");
-}
-
 export interface LlmSelectDeps {
   llm: LlmClient;
 }
 
 /**
- * Runs the SINGLE LLM selection call (ADR 0003 D1/D3: the LLM does
- * selection only, over the code-composed pools, in exactly one call — no
- * agentic loop, no retry here). Builds the prompt from `input` via
- * `buildSelectionPrompt`, calls `deps.llm.runQuery` exactly once, extracts a
- * JSON object from the response text (tolerating prose/fences around it —
- * see `extractJsonObject`), and shape-validates it against `WeekPlanSchema`.
- *
+ * Runs ONE selection-shaped LLM call from an already-rendered `prompt`:
+ * calls `deps.llm.runQuery` exactly once, extracts a JSON object from the
+ * response text (tolerating prose/fences around it — see
+ * `extractJsonObject`), and shape-validates it against `WeekPlanSchema`.
  * Throws `PlanSelectionError` on a JSON-parse failure or a schema-shape
- * failure. Does NOT perform the semantic validation (slot counts, pool
- * membership, veg-consistency, no-dupes) or the bounded repair retry —
- * those belong to 8zs.4, which wraps this function.
+ * failure.
+ *
+ * Factored out of `llmSelect` so the bounded repair retry (8zs.4,
+ * `selectValidatedPlan` in `validate.ts`) can run its ONE repair prompt
+ * through the exact same parse/validate pipeline, without duplicating it or
+ * widening `llmSelect`'s single-call-from-`PlannerInput` contract.
  */
-export async function llmSelect(
-  input: PlannerInput,
+export async function llmSelectFromPrompt(
+  prompt: string,
   deps: LlmSelectDeps,
 ): Promise<WeekPlan> {
-  const prompt = buildSelectionPrompt(input);
   const result = await deps.llm.runQuery({ prompt });
 
   let candidate: unknown;
@@ -132,4 +132,22 @@ export async function llmSelect(
   }
 
   return parsed.data;
+}
+
+/**
+ * Runs the SINGLE LLM selection call (ADR 0003 D1/D3: the LLM does
+ * selection only, over the code-composed pools, in exactly one call — no
+ * agentic loop, no retry here). Builds the prompt from `input` via
+ * `buildSelectionPrompt` and delegates to `llmSelectFromPrompt`.
+ *
+ * Does NOT perform the semantic validation (slot counts, pool membership,
+ * veg-consistency, no-dupes) or the bounded repair retry — those belong to
+ * 8zs.4 (`validate.ts`'s `selectValidatedPlan`), which wraps this function.
+ */
+export async function llmSelect(
+  input: PlannerInput,
+  deps: LlmSelectDeps,
+): Promise<WeekPlan> {
+  const prompt = buildSelectionPrompt(input);
+  return llmSelectFromPrompt(prompt, deps);
 }

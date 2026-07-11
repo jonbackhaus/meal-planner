@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { extractJsonObject } from "../lib/json-extraction.js";
+import { summarizeZodError } from "../lib/zod-errors.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import type { RawNote } from "./notes-reader.js";
 import {
@@ -109,12 +110,6 @@ Validation errors:
 ${errorSummary}
 
 Return ONLY a corrected JSON object fixing every listed error, matching the exact same schema as before. No markdown code fences, no commentary.`;
-}
-
-function summarizeZodError(error: z.ZodError): string {
-  return error.issues
-    .map((issue) => `- ${issue.path.join(".") || "(root)"}: ${issue.message}`)
-    .join("\n");
 }
 
 async function runLlm(
