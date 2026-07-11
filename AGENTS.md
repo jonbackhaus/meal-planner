@@ -13,6 +13,12 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 > source of truth; don't `bd import` during normal operation; don't
 > reach for third-party Dolt hosting before trying the default).
 
+## Project Context, Architecture & Build
+
+**See [CLAUDE.md](CLAUDE.md) — it is the canonical source** for project status, the target stack and build/test commands, the architecture overview, and the implementation invariants. AGENTS.md and CLAUDE.md are independent files; this section intentionally points to CLAUDE.md instead of duplicating it, so keep project/architecture edits in CLAUDE.md and they apply here by reference.
+
+Design source of truth lives in `docs/`: `SPEC.md` (authoritative v1.0 design) plus `adr-0001` (Recipe MCP interface), `adr-0002` (orchestrator state machine / idempotency), and `adr-0003` (planner selection contract). This is a greenfield project — design-complete, not yet scaffolded.
+
 ## Quick Reference
 
 ```bash
