@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import type { Embedder } from "./embedder.js";
-import { contentHash, type RawNote } from "./notes-reader.js";
+import type { RawNote } from "./notes-reader.js";
 
 /**
  * Sync: read Apple Notes -> embed changed/new notes -> upsert into the
@@ -46,6 +47,26 @@ function embeddableText(note: RawNote): string {
 }
 
 /**
+ * Hash-gate key: a hash of exactly the text that gets embedded and stored
+ * (title+body via `embeddableText`), not notes-reader's body-only
+ * `contentHash`. This keeps "what's hashed" == "what's embedded" ==
+ * "what's stored" from drifting apart — a title-only edit (e.g. a recipe
+ * rename) changes this hash, so the note is re-embedded and re-upserted
+ * (which is also the only path that refreshes the stored `title` column,
+ * per `VectorStore.upsert`).
+ *
+ * Deliberately separate from notes-reader's `contentHash(note.body)`, which
+ * is the ADR-0001-specified cache key for the future structured-field
+ * extraction pass (q95.3) — a consumer that legitimately depends on body
+ * only and must not be changed here.
+ */
+export function embeddableTextHash(note: RawNote): string {
+  return createHash("sha256")
+    .update(embeddableText(note), "utf8")
+    .digest("hex");
+}
+
+/**
  * Runs one sync pass: reads notes from the configured source, embeds
  * title+body for any note that is new or whose content hash has changed
  * since the last sync, and upserts the vector + metadata into the store.
@@ -58,7 +79,7 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   let skipped = 0;
 
   for (const note of notes) {
-    const hash = contentHash(note);
+    const hash = embeddableTextHash(note);
     const storedHash = deps.store.getStoredHash(note.id);
 
     if (storedHash === hash) {

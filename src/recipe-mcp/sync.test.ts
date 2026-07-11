@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RawNote } from "./notes-reader.js";
-import { syncNotes } from "./sync.js";
+import { embeddableTextHash, syncNotes } from "./sync.js";
 
 function note(overrides: Partial<RawNote> = {}): RawNote {
   return {
@@ -57,8 +57,7 @@ describe("syncNotes", () => {
 
   it("hash-gate: skips a note whose stored hash matches its current content", async () => {
     const unchangedNote = note();
-    const { contentHash } = await import("./notes-reader.js");
-    const currentHash = contentHash(unchangedNote);
+    const currentHash = embeddableTextHash(unchangedNote);
     const store = makeFakeStore({ "note-1": currentHash });
     const embedder = makeFakeEmbedder();
     const readNotes = vi.fn(async () => [unchangedNote]);
@@ -70,9 +69,11 @@ describe("syncNotes", () => {
     expect(result).toEqual({ total: 1, processed: 0, skipped: 1 });
   });
 
-  it("re-embeds a changed note (stored hash differs from current content hash)", async () => {
+  it("re-embeds a note whose body changed (title unchanged), stored hash differs from current content hash", async () => {
+    const originalNote = note();
+    const staleHash = embeddableTextHash(originalNote);
     const changedNote = note({ body: "New body text entirely." });
-    const store = makeFakeStore({ "note-1": "stale-hash-from-before" });
+    const store = makeFakeStore({ "note-1": staleHash });
     const embedder = makeFakeEmbedder();
     const readNotes = vi.fn(async () => [changedNote]);
 
@@ -83,10 +84,31 @@ describe("syncNotes", () => {
     expect(result).toEqual({ total: 1, processed: 1, skipped: 1 - 1 });
   });
 
+  it("re-embeds and re-upserts a note whose TITLE changed (body identical) — regression: the hash gate must cover title+body, not body only", async () => {
+    const originalNote = note({
+      title: "Weeknight Chili",
+      body: "Ground beef, beans, chili powder.",
+    });
+    const staleHash = embeddableTextHash(originalNote);
+    const renamedNote = note({
+      title: "Weeknight Chili Deluxe",
+      body: originalNote.body,
+    });
+    const store = makeFakeStore({ "note-1": staleHash });
+    const embedder = makeFakeEmbedder();
+    const readNotes = vi.fn(async () => [renamedNote]);
+
+    const result = await syncNotes({ readNotes, embedder, store });
+
+    expect(embedder.embed).toHaveBeenCalledTimes(1);
+    expect(store.upsert).toHaveBeenCalledTimes(1);
+    expect(store.upserted[0].meta.title).toBe("Weeknight Chili Deluxe");
+    expect(result).toEqual({ total: 1, processed: 1, skipped: 0 });
+  });
+
   it("processes a mix of unchanged, changed, and new notes correctly", async () => {
     const unchanged = note({ id: "note-unchanged", body: "stable body" });
-    const { contentHash } = await import("./notes-reader.js");
-    const unchangedHash = contentHash(unchanged);
+    const unchangedHash = embeddableTextHash(unchanged);
 
     const changed = note({ id: "note-changed", body: "new body" });
     const brandNew = note({ id: "note-new", body: "fresh body" });
