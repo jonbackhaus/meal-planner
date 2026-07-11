@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { extractJsonObject } from "../lib/json-extraction.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import type { RawNote } from "./notes-reader.js";
 import {
@@ -114,23 +115,6 @@ function summarizeZodError(error: z.ZodError): string {
   return error.issues
     .map((issue) => `- ${issue.path.join(".") || "(root)"}: ${issue.message}`)
     .join("\n");
-}
-
-/** Pulls a JSON object out of raw LLM text, tolerating a ```json fenced block or surrounding prose. */
-function extractJsonObject(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1].trim() : trimmed;
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    const start = candidate.indexOf("{");
-    const end = candidate.lastIndexOf("}");
-    if (start === -1 || end === -1 || end < start) {
-      throw new Error("no JSON object found in LLM response");
-    }
-    return JSON.parse(candidate.slice(start, end + 1));
-  }
 }
 
 async function runLlm(
