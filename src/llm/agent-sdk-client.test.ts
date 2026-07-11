@@ -185,4 +185,83 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
     const client = createLlmClient(baseConfig());
     await expect(client.runQuery({ prompt: "hello" })).rejects.toThrow();
   });
+
+  it("throws immediately when an assistant turn carries a per-turn error, naming the error type and never leaking secrets", async () => {
+    const secret = "sk-ant-api03-super-secret-token-should-never-appear";
+    queryMock.mockReturnValue(
+      fakeQueryResult([
+        {
+          type: "assistant",
+          error: "rate_limit",
+          message: {
+            content: [{ type: "text", text: secret }],
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        },
+        // A per-turn error should abort before this later message is ever
+        // reached (proves throw-on-first, not accumulate).
+        { type: "result", subtype: "success", result: secret },
+      ]),
+    );
+
+    const client = createLlmClient(baseConfig());
+
+    let caught: unknown;
+    try {
+      await client.runQuery({ prompt: "hello" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/rate_limit/);
+    expect(message).not.toContain(secret);
+  });
+
+  it("throws on a per-turn overloaded error too, naming the error type", async () => {
+    queryMock.mockReturnValue(
+      fakeQueryResult([
+        {
+          type: "assistant",
+          error: "overloaded",
+          message: {
+            content: [],
+            usage: { input_tokens: 5, output_tokens: 0 },
+          },
+        },
+      ]),
+    );
+
+    const client = createLlmClient(baseConfig());
+    await expect(client.runQuery({ prompt: "hello" })).rejects.toThrow(
+      /overloaded/,
+    );
+  });
+
+  it("includes the result's errors[] detail (not just the subtype) when the final result is non-success", async () => {
+    queryMock.mockReturnValue(
+      fakeQueryResult([
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          errors: ["upstream timeout", "connection reset"],
+        },
+      ]),
+    );
+
+    const client = createLlmClient(baseConfig());
+
+    let caught: unknown;
+    try {
+      await client.runQuery({ prompt: "hello" });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/upstream timeout/);
+    expect(message).toMatch(/connection reset/);
+  });
 });

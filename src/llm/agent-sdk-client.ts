@@ -66,11 +66,26 @@ export class AgentSdkLlmClient implements LlmClient {
 
     for await (const message of query({ prompt: input.prompt, options })) {
       if (message.type === "assistant") {
-        const usage = message.message.usage;
-        if (usage) {
-          inputTokens += usage.input_tokens ?? 0;
-          outputTokens += usage.output_tokens ?? 0;
+        // Per-turn errors (`authentication_failed`, `billing_error`,
+        // `rate_limit`, `overloaded`, `server_error`, etc. — see
+        // `SDKAssistantMessageError` in sdk.d.ts) can appear on an assistant
+        // message even though the run may still reach a final `success`
+        // result. Left uninspected, that produces a silent partial failure:
+        // the turn errored, still contributed usage, and the caller sees a
+        // "successful" result. We abort on the FIRST per-turn error rather
+        // than accumulate, so failures surface immediately and loudly. The
+        // error value is a closed enum of type names (never raw
+        // credentials/secrets), so it's always safe to include verbatim.
+        if (message.error !== undefined) {
+          throw new Error(`Claude Agent SDK turn failed: ${message.error}`);
         }
+
+        // `BetaMessage.usage` (and its `input_tokens`/`output_tokens`
+        // fields) are non-optional on the real SDK type, so no `if (usage)`
+        // guard is needed here.
+        const usage = message.message.usage;
+        inputTokens += usage.input_tokens;
+        outputTokens += usage.output_tokens;
 
         let text = "";
         for (const block of message.message.content) {
@@ -85,7 +100,14 @@ export class AgentSdkLlmClient implements LlmClient {
         if (message.subtype === "success") {
           finalText = message.result;
         } else {
-          throw new Error(`Claude Agent SDK query failed: ${message.subtype}`);
+          // `SDKResultError.errors` carries the actionable detail; the
+          // `subtype` alone (e.g. "error_during_execution") isn't enough for
+          // callers to debug what actually went wrong.
+          const detail =
+            message.errors.length > 0 ? `: ${message.errors.join("; ")}` : "";
+          throw new Error(
+            `Claude Agent SDK query failed: ${message.subtype}${detail}`,
+          );
         }
       }
     }
