@@ -131,7 +131,20 @@ async function composePool(
   );
 }
 
-/** Step 3: veg-floor top-up, merged and deduped by `id`. */
+/**
+ * Step 3: veg-floor top-up, merged and deduped by `id`, capped at the actual
+ * deficit (`vegFloorK - vegCount`) via `mergeDeduped`'s `maxAdd` — mirroring
+ * `injectUntested`'s capping below. The top-up query's `limit` is
+ * intentionally left at the full pool size (unbounded search result), but
+ * only as many NEW candidates as still needed to reach the floor are merged
+ * in, so the pool doesn't balloon past its intended
+ * `constrained/relaxed * fanoutMultiplier` size.
+ *
+ * LIMITATION (documented, not fixed here): this is single-shot best-effort,
+ * like `injectUntested` — a top-up may still leave the pool below
+ * `vegFloorK` (e.g. a small corpus, or the top-up re-surfacing ids already in
+ * the pool instead of new ones).
+ */
 async function ensureVegFloor(
   seedQuery: string,
   pool: RecipeCandidate[],
@@ -148,7 +161,7 @@ async function ensureVegFloor(
     ...baseFilters,
     veg_status: "vegetarian",
   });
-  return mergeDeduped(pool, topUp);
+  return mergeDeduped(pool, topUp, vegFloorK - vegCount);
 }
 
 /**

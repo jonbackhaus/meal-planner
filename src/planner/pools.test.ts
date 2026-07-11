@@ -184,6 +184,38 @@ describe("composePools", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("caps the veg-floor merge at the floor deficit, even when the top-up returns more", async () => {
+    // vegCount=1, vegFloorK=2 -> deficit=1, but the top-up surfaces 3 new
+    // vegetarian ids. Only the deficit (1) should be merged in, matching
+    // injectUntested's `maxAdd` capping behavior.
+    const search = makeFakeSearch({
+      weeknightBase: [
+        candidate("wn-1", { veg_status: "vegetarian" }),
+        candidate("wn-2"),
+        candidate("wn-3"),
+      ],
+      weeknightVegTopUp: [
+        candidate("wn-veg-a", { veg_status: "vegetarian" }),
+        candidate("wn-veg-b", { veg_status: "vegetarian" }),
+        candidate("wn-veg-c", { veg_status: "vegetarian" }),
+      ],
+      weekendBase: [
+        candidate("we-1", { veg_status: "vegetarian" }),
+        candidate("we-2", { veg_status: "vegetarian" }),
+      ],
+    });
+
+    const pools = await composePools("family dinner", baseCfg, { search });
+
+    expect(pools.weeknight.map((c) => c.id)).toEqual([
+      "wn-1",
+      "wn-2",
+      "wn-3",
+      "wn-veg-a",
+    ]);
+    expect(pools.weeknight).toHaveLength(4);
+  });
+
   it("injects untested candidates surfaced by the overfetch, up to ceil(untestedRate * poolSize)", async () => {
     // poolSize 10 (2 vegetarian -> floor already met), untestedRate 0.15 -> ceil(1.5) = 2 needed.
     const search = makeFakeSearch({
