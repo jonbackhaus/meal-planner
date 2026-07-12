@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.backhaus.meal-planner</string>
+
+	<!--
+	  This daemon owns its OWN weekly trigger: an in-process Scheduler running
+	  inside the resident Node process fires plan generation at the Sunday
+	  `MP_TRIGGER_TIME` slot, in `MP_TIMEZONE`, DST-correct. Deliberately NO
+	  StartCalendarInterval here — launchd's job is ONLY to boot-launch the
+	  process and keep it alive; it must never itself invoke a calendar-timed
+	  run, or the schedule would be owned in two places at once.
+	-->
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/node</string>
+		<!-- Absolute path to the built daemon entrypoint (`pnpm build` output). Update to match this machine's checkout location. -->
+		<string>/Users/YOUR_USERNAME/meal-planner/dist/index.js</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/YOUR_USERNAME/meal-planner</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/Users/YOUR_USERNAME/meal-planner/logs/meal-planner.out.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/YOUR_USERNAME/meal-planner/logs/meal-planner.err.log</string>
+
+	<!--
+	  Secrets and profile/timezone configuration: launchd does not source your
+	  shell's env files, so anything the daemon needs at boot must be listed
+	  explicitly here. Keep actual secret VALUES out of this committed plist —
+	  install a machine-local copy (not tracked by git) with real values filled
+	  in, or source them via the `op` CLI (OP_SERVICE_ACCOUNT_TOKEN below) so
+	  no plaintext secret ever needs to live in this file at all.
+	-->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- 1Password service-account token (preferred): the daemon reads
+		     MP_OP_SLACK_TOKEN_REF / MP_OP_ANTHROPIC_KEY_REF op:// references
+		     via the `op` CLI instead of holding secrets directly. -->
+		<key>OP_SERVICE_ACCOUNT_TOKEN</key>
+		<string>REPLACE_ME_DO_NOT_COMMIT_REAL_VALUE</string>
+
+		<!-- Only needed if NOT using 1Password (env fallback source); still
+		     placeholders only, never real values in this committed file. -->
+		<key>MP_SLACK_BOT_TOKEN</key>
+		<string>REPLACE_ME_DO_NOT_COMMIT_REAL_VALUE</string>
+		<key>MP_ANTHROPIC_API_KEY</key>
+		<string>REPLACE_ME_DO_NOT_COMMIT_REAL_VALUE</string>
+
+		<key>MP_PROFILE</key>
+		<string>prod</string>
+		<key>MP_TIMEZONE</key>
+		<string>America/Chicago</string>
+		<key>MP_TRIGGER_TIME</key>
+		<string>06:00</string>
+	</dict>
+</dict>
+</plist>

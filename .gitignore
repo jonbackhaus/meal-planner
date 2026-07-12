@@ -4,3 +4,12 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Node / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Tool caches
+.biome-cache/
+.vitest-cache/

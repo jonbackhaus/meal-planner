@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "build/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm must be available before setup-node's pnpm cache step.
+      # action-setup reads the version from package.json's "packageManager" field.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (src)
+        run: pnpm typecheck
+
+      - name: Typecheck (tests)
+        run: pnpm typecheck:test
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
