@@ -42,6 +42,39 @@ describe("currentPlanWeek", () => {
     expect(currentPlanWeek(now, cfg)).toBe("2026-07-05");
   });
 
+  it("keys to that Sunday when now is EXACTLY at the trigger instant (inclusive >=)", () => {
+    // 2026-07-12T11:00:00.000Z = 06:00:00.000 America/Chicago (CDT) exactly:
+    // the trigger boundary is inclusive, so this Sunday's key is already active.
+    const now = new Date("2026-07-12T11:00:00.000Z");
+    expect(currentPlanWeek(now, cfg)).toBe("2026-07-12");
+  });
+
+  it("keys to the PREVIOUS Sunday 1ms before the trigger instant", () => {
+    // 2026-07-12T10:59:59.999Z = 05:59:59.999 America/Chicago (CDT), 1ms
+    // before the 06:00 trigger -> paired with the previous test, this pins
+    // the exact inclusive boundary (would catch a `>` vs `>=` regression).
+    const now = new Date("2026-07-12T10:59:59.999Z");
+    expect(currentPlanWeek(now, cfg)).toBe("2026-07-05");
+  });
+
+  it("keys by LOCAL date, not UTC date, when the two differ", () => {
+    // 2026-07-12T04:00:00.000Z is UTC-Sunday, but 2026-07-11T23:00:00
+    // America/Chicago (CDT) -- Saturday night, LOCAL. Must key off the local
+    // calendar date (previous Sunday, 2026-07-05), not the UTC date a naive
+    // implementation would wrongly use.
+    const now = new Date("2026-07-12T04:00:00.000Z");
+    const result = currentPlanWeek(now, cfg);
+    expect(result).toBe("2026-07-05");
+    expect(result).not.toBe("2026-07-12");
+  });
+
+  it("keys to the most recent Sunday when now is a plain Monday", () => {
+    // 2026-07-13 is a Monday; noon America/Chicago (CDT) = 17:00Z. Cheap
+    // insurance against a weekday off-by-one in mostRecentSundayOnOrBefore.
+    const now = new Date("2026-07-13T17:00:00.000Z");
+    expect(currentPlanWeek(now, cfg)).toBe("2026-07-12");
+  });
+
   it("is DST-correct across the US spring-forward transition (2026-03-08), before the trigger", () => {
     // 2026-03-08 10:00Z = 05:00 America/Chicago (CDT, already sprung forward),
     // before the 06:00 trigger -> previous week's key still active.
