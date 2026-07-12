@@ -71,13 +71,21 @@ export class SlackPoster {
         text,
         mrkdwn: true,
       });
-    } catch {
-      // Deliberately do NOT include the caught error's message: it
-      // originates from the Slack SDK/HTTP layer and must never be trusted
-      // to be free of sensitive request detail (e.g. it could echo request
-      // options). Only the (non-secret) channel id is safe to surface.
+    } catch (err) {
+      // Deliberately do NOT include the caught error's `.message`/`.stack`/
+      // `.original`: they originate from the Slack SDK/HTTP layer and must
+      // never be trusted to be free of sensitive request detail (e.g. they
+      // could echo request options). The one exception is `.data.error` --
+      // @slack/web-api's typed, safe, closed enum of Slack error codes
+      // (e.g. `channel_not_found`/`invalid_auth`/`not_in_channel`/
+      // `rate_limited`) which by construction never contains the bot token.
+      const code =
+        typeof (err as { data?: { error?: unknown } })?.data?.error === "string"
+          ? (err as { data: { error: string } }).data.error
+          : undefined;
       throw new Error(
-        `Slack chat.postMessage failed for channel ${this.channelId}`,
+        `Slack chat.postMessage failed for channel ${this.channelId}` +
+          (code ? ` (error: ${code})` : ""),
       );
     }
 

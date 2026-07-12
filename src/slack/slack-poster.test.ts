@@ -56,6 +56,37 @@ describe("SlackPoster", () => {
     }
   });
 
+  it("includes Slack's safe error code (data.error) when postMessage rejects, without leaking the token even when it appears in the raw error message", async () => {
+    // Mirrors the real @slack/web-api WebClient: on failure it always
+    // REJECTS (never resolves ok:false) with an error whose typed
+    // `.data.error` is a safe, closed enum string. The `.message` here
+    // plants a fake bot token to prove the thrown message is built ONLY
+    // from `.data.error` -- never from `.message`/`.stack`/`.original`.
+    const slackError = Object.assign(
+      new Error("channel_not_found: xoxb-super-secret-token leaked in body"),
+      {
+        data: { ok: false, error: "channel_not_found" },
+        original: { message: "xoxb-super-secret-token" },
+      },
+    );
+    const postMessage = vi.fn().mockRejectedValue(slackError);
+    const poster = new SlackPoster({
+      token: "xoxb-super-secret-token",
+      channelId: "C123ABC",
+      client: { chat: { postMessage } },
+    });
+
+    try {
+      await poster.post(plan());
+      throw new Error("expected post() to throw");
+    } catch (e) {
+      const message = String(e);
+      expect(message).toContain("channel_not_found");
+      expect(message).toContain("C123ABC");
+      expect(message).not.toContain("xoxb-super-secret-token");
+    }
+  });
+
   it("throws when the response is ok:false", async () => {
     const postMessage = vi
       .fn()
