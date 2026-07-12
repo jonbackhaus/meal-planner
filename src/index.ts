@@ -1,5 +1,7 @@
 import { loadConfig } from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
+import { CostMeter } from "./cost/cost-meter.js";
+import { meteredLlmClient } from "./cost/metered-llm-client.js";
 import { runDaemon } from "./daemon/daemon.js";
 import { withTimeout } from "./daemon/with-timeout.js";
 import { getScaffoldVersion } from "./lib/version.js";
@@ -137,7 +139,15 @@ export async function main(): Promise<void> {
   const embedder = new TransformersEmbedder();
   const storeDeps = { embedder, vectorStore, structuredStore };
 
-  const llm = createLlmClient(config);
+  // Token/$ tracking across a run (SPEC §9.3, bd meal-planner-fkg.1): ONE
+  // meter, wrapping the real llm so every buildPlan call (selection + a
+  // possible repair) reports its usage to it, `reset()` at the start of
+  // each generateForWeek run (see composeDaemon -> generateForWeek). Runs
+  // are sequential (one generateForWeek at a time), so a single shared
+  // instance is correct -- there is never more than one run's calls live in
+  // it at once. Only TRACKS + persists here; the $ cap/alert is fkg.2 (next).
+  const meter = new CostMeter(config.modelRates[config.model]);
+  const llm = meteredLlmClient(createLlmClient(config), meter);
   const search = (
     query: string,
     filters?: Parameters<typeof searchRecipes>[1],
@@ -176,6 +186,7 @@ export async function main(): Promise<void> {
     resumeQuietly,
     nowDate: () => new Date(),
     nowIso: () => new Date().toISOString(),
+    meter,
   });
 
   const handle = await runDaemon({

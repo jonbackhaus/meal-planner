@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config/config.js";
 import type { ProfileSettings } from "../config/profile.js";
+import { CostMeter } from "../cost/cost-meter.js";
+import { meteredLlmClient } from "../cost/metered-llm-client.js";
+import type { LlmClient } from "../llm/llm-client.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import { composeDaemon } from "./compose.js";
 import type { Session } from "./session-store.js";
@@ -20,6 +23,7 @@ import { SessionStore } from "./session-store.js";
 
 const WEEK = "2026-07-12";
 const TRIGGER_INSTANT = "2026-07-12T11:00:00.000Z"; // 06:00 America/Chicago (CDT)
+const RATE = { inputPerMTok: 2, outputPerMTok: 10 };
 
 function makeConfig(): Config {
   return {
@@ -145,6 +149,81 @@ describe("composeDaemon", () => {
       // buildPlan/post never called at all, not a thrown PK error).
       await expect(onTrigger()).rejects.toThrow();
       expect(buildPlan).not.toHaveBeenCalled();
+    });
+
+    it("threads a supplied meter through to generateForWeek: token_spend/cost_usd from buildPlan's LLM calls land on the suggested row (bd meal-planner-fkg.1)", async () => {
+      store = makeStore();
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: false });
+      const meter = new CostMeter(RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 100_000, outputTokens: 50_000 },
+        })),
+      };
+      const llm = meteredLlmClient(inner, meter);
+      const buildPlan = vi.fn(async (weekKey: string) => {
+        await llm.runQuery({ prompt: "select" });
+        return { week_key: weekKey, meals: [] } satisfies EnrichedWeekPlan;
+      });
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+
+      const { onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+        meter,
+      });
+
+      await onTrigger();
+
+      const row = store.get(WEEK);
+      expect(row?.token_spend).toBe(150_000);
+      expect(row?.cost_usd).toBeCloseTo(0.2 + 0.5, 10);
+    });
+
+    it("without a meter supplied, behaves exactly as before -- counters stay 0", async () => {
+      store = makeStore();
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: false });
+      const buildPlan = vi.fn(async (weekKey: string) => ({
+        week_key: weekKey,
+        meals: [],
+      }));
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+
+      const { onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+      });
+
+      await onTrigger();
+
+      const row = store.get(WEEK);
+      expect(row?.token_spend).toBe(0);
+      expect(row?.cost_usd).toBe(0);
     });
 
     it("without force, an existing row for the current week is skipped (post never called)", async () => {

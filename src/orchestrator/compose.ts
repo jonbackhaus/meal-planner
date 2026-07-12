@@ -1,5 +1,6 @@
 import type { Config } from "../config/config.js";
 import type { ProfileSettings } from "../config/profile.js";
+import type { CostMeter } from "../cost/cost-meter.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import {
   type AlertFn,
@@ -46,6 +47,15 @@ export interface ComposeDaemonDeps {
   nowDate: () => Date;
   /** Injected clock (ISO string) — feeds `generateForWeek`'s timestamps. */
   nowIso: () => string;
+  /**
+   * Token/$ tracking across a run (SPEC §9.3, bd meal-planner-fkg.1),
+   * threaded straight through into `generateForWeek`'s own `meter` dep — see
+   * `main()` (`src/index.ts`), which constructs ONE `CostMeter` wrapping the
+   * same `llm` instance `buildPlan` uses (via `meteredLlmClient`) and passes
+   * it here. Optional: omitting it preserves the pre-fkg.1 behavior (cost
+   * counters stay 0).
+   */
+  meter?: CostMeter;
 }
 
 export interface ComposedDaemon {
@@ -81,6 +91,7 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
     resumeQuietly,
     nowDate,
     nowIso,
+    meter,
   } = deps;
 
   const genDeps: GenerateForWeekDeps = {
@@ -89,6 +100,7 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
     post,
     alert,
     now: nowIso,
+    meter,
   };
 
   const boundGenerate = (weekKey: string, opts: { force?: boolean }) =>

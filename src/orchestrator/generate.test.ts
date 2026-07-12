@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CostMeter, costUsd } from "../cost/cost-meter.js";
+import { meteredLlmClient } from "../cost/metered-llm-client.js";
+import type { LlmClient } from "../llm/llm-client.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import { expirePriorIfUncommitted, generateForWeek } from "./generate.js";
 import { SessionStore } from "./session-store.js";
+
+const RATE = { inputPerMTok: 2, outputPerMTok: 10 };
 
 function makeStore() {
   return new SessionStore({ path: ":memory:" });
@@ -237,6 +242,122 @@ describe("generateForWeek", () => {
     expect(row?.status).toBe("suggested");
     expect(row?.thread_ts).toBe("1699999999.000100");
     expect(row?.working_plan).toEqual(plan());
+  });
+
+  describe("cost tracking (bd meal-planner-fkg.1)", () => {
+    it("with a meter, persists the SUM of usage across multiple LLM calls within one run onto the suggested row", async () => {
+      store = makeStore();
+      const meter = new CostMeter(RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 100_000, outputTokens: 50_000 },
+        })),
+      };
+      const llm = meteredLlmClient(inner, meter);
+      // Simulates buildPlan's own several Agent SDK calls (selection + a
+      // possible repair) within a single run -- SPEC §9.3's "run" aggregates
+      // across ALL of them, not per-call.
+      const buildPlan = vi.fn(async () => {
+        await llm.runQuery({ prompt: "select" });
+        await llm.runQuery({ prompt: "repair" });
+        return plan();
+      });
+      const post = vi.fn(async () => ({ ts: "1.1" }));
+      const alert = vi.fn(async () => {});
+
+      await generateForWeek(
+        WEEK,
+        {},
+        { store, buildPlan, post, alert, now: fakeNow(), meter },
+      );
+
+      const row = store.get(WEEK);
+      expect(row?.status).toBe("suggested");
+      expect(row?.token_spend).toBe(300_000); // 2 calls x (100k in + 50k out)
+      expect(row?.cost_usd).toBeCloseTo(costUsd(200_000, 100_000, RATE), 10);
+    });
+
+    it("resets the meter at the START of each run -- a prior run's leftover spend is not carried into this run's persisted total", async () => {
+      store = makeStore();
+      const meter = new CostMeter(RATE);
+      // A prior generateForWeek cycle's leftover usage still sitting in the
+      // shared meter, simulating what would happen if reset-per-run were
+      // missing.
+      meter.record({ inputTokens: 999_000, outputTokens: 999_000 });
+
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 10_000, outputTokens: 5_000 },
+        })),
+      };
+      const llm = meteredLlmClient(inner, meter);
+      const buildPlan = vi.fn(async () => {
+        await llm.runQuery({ prompt: "select" });
+        return plan();
+      });
+      const post = vi.fn(async () => ({ ts: "1.1" }));
+      const alert = vi.fn(async () => {});
+
+      await generateForWeek(
+        WEEK,
+        {},
+        { store, buildPlan, post, alert, now: fakeNow(), meter },
+      );
+
+      const row = store.get(WEEK);
+      expect(row?.token_spend).toBe(15_000);
+      expect(row?.cost_usd).toBeCloseTo(costUsd(10_000, 5_000, RATE), 10);
+    });
+
+    it("a failed run (buildPlan throws after some LLM calls already recorded usage) still persists the partial spend on the failed row", async () => {
+      store = makeStore();
+      const meter = new CostMeter(RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 40_000, outputTokens: 10_000 },
+        })),
+      };
+      const llm = meteredLlmClient(inner, meter);
+      const buildPlan = vi.fn(async () => {
+        await llm.runQuery({ prompt: "select" });
+        throw new Error("repair step exploded");
+      });
+      const post = vi.fn(async () => ({ ts: "1.1" }));
+      const alert = vi.fn(async () => {});
+
+      await expect(
+        generateForWeek(
+          WEEK,
+          {},
+          { store, buildPlan, post, alert, now: fakeNow(), meter },
+        ),
+      ).rejects.toThrow("repair step exploded");
+
+      const row = store.get(WEEK);
+      expect(row?.status).toBe("failed");
+      expect(row?.token_spend).toBe(50_000);
+      expect(row?.cost_usd).toBeCloseTo(costUsd(40_000, 10_000, RATE), 10);
+    });
+
+    it("without a meter in deps, counters stay 0 -- unchanged pre-fkg.1 behavior", async () => {
+      store = makeStore();
+      const buildPlan = vi.fn(async () => plan());
+      const post = vi.fn(async () => ({ ts: "1.1" }));
+      const alert = vi.fn(async () => {});
+
+      await generateForWeek(
+        WEEK,
+        {},
+        { store, buildPlan, post, alert, now: fakeNow() },
+      );
+
+      const row = store.get(WEEK);
+      expect(row?.token_spend).toBe(0);
+      expect(row?.cost_usd).toBe(0);
+    });
   });
 });
 

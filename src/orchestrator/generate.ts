@@ -1,6 +1,7 @@
+import type { CostMeter } from "../cost/cost-meter.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import type { SessionStore } from "./session-store.js";
-import { transition } from "./state-machine.js";
+import { type TransitionPatch, transition } from "./state-machine.js";
 import { previousPlanWeek } from "./week-key.js";
 
 /**
@@ -34,6 +35,35 @@ export interface GenerateForWeekDeps {
   post: PostFn;
   alert: AlertFn;
   now: NowFn;
+  /**
+   * Token/$ tracking across the run (SPEC §9.3, bd meal-planner-fkg.1).
+   * Optional -- when omitted, `token_spend`/`cost_usd` stay at their default
+   * 0 (pre-fkg.1 behavior, unchanged). When present, the SAME instance is
+   * shared across runs (runs are sequential) and is `reset()` at the start
+   * of this run, then its running totals are persisted onto whichever
+   * status this run ends in (`suggested` or `failed`) -- a failed run still
+   * spent tokens, and §9.3's caps (fkg.2, next) need that recorded too.
+   */
+  meter?: CostMeter;
+}
+
+/**
+ * The `token_spend`/`cost_usd` fields to splice into a status-transition
+ * patch, derived from `meter`'s running totals -- `{}` when there's no meter
+ * (preserving the pre-fkg.1 behavior of leaving the counters at their
+ * default 0). Pulled out once so every transition call site in this run
+ * (the happy-path `suggested`, the retried `suggested`, and `failed`) stays
+ * in sync with the SAME totals read at that moment.
+ */
+function spendPatch(meter: CostMeter | undefined): TransitionPatch {
+  if (!meter) {
+    return {};
+  }
+  const totals = meter.totals();
+  return {
+    token_spend: totals.inputTokens + totals.outputTokens,
+    cost_usd: totals.costUsd,
+  };
 }
 
 export interface GenerateForWeekOpts {
@@ -130,6 +160,12 @@ export async function generateForWeek(
     updated_at: insertedAt,
   });
 
+  // START of this run's cost tracking (SPEC §9.3): reset BEFORE buildPlan
+  // makes any calls, so this run's persisted total is only ITS calls, never
+  // a prior run's leftover spend. Runs are sequential (one generateForWeek
+  // at a time), so a single shared meter reset here is correct.
+  deps.meter?.reset();
+
   let ts: string | undefined;
   let plan: EnrichedWeekPlan | undefined;
 
@@ -141,7 +177,7 @@ export async function generateForWeek(
       deps.store,
       week_key,
       "suggested",
-      { thread_ts: ts, working_plan: plan },
+      { thread_ts: ts, working_plan: plan, ...spendPatch(deps.meter) },
       deps.now(),
     );
   } catch (e) {
@@ -149,8 +185,17 @@ export async function generateForWeek(
       // Nothing posted -- a clean failure. No Slack thread exists, so
       // there's nothing to reconcile: mark `failed` and alert a human.
       // (No secrets: the alert carries only the week_key + error message,
-      // never the working plan or household prose.)
-      transition(deps.store, week_key, "failed", {}, deps.now());
+      // never the working plan or household prose.) The run may still have
+      // spent tokens before the failure (e.g. buildPlan's selection call
+      // succeeded, a later repair call/post failed) -- §9.3 cares about that
+      // spend even though the run itself failed, so it's persisted here too.
+      transition(
+        deps.store,
+        week_key,
+        "failed",
+        { ...spendPatch(deps.meter) },
+        deps.now(),
+      );
       await deps.alert(
         `generation for week ${week_key} failed before posting: ${String(e)}`,
       );
@@ -167,7 +212,7 @@ export async function generateForWeek(
             deps.store,
             week_key,
             "suggested",
-            { thread_ts: ts, working_plan: plan },
+            { thread_ts: ts, working_plan: plan, ...spendPatch(deps.meter) },
             deps.now(),
           );
           succeeded = true;
