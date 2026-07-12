@@ -211,11 +211,15 @@ describe("resumeQuietly", () => {
 
   it("a working_plan stored as an unparseable string: throws ResumeError rather than propagating the raw JSON.parse error", () => {
     store = makeStore();
+    // V8's JSON.parse error message embeds a SNIPPET of the offending input
+    // (e.g. `Unexpected token 'S', "SECRET_HOU"... is not valid JSON`), so a
+    // household-secret-bearing string must never reach the thrown message --
+    // plant one here and assert it's absent below, not just that it throws.
     const row = {
       week_key: "2026-07-12",
       status: "suggested" as const,
       thread_ts: "1.1",
-      working_plan: "{not valid json",
+      working_plan: `${HOUSEHOLD_SECRET} not json {`,
       turn_count: 0,
       token_spend: 0,
       cost_usd: 0,
@@ -223,7 +227,31 @@ describe("resumeQuietly", () => {
       updated_at: "2026-07-12T05:00:00.000Z",
     };
 
+    // V8 truncates the embedded snippet (e.g. to `"vegetarian"...`), so
+    // asserting the FULL secret is absent would pass even with a leak still
+    // in place. Pin instead against what JSON.parse itself actually reports
+    // for this exact string -- the old code interpolated that verbatim, so
+    // this fails red against the bug and green once the message is generic.
+    let rawParseMessage = "";
+    try {
+      JSON.parse(row.working_plan);
+      throw new Error("test setup: expected working_plan to be invalid JSON");
+    } catch (err) {
+      rawParseMessage = (err as Error).message;
+    }
+    expect(rawParseMessage).toContain("vegetarian"); // sanity: V8 does leak a snippet
+
     expect(() => resumeQuietly(row)).toThrow(ResumeError);
+    try {
+      resumeQuietly(row);
+      throw new Error("expected resumeQuietly to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ResumeError);
+      const message = (err as ResumeError).message;
+      expect(message).not.toContain(HOUSEHOLD_SECRET);
+      expect(message).not.toContain(row.working_plan);
+      expect(message).not.toContain(rawParseMessage);
+    }
   });
 
   describe("zero side effects", () => {

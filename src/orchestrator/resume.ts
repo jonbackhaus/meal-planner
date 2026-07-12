@@ -60,11 +60,13 @@ const EnrichedMealSchema = SelectedMealSchema.extend({
   secondDishRecipe: RecipeSchema.optional(),
 });
 
-const EnrichedWeekPlanSchema = z.object({
-  week_key: z.string(),
-  meals: z.array(EnrichedMealSchema),
-  summary: z.string().optional(),
-});
+const EnrichedWeekPlanSchema = z
+  .object({
+    week_key: z.string(),
+    meals: z.array(EnrichedMealSchema),
+    summary: z.string().optional(),
+  })
+  .strict();
 
 /**
  * Thrown when a row's `working_plan` is present but doesn't parse into a
@@ -109,10 +111,15 @@ function parseWorkingPlan(
   if (typeof raw === "string") {
     try {
       candidate = JSON.parse(raw);
-    } catch (err) {
+    } catch {
+      // Deliberately GENERIC: V8's JSON.parse error message embeds a
+      // snippet of the offending input (e.g. `Unexpected token 'v',
+      // "vegetarian"... is not valid JSON`), so appending `err.message` here
+      // would leak a fragment of household prose into a thrown error that
+      // could be logged or alerted on. Never interpolate it.
       throw new ResumeError(
         weekKey,
-        `working_plan is a string but not valid JSON: ${(err as Error).message}`,
+        "working_plan is a string but not valid JSON",
       );
     }
   }
@@ -132,13 +139,16 @@ function parseWorkingPlan(
  * malformed, rather than returning a corrupt plan.
  *
  * Signature note: `onStartup`'s (bd6.4, startup.ts) `OnStartupDeps.resumeQuietly`
- * is typed `(row: Session) => Promise<void> | void`. A synchronous function
- * returning `ActiveSession` is structurally assignable there — TypeScript
- * treats a `void`-expecting return position as accepting (and ignoring) any
- * actual return value — so this function slots directly into `onStartup`'s
- * injected dep with no adapter, while still handing the eventual daemon
- * holder (the future in-memory `ActiveSession` registry, v3.0) a real value
- * to keep instead of discarding it.
+ * is typed `(row: Session) => void` (a plain `void` return position, not a
+ * `Promise<void> | void` union — TypeScript's "return value ignored in void
+ * position" rule applies only to a bare `void` target, not to a union
+ * containing it). Because it's a plain `void` target, this synchronous
+ * function returning `ActiveSession` IS structurally assignable there —
+ * TypeScript accepts (and ignores) any actual return value in a `void`
+ * position — so this function slots directly into `onStartup`'s injected dep
+ * with no adapter, while still handing the eventual daemon holder (the
+ * future in-memory `ActiveSession` registry, v3.0) a real value to keep
+ * instead of discarding it.
  */
 export function resumeQuietly(row: Session): ActiveSession {
   return {

@@ -47,8 +47,16 @@ export interface OnStartupDeps {
   /**
    * bd6.5, INJECTED — reloads working_plan/thread_ts and says nothing
    * in-thread. Its internals are out of scope here; onStartup only calls it.
+   *
+   * Typed as a plain `void` return position (not `Promise<void> | void`):
+   * TypeScript's "return value ignored in void position" rule only applies
+   * to a bare `void` target, not a union containing it, so the real
+   * `resumeQuietly` (which returns `ActiveSession`) would NOT be assignable
+   * here if this were a union. `=> void` stays forward-compatible with a
+   * future async `resumeQuietly` too, since a function returning
+   * `Promise<void>` is also assignable to `=> void`.
    */
-  resumeQuietly: (row: Session) => Promise<void> | void;
+  resumeQuietly: (row: Session) => void;
   /** E6 #agent-alerts, INJECTED. */
   alert: (message: string) => Promise<void>;
   /** Injected clock (a `Date`, since week-key's functions take a `Date`). */
