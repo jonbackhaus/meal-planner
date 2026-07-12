@@ -13,3 +13,6 @@ dist/
 # Tool caches
 .biome-cache/
 .vitest-cache/
+
+# Runtime data (SQLite session + recipe index)
+data/
