@@ -65,4 +65,14 @@ describe("CostMeter", () => {
   it("throws a clear error when constructed with no rate (unknown model)", () => {
     expect(() => new CostMeter(undefined)).toThrow(/rate/i);
   });
+
+  it("names the offending model in the no-rate error when a model name is given", () => {
+    expect(() => new CostMeter(undefined, "claude-made-up-9")).toThrow(
+      /claude-made-up-9/,
+    );
+  });
+
+  it("still throws a clear error with no model name given (backward compatible)", () => {
+    expect(() => new CostMeter(undefined)).toThrow(/no rate configured/i);
+  });
 });

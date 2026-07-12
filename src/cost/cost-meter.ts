@@ -49,12 +49,16 @@ export class CostMeter {
    * `rate` is the resolved per-model rate to bill against (e.g.
    * `config.modelRates[config.model]`) -- resolved once, at construction, so
    * a misconfigured model (no rate entry -- `rate` is `undefined`) fails
-   * loudly at startup rather than silently reporting $0 forever.
+   * loudly at startup rather than silently reporting $0 forever. `model` is
+   * the model NAME that `rate` was resolved from (e.g. `config.model`) --
+   * optional, purely so the no-rate error can name the offending model
+   * (fkg.1 review follow-up); omitting it preserves the original message.
    */
-  constructor(rate: ModelRate | undefined) {
+  constructor(rate: ModelRate | undefined, model?: string) {
     if (!rate) {
+      const modelDescription = model ? ` "${model}"` : "";
       throw new Error(
-        "CostMeter: no rate configured for the selected model -- add an " +
+        `CostMeter: no rate configured for the selected model${modelDescription} -- add an ` +
           "entry to config.modelRates for it before starting the daemon",
       );
     }

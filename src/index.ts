@@ -145,9 +145,14 @@ export async function main(): Promise<void> {
   // each generateForWeek run (see composeDaemon -> generateForWeek). Runs
   // are sequential (one generateForWeek at a time), so a single shared
   // instance is correct -- there is never more than one run's calls live in
-  // it at once. Only TRACKS + persists here; the $ cap/alert is fkg.2 (next).
-  const meter = new CostMeter(config.modelRates[config.model]);
-  const llm = meteredLlmClient(createLlmClient(config), meter);
+  // it at once. `capUsd` (fkg.2) enforces the real ceiling: once a run's
+  // cumulative spend exceeds `config.generationDollarCap`, the metered
+  // client throws `CostCapExceededError`, which propagates through
+  // `buildPlan` into `generateForWeek`'s existing failure/alert path.
+  const meter = new CostMeter(config.modelRates[config.model], config.model);
+  const llm = meteredLlmClient(createLlmClient(config), meter, {
+    capUsd: config.generationDollarCap,
+  });
   const search = (
     query: string,
     filters?: Parameters<typeof searchRecipes>[1],

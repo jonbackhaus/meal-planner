@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import { CostMeter, costUsd } from "../cost/cost-meter.js";
 import { meteredLlmClient } from "../cost/metered-llm-client.js";
 import type { LlmClient } from "../llm/llm-client.js";
@@ -357,6 +358,48 @@ describe("generateForWeek", () => {
       const row = store.get(WEEK);
       expect(row?.token_spend).toBe(0);
       expect(row?.cost_usd).toBe(0);
+    });
+  });
+
+  describe("cap enforcement (bd meal-planner-fkg.2, SPEC §9.3)", () => {
+    it("buildPlan overspending the cap -> row ends `failed`, alert mentions the cap, partial spend persisted", async () => {
+      store = makeStore();
+      // $1/MTok in, $0 out -- 1_500_000 input tokens per call = $1.50.
+      const CAP_RATE = { inputPerMTok: 1, outputPerMTok: 0 };
+      const meter = new CostMeter(CAP_RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 1_500_000, outputTokens: 0 },
+        })),
+      };
+      const llm = meteredLlmClient(inner, meter, { capUsd: 2 });
+      const buildPlan = vi.fn(async () => {
+        await llm.runQuery({ prompt: "select" }); // cumulative $1.50, ok
+        await llm.runQuery({ prompt: "repair" }); // cumulative $3, over cap -> throws
+        return plan();
+      });
+      const post = vi.fn(async () => ({ ts: "1.1" }));
+      const alert = vi.fn(async (_message: string) => {});
+
+      await expect(
+        generateForWeek(
+          WEEK,
+          {},
+          { store, buildPlan, post, alert, now: fakeNow(), meter },
+        ),
+      ).rejects.toThrow(CostCapExceededError);
+
+      expect(post).not.toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledTimes(1);
+      const [alertMessage] = alert.mock.calls[0];
+      expect(alertMessage).toMatch(/cost cap exceeded/i);
+      expect(alertMessage).toMatch(/\$3\.00 spent > \$2\.00 cap/);
+
+      const row = store.get(WEEK);
+      expect(row?.status).toBe("failed");
+      expect(row?.token_spend).toBe(3_000_000);
+      expect(row?.cost_usd).toBeCloseTo(3, 10);
     });
   });
 });
