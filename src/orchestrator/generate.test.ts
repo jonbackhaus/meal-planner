@@ -206,7 +206,7 @@ describe("generateForWeek", () => {
     expect(alert).not.toHaveBeenCalled();
   });
 
-  it("post succeeds and a transient write failure recovers within the retry budget -> row ends `suggested`, but the original error still propagates", async () => {
+  it("post succeeds and a transient write failure recovers within the retry budget -> resolves `generated`, row ends `suggested`, no alert", async () => {
     store = makeStore();
     const buildPlan = vi.fn(async () => plan());
     const post = vi.fn(async () => ({ ts: "1699999999.000100" }));
@@ -229,12 +229,14 @@ describe("generateForWeek", () => {
         {},
         { store, buildPlan, post, alert, now: fakeNow() },
       ),
-    ).rejects.toThrow("transient disk hiccup");
+    ).resolves.toBe("generated");
 
     updateSpy.mockRestore();
+    expect(alert).not.toHaveBeenCalled();
     const row = store.get(WEEK);
     expect(row?.status).toBe("suggested");
     expect(row?.thread_ts).toBe("1699999999.000100");
+    expect(row?.working_plan).toEqual(plan());
   });
 });
 
@@ -313,5 +315,50 @@ describe("expirePriorIfUncommitted", () => {
     );
 
     expect(store.get(PRIOR_WEEK)?.status).toBe("expired");
+  });
+
+  it("a failing (cosmetic) prior-week expiry does not abort current-week generation", async () => {
+    store = makeStore();
+    store.insert({
+      week_key: PRIOR_WEEK,
+      status: "suggested",
+      thread_ts: "old.ts",
+      created_at: "2026-07-05T06:00:00.000Z",
+      updated_at: "2026-07-05T06:00:00.000Z",
+    });
+    // Simulate a store fault specifically while expiring the PRIOR week --
+    // the current week's own writes (later in the same run) must still
+    // succeed normally.
+    const realUpdate = store.update.bind(store);
+    const updateSpy = vi
+      .spyOn(store, "update")
+      .mockImplementation((wk, patch) => {
+        if (wk === PRIOR_WEEK) {
+          throw new Error("expiry store fault");
+        }
+        return realUpdate(wk, patch);
+      });
+    const builtPlan = plan();
+    const buildPlan = vi.fn(async () => builtPlan);
+    const post = vi.fn(async () => ({ ts: "new.ts" }));
+    const alert = vi.fn(async () => {});
+
+    const result = await generateForWeek(
+      WEEK,
+      {},
+      { store, buildPlan, post, alert, now: fakeNow() },
+    );
+
+    updateSpy.mockRestore();
+
+    expect(result).toBe("generated");
+    expect(post).toHaveBeenCalledTimes(1);
+    const row = store.get(WEEK);
+    expect(row?.status).toBe("suggested");
+    expect(row?.thread_ts).toBe("new.ts");
+    expect(row?.working_plan).toEqual(builtPlan);
+    // The prior row is untouched (its expiry-write faulted) -- not this
+    // function's problem to recover, only not to crash on.
+    expect(store.get(PRIOR_WEEK)?.status).toBe("suggested");
   });
 });

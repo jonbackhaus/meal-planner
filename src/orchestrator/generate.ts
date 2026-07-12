@@ -93,11 +93,14 @@ export function expirePriorIfUncommitted(
  *    `suggested` (+ `thread_ts` + `working_plan`) AFTER `post` returns.
  * 5. On failure: if `post` never returned a `ts`, transition to `failed` +
  *    alert + rethrow. If `post` succeeded but the local write faltered,
- *    retry the `suggested` transition a bounded number of times; whether or
- *    not that retry ultimately succeeds, the original error still
- *    propagates (matching the ADR pseudocode's unconditional `throw e`) —
- *    from the caller's (scheduler's) perspective, this run had a problem
- *    worth surfacing even if the record got repaired.
+ *    retry the `suggested` transition a bounded number of times. If the row
+ *    ultimately reaches `suggested` (first attempt or a retry), this run is
+ *    treated as a full success -- `"generated"` is returned, no alert, no
+ *    rethrow -- because the row is now indistinguishable from the plain
+ *    happy path, and a caller that saw a thrown error here could later
+ *    force-regenerate an already-`suggested` (already-posted) row, causing a
+ *    duplicate Slack post. Only when every retry is exhausted and the row is
+ *    left `generating` does the original error propagate.
  */
 export async function generateForWeek(
   week_key: string,
@@ -108,7 +111,16 @@ export async function generateForWeek(
     return "skipped";
   }
 
-  expirePriorIfUncommitted(week_key, deps);
+  try {
+    // Cosmetic (ADR 0002: "correctness doesn't depend on this -- activeness
+    // is computed"). A store fault while expiring the PRIOR week must not
+    // abort the CURRENT week's generation.
+    expirePriorIfUncommitted(week_key, deps);
+  } catch (e) {
+    console.warn(
+      `expirePriorIfUncommitted failed ahead of generating week ${week_key}: ${String(e)}`,
+    );
+  }
 
   const insertedAt = deps.now();
   deps.store.insert({
@@ -148,6 +160,7 @@ export async function generateForWeek(
       // fails, deliberately LEAVE the row `generating` rather than risk a
       // half-written `suggested` row (missing thread_ts/working_plan would
       // be worse than a row startup catch-up can still detect and resolve).
+      let succeeded = false;
       for (let attempt = 0; attempt < MAX_SUGGESTED_WRITE_RETRIES; attempt++) {
         try {
           transition(
@@ -157,10 +170,23 @@ export async function generateForWeek(
             { thread_ts: ts, working_plan: plan },
             deps.now(),
           );
+          succeeded = true;
           break;
-        } catch {
-          // Keep retrying within budget; fall through to rethrow `e` either way.
+        } catch (retryErr) {
+          // Silent-but-diagnosable: no secret (no working_plan), just enough
+          // to see a recurring write fault in logs (bd6.4 catch-up cares).
+          console.warn(
+            `suggested-write retry ${attempt + 1}/${MAX_SUGGESTED_WRITE_RETRIES} failed for week ${week_key}: ${String(retryErr)}`,
+          );
         }
+      }
+      if (succeeded) {
+        // The row reached `suggested` after all -- this run is a full
+        // success from the caller's perspective. Rethrowing here would make
+        // a fully-successful generation look like a failure, risking a
+        // later force-regenerate against an already-posted row (duplicate
+        // Slack post). No alert either: nothing is actually wrong now.
+        return "generated";
       }
     }
     throw e;
