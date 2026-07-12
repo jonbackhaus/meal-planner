@@ -6,6 +6,8 @@ import { runDaemon } from "./daemon/daemon.js";
 import { withTimeout } from "./daemon/with-timeout.js";
 import { getScaffoldVersion } from "./lib/version.js";
 import { createLlmClient } from "./llm/agent-sdk-client.js";
+import { makeAlert } from "./ops/alerter.js";
+import { appendLog } from "./ops/local-log.js";
 import { composeDaemon } from "./orchestrator/compose.js";
 import { resumeQuietly } from "./orchestrator/resume.js";
 import { SessionStore } from "./orchestrator/session-store.js";
@@ -18,6 +20,7 @@ import { StructuredStore } from "./recipe-mcp/structured-store.js";
 import { VectorStore } from "./recipe-mcp/vector-store.js";
 import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
+import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
 
 /**
@@ -96,17 +99,62 @@ function buildSlackPost(
 }
 
 /**
- * Console-based placeholder for the #agent-alerts notifier (E6, injected
- * `AlertFn`). Never includes a secret — callers (`generateForWeek`/
- * `onStartup`) already only ever pass a week_key + short error/summary text.
- * TODO(E6): swap this for the real #agent-alerts Slack post.
+ * Default path for the durable local alert log (`src/ops/local-log.ts`) when
+ * `MP_LOG_PATH` isn't set. Relative to the process's cwd, matching this
+ * repo's other default on-disk paths (`ProfileSettings.sqlitePath` etc.).
  */
-function consoleAlert(
-  logger: Pick<Console, "warn"> = console,
+export const DEFAULT_LOG_PATH = "./data/meal-planner.log";
+
+/**
+ * Builds the real `#agent-alerts` notifier (E6, injected `AlertFn`; SPEC
+ * §9.4: alerts-only — no heartbeat, no "skipping this week" messages, fires
+ * only on real anomalies). Replaces the old console-only placeholder with:
+ *
+ *   1. A durable local log on disk (`appendLog`, ALWAYS) at `MP_LOG_PATH`
+ *      (default `DEFAULT_LOG_PATH`) — a complete record even if Slack is
+ *      unreachable.
+ *   2. A post to `#agent-alerts` via `SlackAlerter`, ONLY when
+ *      `profile.postMode === "post"` — dry-run never touches Slack. The
+ *      alerts channel ID comes from `MP_ALERTS_CHANNEL_ID`, a SEPARATE env
+ *      var from the meal-plan `profile.channelId` (`#agent-alerts` is a
+ *      different channel entirely). If `MP_ALERTS_CHANNEL_ID` is unset while
+ *      `postMode === "post"`, this warns and falls back to local-log-only —
+ *      it must NOT crash boot over a missing alerts channel (the actual
+ *      channel creation is a runtime/ops step, not this code's concern).
+ *
+ * The returned function is `makeAlert`'s composite (`src/ops/alerter.ts`):
+ * it never throws, and attempts the local log and the Slack post
+ * independently, so a failure in either never masks the original error that
+ * triggered the alert or crashes the daemon.
+ */
+export function buildAlert(
+  profile: ProfileSettings,
+  secrets: Secrets,
+  env: NodeJS.ProcessEnv = process.env,
+  logger: Pick<Console, "warn" | "error"> = console,
 ): (message: string) => Promise<void> {
-  return async (message: string) => {
-    logger.warn(`[agent-alert] ${message}`);
-  };
+  const logPath = env.MP_LOG_PATH || DEFAULT_LOG_PATH;
+  const appendLocal = (message: string) =>
+    appendLog(logPath, message, () => new Date());
+
+  let slackAlert: ((message: string) => Promise<void>) | undefined;
+  if (profile.postMode === "post") {
+    const alertsChannelId = env.MP_ALERTS_CHANNEL_ID;
+    if (!alertsChannelId) {
+      logger.warn(
+        "[agent-alert] MP_ALERTS_CHANNEL_ID is not set; falling back to " +
+          "local-log-only alerts (no #agent-alerts Slack post will be sent)",
+      );
+    } else {
+      const alerter = new SlackAlerter({
+        token: secrets.slackBotToken,
+        channelId: alertsChannelId,
+      });
+      slackAlert = (message: string) => alerter.alert(message);
+    }
+  }
+
+  return makeAlert({ appendLocal, slackAlert, logger });
 }
 
 /**
@@ -197,7 +245,7 @@ export async function main(): Promise<void> {
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
       : buildDryRunPost(profile);
-  const alert = consoleAlert();
+  const alert = buildAlert(profile, secrets);
 
   const { onStartup, onTrigger } = composeDaemon({
     config,
