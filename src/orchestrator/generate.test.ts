@@ -289,9 +289,9 @@ describe("expirePriorIfUncommitted", () => {
   });
 
   it("no-ops when there is no prior row at all", () => {
-    store = makeStore();
+    const s = makeStore();
     expect(() =>
-      expirePriorIfUncommitted(WEEK, { store, now: fakeNow() }),
+      expirePriorIfUncommitted(WEEK, { store: s, now: fakeNow() }),
     ).not.toThrow();
   });
 

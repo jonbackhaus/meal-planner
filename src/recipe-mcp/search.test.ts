@@ -26,6 +26,7 @@ function defaultFields(
 ): ExtractedFields {
   return {
     time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
+    ingredients: [],
     veg_status: "vegetarian",
     effort_tags: [],
     season_tags: [],
