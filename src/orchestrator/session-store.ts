@@ -187,7 +187,16 @@ export class SessionStore {
     return row ? rowToSession(row) : null;
   }
 
-  /** Updates mutable fields on an existing row. Serializes `working_plan` to JSON. */
+  /**
+   * Updates mutable fields on an existing row. Serializes `working_plan` to JSON.
+   * Only the keys present in `patch` are touched (partial `SET`) — omitted
+   * fields are left untouched, never clobbered.
+   *
+   * Updating a non-existent `week_key` is a silent no-op (standard SQL
+   * `UPDATE` semantics: zero rows match, zero rows change) — checking
+   * existence before calling is the caller's concern (e.g. bd6.3's
+   * write-before-post ordering).
+   */
   update(week_key: string, patch: SessionPatch): void {
     const fields: string[] = [];
     const params: Record<string, unknown> = { week_key };

@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionStore } from "./session-store.js";
 
@@ -16,9 +17,38 @@ afterEach(() => {
 });
 
 describe("SessionStore", () => {
-  it("opening the store twice against the same file does not error (idempotent schema)", () => {
-    store = makeStore();
-    expect(() => new SessionStore({ path: ":memory:" }).close()).not.toThrow();
+  it("reopening the SAME file-backed db is idempotent and preserves prior data (real schema reopen, not two independent :memory: DBs)", () => {
+    // Two `:memory:` stores are independent databases, so opening two of
+    // them only proves `CREATE TABLE IF NOT EXISTS` works on two *empty*
+    // DBs -- it does NOT prove that reopening an *existing* db (schema
+    // already present, data already written) is idempotent. Use a real
+    // temp file, matching src/recipe-mcp/vector-store.test.ts's pattern.
+    const path = `${process.env.TMPDIR ?? "/tmp"}/session-store-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+    const first = new SessionStore({ path });
+    first.insert({
+      week_key: "2026-07-12",
+      status: "generating",
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+    first.close();
+
+    let second: SessionStore | undefined;
+    try {
+      expect(() => {
+        second = new SessionStore({ path });
+      }).not.toThrow();
+
+      const row = second?.get("2026-07-12");
+      expect(row).not.toBeNull();
+      expect(row?.week_key).toBe("2026-07-12");
+      expect(row?.status).toBe("generating");
+    } finally {
+      second?.close();
+      for (const suffix of ["", "-wal", "-shm"]) {
+        rmSync(`${path}${suffix}`, { force: true });
+      }
+    }
   });
 
   it("round-trips insert -> get, including default counter values", () => {
@@ -93,6 +123,53 @@ describe("SessionStore", () => {
     expect(row?.turn_count).toBe(3);
     expect(row?.token_spend).toBe(4200);
     expect(row?.cost_usd).toBe(0.42);
+  });
+
+  it("update() with a single-field patch does not clobber omitted fields (no-clobber correctness)", () => {
+    store = makeStore();
+    const plan = { meals: [{ day: "Monday", title: "Pasta" }] };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1111.2222",
+      working_plan: plan,
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+
+    // Touch ONLY turn_count.
+    store.update("2026-07-12", { turn_count: 1 });
+
+    const row = store.get("2026-07-12");
+    expect(row?.turn_count).toBe(1);
+    // These must survive untouched. If update() ever regressed to a
+    // full-row overwrite (e.g. rebuilding every column from `patch` with
+    // defaults for anything unset), these would come back as the default
+    // status, null thread_ts, and null working_plan -- so this is a real,
+    // falsifiable assertion, not a tautology.
+    expect(row?.status).toBe("suggested");
+    expect(row?.thread_ts).toBe("1111.2222");
+    expect(row?.working_plan).toEqual(plan);
+  });
+
+  it("update() can explicitly clear thread_ts to null while leaving other fields intact", () => {
+    store = makeStore();
+    const plan = { meals: [{ day: "Monday", title: "Pasta" }] };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1111.2222",
+      working_plan: plan,
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+
+    store.update("2026-07-12", { thread_ts: null });
+
+    const row = store.get("2026-07-12");
+    expect(row?.thread_ts).toBeNull();
+    expect(row?.status).toBe("suggested");
+    expect(row?.working_plan).toEqual(plan);
   });
 
   it("round-trips an arbitrary working_plan object through JSON serialization", () => {
