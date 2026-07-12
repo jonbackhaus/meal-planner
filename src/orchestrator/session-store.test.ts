@@ -222,6 +222,48 @@ describe("SessionStore", () => {
     expect(store.getByThreadTs("nonexistent")).toBeNull();
   });
 
+  it("delete removes an existing row; get returns null afterward", () => {
+    store = makeStore();
+    store.insert({
+      week_key: "2026-07-12",
+      status: "failed",
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+
+    store.delete("2026-07-12");
+
+    expect(store.get("2026-07-12")).toBeNull();
+  });
+
+  it("delete on an absent week_key is a silent no-op (does not throw)", () => {
+    store = makeStore();
+    expect(() => store?.delete("1999-01-01")).not.toThrow();
+  });
+
+  it("delete only removes the targeted week_key, leaving others intact", () => {
+    store = makeStore();
+    store.insert({
+      week_key: "2026-07-12",
+      status: "failed",
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+    store.insert({
+      week_key: "2026-07-19",
+      status: "suggested",
+      created_at: "2026-07-19T06:00:00.000Z",
+      updated_at: "2026-07-19T06:00:00.000Z",
+    });
+
+    store.delete("2026-07-12");
+
+    expect(store.get("2026-07-12")).toBeNull();
+    const other = store.get("2026-07-19");
+    expect(other).not.toBeNull();
+    expect(other?.status).toBe("suggested");
+  });
+
   it("throws on inserting a duplicate week_key (primary key constraint)", () => {
     store = makeStore();
     store.insert({

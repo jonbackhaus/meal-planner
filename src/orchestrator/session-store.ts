@@ -242,6 +242,21 @@ export class SessionStore {
       .run(params);
   }
 
+  /**
+   * Deletes the row for `week_key`, if any. This is the "clear the row"
+   * primitive the operator re-run affordance (bd6.6, `reRunWeek` in
+   * rerun.ts) uses before re-invoking `generateForWeek({force: true})` — it
+   * exists so re-run never has to hand-roll raw SQL against this table.
+   *
+   * Deleting an absent `week_key` is a silent no-op (standard SQL `DELETE`
+   * semantics: zero rows match, zero rows change), matching `update()`'s
+   * same no-op-on-absent convention above — checking existence first is the
+   * caller's concern.
+   */
+  delete(week_key: string): void {
+    this.db.prepare("DELETE FROM session WHERE week_key = ?").run(week_key);
+  }
+
   close(): void {
     this.db.close();
   }
