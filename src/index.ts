@@ -18,6 +18,7 @@ import { StructuredStore } from "./recipe-mcp/structured-store.js";
 import { VectorStore } from "./recipe-mcp/vector-store.js";
 import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
+import { SlackPoster } from "./slack/slack-poster.js";
 
 /**
  * Boot secret loading with a timeout (carried over from the secrets review,
@@ -44,31 +45,21 @@ const DEFAULT_HOUSEHOLD =
 
 /**
  * Builds the v1.0 dry-run `post` (ADR 0002/0003's injected `PostFn`,
- * bd meal-planner-bd6.9). Renders the plan via the real `renderPlan` (E5,
- * bj1.2) and logs it clearly labelled DRY-RUN alongside the target channel,
- * rather than calling Slack's `chat.postMessage` — there is no Slack app
- * wired up yet (that's E5 bj1.1/bj1.3). Returns a SYNTHETIC `ts` (an
- * incrementing counter, never `Date.now()`) so `generateForWeek`'s
- * write-before-post bookkeeping has something stable to persist.
+ * bd meal-planner-bd6.9), used when `profile.postMode === "dry-run"`.
+ * Renders the plan via the real `renderPlan` (E5, bj1.2) and logs it clearly
+ * labelled DRY-RUN alongside the target channel, rather than calling
+ * Slack's `chat.postMessage`. Returns a SYNTHETIC `ts` (an incrementing
+ * counter, never `Date.now()`) so `generateForWeek`'s write-before-post
+ * bookkeeping has something stable to persist.
  *
- * TODO(E5 bj1.3): once the real Slack app/token exist, swap this for an
- * actual `chat.postMessage` call when `profile.postMode === "post"`. For
- * now every profile dry-runs: if `postMode === "post"` is configured, this
- * logs a warning that real posting isn't wired yet and dry-runs anyway
- * (never silently drops the plan).
+ * The real `chat.postMessage`-backed `PostFn` (E5 bj1.3, `SlackPoster`) is
+ * wired in `main()` below when `profile.postMode === "post"`.
  */
 function buildDryRunPost(
   profile: ProfileSettings,
-  logger: Pick<Console, "log" | "warn"> = console,
+  logger: Pick<Console, "log"> = console,
 ): (plan: EnrichedWeekPlan) => Promise<{ ts: string }> {
   let counter = 0;
-
-  if (profile.postMode === "post") {
-    logger.warn(
-      'buildDryRunPost: profile.postMode is "post", but real Slack ' +
-        "posting is not wired up yet (E5 bj1.3) -- dry-running instead.",
-    );
-  }
 
   return async (plan: EnrichedWeekPlan) => {
     counter += 1;
@@ -77,6 +68,30 @@ function buildDryRunPost(
       `[DRY-RUN post] channel=${profile.channelId} ts=${ts}\n${renderPlan(plan)}`,
     );
     return { ts };
+  };
+}
+
+/**
+ * Builds the real `chat.postMessage`-backed `PostFn` (E5 bj1.3, SPEC
+ * §7/§9.2: v1.0-v2.0 posts OUTBOUND ONLY via the Slack Web API — no Socket
+ * Mode, no Bolt). Used when `profile.postMode === "post"`; logs a one-line
+ * confirmation per post (no plan dump — that's `SlackPoster`/`renderPlan`'s
+ * concern, not this wiring's).
+ */
+function buildSlackPost(
+  profile: ProfileSettings,
+  secrets: Secrets,
+  logger: Pick<Console, "log"> = console,
+): (plan: EnrichedWeekPlan) => Promise<{ ts: string }> {
+  const poster = new SlackPoster({
+    token: secrets.slackBotToken,
+    channelId: profile.channelId,
+  });
+
+  return async (plan: EnrichedWeekPlan) => {
+    const result = await poster.post(plan);
+    logger.log(`[Slack post] channel=${profile.channelId} ts=${result.ts}`);
+    return result;
   };
 }
 
@@ -178,7 +193,10 @@ export async function main(): Promise<void> {
 
   const store = new SessionStore({ path: profile.sqlitePath });
 
-  const post = buildDryRunPost(profile);
+  const post =
+    profile.postMode === "post"
+      ? buildSlackPost(profile, secrets)
+      : buildDryRunPost(profile);
   const alert = consoleAlert();
 
   const { onStartup, onTrigger } = composeDaemon({
