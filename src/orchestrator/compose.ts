@@ -1,0 +1,115 @@
+import type { Config } from "../config/config.js";
+import type { ProfileSettings } from "../config/profile.js";
+import type { EnrichedWeekPlan } from "../planner/enrich.js";
+import {
+  type AlertFn,
+  type GenerateForWeekDeps,
+  generateForWeek,
+} from "./generate.js";
+import type { Session, SessionStore } from "./session-store.js";
+import { onStartup as onStartupFn } from "./startup.js";
+import { currentPlanWeek } from "./week-key.js";
+
+/**
+ * Composition root for the daemon's two scheduler-facing hooks (bd
+ * meal-planner-bd6.9). This is the PURE wiring step ADR 0002's
+ * `generateForWeek`/`onStartup` were built for but never themselves called:
+ * `main()` (`src/index.ts`) constructs the real I/O collaborators
+ * (SessionStore, buildPlan, post, alert, resumeQuietly, clocks) and hands
+ * them here; `composeDaemon` binds them into the exact shape `runDaemon`
+ * (`src/daemon/daemon.js`) needs — `{ onStartup, onTrigger }` — using the
+ * REAL `generateForWeek`/`onStartup` functions underneath. Nothing in this
+ * module talks to SQLite, Slack, or an LLM directly; it only wires already-
+ * built pieces together, which is exactly what makes it unit-testable with
+ * fakes for the I/O edges and a real in-memory SessionStore (see
+ * compose.test.ts) — testing this composition exercises the whole wiring
+ * path, not just composeDaemon's own few lines.
+ *
+ * Clock policy: `nowDate`/`nowIso` are both injected (never `Date.now()` /
+ * `new Date()` called directly here), matching every other orchestrator
+ * module's convention — the daemon (ultimately `main()`) owns the clock.
+ */
+
+export interface ComposeDaemonDeps {
+  config: Config;
+  profile: ProfileSettings;
+  store: SessionStore;
+  /** The bound recipe-sync-and-select pipeline (E4) — ADR 0002's `buildPlan(wk)`. */
+  buildPlan: (weekKey: string) => Promise<EnrichedWeekPlan>;
+  /** The bound render+post (E5; dry-run in v1.0 — see `main()`'s `buildDryRunPost`). */
+  post: (plan: EnrichedWeekPlan) => Promise<{ ts: string }>;
+  /** The bound #agent-alerts notifier (E6; console placeholder in v1.0). */
+  alert: AlertFn;
+  /** bd6.5, injected — reconstitutes a live row on restart; says nothing in-thread. */
+  resumeQuietly: (row: Session) => void;
+  /** Injected clock (`Date`) — feeds `currentPlanWeek` (onTrigger) and `onStartup`'s own single `now()` read. */
+  nowDate: () => Date;
+  /** Injected clock (ISO string) — feeds `generateForWeek`'s timestamps. */
+  nowIso: () => string;
+}
+
+export interface ComposedDaemon {
+  onStartup: () => Promise<void>;
+  onTrigger: () => Promise<void>;
+}
+
+/**
+ * Builds the daemon's `{ onStartup, onTrigger }` from the REAL orchestrator
+ * functions:
+ *  - `onTrigger` computes the current plan-week from `nowDate()` (via
+ *    `currentPlanWeek`) and calls `generateForWeek` with `force` set from
+ *    `profile.forceRegenerate` (dev defaults to `true`, prod to `false` —
+ *    see `resolveProfile`).
+ *  - `onStartup` delegates entirely to ADR 0002's boot-time reconciliation
+ *    (`onStartup` in `startup.ts`), passing it the SAME bound
+ *    `generateForWeek` so its own "past the trigger, no row yet" catch-up
+ *    path shares the identical idempotency gate `onTrigger` uses.
+ *
+ * Both hooks return `Promise<void>` (matching `RunDaemonOptions`'s
+ * `OnStartupHook`/`OnTriggerHook` shapes) even though `generateForWeek`
+ * itself resolves to `"generated" | "skipped"` — that result is intentionally
+ * discarded here; a caller wanting it should call `generateForWeek` directly.
+ */
+export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
+  const {
+    config,
+    profile,
+    store,
+    buildPlan,
+    post,
+    alert,
+    resumeQuietly,
+    nowDate,
+    nowIso,
+  } = deps;
+
+  const genDeps: GenerateForWeekDeps = {
+    store,
+    buildPlan,
+    post,
+    alert,
+    now: nowIso,
+  };
+
+  const boundGenerate = (weekKey: string, opts: { force?: boolean }) =>
+    generateForWeek(weekKey, opts, genDeps);
+
+  async function onTrigger(): Promise<void> {
+    await boundGenerate(currentPlanWeek(nowDate(), config), {
+      force: profile.forceRegenerate,
+    });
+  }
+
+  async function onStartup(): Promise<void> {
+    await onStartupFn({
+      cfg: config,
+      store,
+      generateForWeek: boundGenerate,
+      resumeQuietly,
+      alert,
+      now: nowDate,
+    });
+  }
+
+  return { onStartup, onTrigger };
+}
