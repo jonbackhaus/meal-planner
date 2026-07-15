@@ -16,3 +16,8 @@ dist/
 
 # Runtime data (SQLite session + recipe index)
 data/
+
+# Local secret/env files (never commit real tokens); .env.example is safe
+.env
+*.env
+!.env.example
