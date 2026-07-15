@@ -19,24 +19,29 @@ type ExecFileCallback = (
   stderr: string,
 ) => void;
 
+// Grab the callback as the LAST argument so these helpers work whether
+// readNotes calls execFile as (file, args, cb) or (file, args, options, cb).
+function lastArgCallback(args: unknown[]): ExecFileCallback {
+  return args[args.length - 1] as ExecFileCallback;
+}
+
 function mockOsascriptStdout(stdout: string) {
-  mockedExecFile.mockImplementation(((
-    _file: string,
-    _args: readonly string[],
-    callback: ExecFileCallback,
-  ) => {
-    callback(null, stdout, "");
+  mockedExecFile.mockImplementation(((...args: unknown[]) => {
+    lastArgCallback(args)(null, stdout, "");
     return undefined;
   }) as unknown as typeof execFile);
 }
 
-function mockOsascriptFailure(message: string) {
-  mockedExecFile.mockImplementation(((
-    _file: string,
-    _args: readonly string[],
-    callback: ExecFileCallback,
-  ) => {
-    callback(new Error(message), "", message);
+function mockOsascriptFailure(
+  message: string,
+  extra: Record<string, unknown> = {},
+) {
+  mockedExecFile.mockImplementation(((...args: unknown[]) => {
+    lastArgCallback(args)(
+      Object.assign(new Error(message), extra),
+      "",
+      message,
+    );
     return undefined;
   }) as unknown as typeof execFile);
 }
@@ -54,8 +59,33 @@ describe("readNotes", () => {
     expect(mockedExecFile).toHaveBeenCalledWith(
       "osascript",
       ["-l", "JavaScript", "-e", expect.any(String), DEFAULT_RECIPES_FOLDER],
+      expect.any(Object),
       expect.any(Function),
     );
+  });
+
+  it("bounds the read with a timeout and a large maxBuffer (guards hangs + big corpora)", async () => {
+    mockOsascriptStdout("[]");
+
+    await readNotes();
+
+    const options = mockedExecFile.mock.calls[0][2] as {
+      timeout?: number;
+      maxBuffer?: number;
+    };
+    expect(options.timeout).toBeGreaterThan(0);
+    // 798 recipe bodies blow past execFile's 1 MB default; needs to be large.
+    expect(options.maxBuffer).toBeGreaterThanOrEqual(16 * 1024 * 1024);
+  });
+
+  it("surfaces an osascript timeout as a clear, actionable error", async () => {
+    // Node marks a timed-out child with killed=true (+ SIGTERM).
+    mockOsascriptFailure("spawn osascript ETIMEDOUT", {
+      killed: true,
+      signal: "SIGTERM",
+    });
+
+    await expect(readNotes()).rejects.toThrow(/timed out/i);
   });
 
   it("passes a custom folder name through to osascript", async () => {
@@ -66,6 +96,7 @@ describe("readNotes", () => {
     expect(mockedExecFile).toHaveBeenCalledWith(
       "osascript",
       ["-l", "JavaScript", "-e", expect.any(String), "My Recipes"],
+      expect.any(Object),
       expect.any(Function),
     );
   });
