@@ -15,8 +15,11 @@ import { buildPlan } from "./planner/build-plan.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
 import { TransformersEmbedder } from "./recipe-mcp/embedder.js";
 import { getRecipe } from "./recipe-mcp/get-recipe.js";
+import { readNotes } from "./recipe-mcp/notes-reader.js";
 import { searchRecipes } from "./recipe-mcp/search.js";
 import { StructuredStore } from "./recipe-mcp/structured-store.js";
+import type { SyncResult } from "./recipe-mcp/sync.js";
+import { runSync } from "./recipe-mcp/sync-runner.js";
 import { VectorStore } from "./recipe-mcp/vector-store.js";
 import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
@@ -175,6 +178,62 @@ export function applySecretsToEnv(
   env.ANTHROPIC_API_KEY = secrets.anthropicApiKey;
 }
 
+/**
+ * Injected deps for {@link makeBuildPlanWithSync}. `runSync` and `buildPlan`
+ * are pre-bound (folder/config already applied); `alert` is the never-throwing
+ * composite from {@link buildAlert}.
+ */
+export interface BuildPlanWithSyncDeps {
+  runSync: () => Promise<SyncResult>;
+  buildPlan: (weekKey: string) => Promise<EnrichedWeekPlan>;
+  alert: (message: string) => Promise<void>;
+  logger?: Pick<Console, "log" | "warn">;
+}
+
+/**
+ * Wraps the planner's `buildPlan(weekKey)` with a recipe-sync pass that runs
+ * FIRST (bd meal-planner-q95.8): the daemon's `buildPlanFor` closure is only
+ * ever called from inside `generateForWeek` — after the idempotency gate has
+ * passed and the `generating` row is written — so sync runs exactly once per
+ * REAL generation (a double-fire / restart that hits the gate never syncs).
+ *
+ * Failure policy (ratified): **proceed + alert**. A whole-sync failure (Notes
+ * not authorized, embedder model download fails, etc.) is logged and posted to
+ * `#agent-alerts`, but generation CONTINUES against the existing (possibly
+ * stale) index — a slightly stale plan beats skipping the week. If the index is
+ * empty, `composePools` yields empty pools and `generateForWeek`'s own failure
+ * path marks the week `failed` and alerts, so an empty-index run still fails
+ * loudly. Per-note extraction failures are already isolated inside `syncNotes`
+ * (ADR 0001) and don't reach here. The `alert` call is additionally guarded so
+ * a broken alerter can never sink an otherwise-healthy generation.
+ */
+export function makeBuildPlanWithSync(
+  deps: BuildPlanWithSyncDeps,
+): (weekKey: string) => Promise<EnrichedWeekPlan> {
+  const { runSync: doSync, buildPlan, alert, logger = console } = deps;
+
+  return async (weekKey: string) => {
+    try {
+      const r = await doSync();
+      logger.log(
+        `[sync] total=${r.total} processed=${r.processed} skipped=${r.skipped} extractionFailures=${r.extractionFailures}`,
+      );
+    } catch (e) {
+      const message = `recipe sync failed before generating week ${weekKey}: ${String(e)}`;
+      logger.warn(message);
+      try {
+        await alert(message);
+      } catch (alertErr) {
+        logger.warn(
+          `alert during recipe-sync-failure handling also failed for week ${weekKey}: ${String(alertErr)}`,
+        );
+      }
+      // Proceed: plan against the existing (possibly stale) index.
+    }
+    return buildPlan(weekKey);
+  };
+}
+
 export async function main(): Promise<void> {
   console.log(`meal-planner daemon starting (version ${getScaffoldVersion()})`);
 
@@ -225,7 +284,15 @@ export async function main(): Promise<void> {
 
   const household = process.env.MP_HOUSEHOLD ?? DEFAULT_HOUSEHOLD;
 
-  const buildPlanFor = (weekKey: string) =>
+  // Built before buildPlanFor so the recipe-sync-failure path can post to
+  // #agent-alerts (proceed + alert; see makeBuildPlanWithSync).
+  const alert = buildAlert(profile, secrets);
+
+  // Recipe folder to sync from (notes-reader scopes to a single Notes folder);
+  // empty/unset falls back to notes-reader's DEFAULT_RECIPES_FOLDER.
+  const recipesFolder = process.env.MP_RECIPES_FOLDER || undefined;
+
+  const rawBuildPlan = (weekKey: string) =>
     buildPlan({
       weekKey,
       cfg: {
@@ -239,13 +306,27 @@ export async function main(): Promise<void> {
       deps: { search, llm, getRecipe: getRecipeBound },
     });
 
+  // Sync recipes from Apple Notes BEFORE selecting (SPEC weekly flow; bd
+  // meal-planner-q95.8). Runs once per real generation (buildPlanFor is only
+  // called past generateForWeek's idempotency gate). Uses the SAME metered,
+  // cost-capped llm the planner uses, so extraction spend counts against the
+  // run's $ cap (extraction is hash-gated -> ~$0 steady state).
+  const buildPlanFor = makeBuildPlanWithSync({
+    runSync: () =>
+      runSync(
+        { readNotes, embedder, vectorStore, structuredStore, llm },
+        { folderName: recipesFolder },
+      ),
+    buildPlan: rawBuildPlan,
+    alert,
+  });
+
   const store = new SessionStore({ path: profile.sqlitePath });
 
   const post =
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
       : buildDryRunPost(profile);
-  const alert = buildAlert(profile, secrets);
 
   const { onStartup, onTrigger } = composeDaemon({
     config,
