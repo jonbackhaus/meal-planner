@@ -4,14 +4,13 @@ How to take the daemon from "code-complete on `main`" to "posting a weekly draft
 in Slack." Everything here is **ops** — the runtime code is done; these are the
 external accounts, secrets, env vars, and the launch/verify sequence.
 
-> **Read this first — one known code gap.** The daemon does **not** yet sync
-> recipes from Apple Notes before planning (`syncNotes` has no wired caller —
-> tracked in `meal-planner-q95.8`). On a fresh machine the recipe index
-> (`./data/*.sqlite`) is empty, so the planner has nothing to select from. Until
-> `q95.8` lands you must **populate the index manually once** (see
-> [§6](#6-populate-the-recipe-index-known-gap)) before the first real plan will
-> be any good. The daemon will still boot, schedule, and post without it — it
-> just posts against an empty/stale corpus.
+> **Read this first — populate the recipe index once.** The daemon auto-syncs
+> from Apple Notes before each real generation (`q95.8`, merged), but on a fresh
+> machine the recipe index (`./data/*.sqlite`) starts empty. Run **`pnpm sync`**
+> once up front (see [§6](#6-populate-the-recipe-index)) so the very first plan
+> has a corpus to select from — the initial embed also downloads the local model
+> and can take a minute. After that, the weekly run keeps the index fresh on its
+> own.
 
 ---
 
@@ -152,6 +151,7 @@ vars have no default and fail boot loudly if missing.
 | `MP_SQLITE_PATH_DEV` | `./data/meal-planner.dev.sqlite` | dev session DB (must differ from prod) |
 | `MP_FIRE_ON_START` | unset | set to `1` to fire one trigger immediately at boot (test-fire) |
 | `MP_LOG_PATH` | `./data/meal-planner.log` | durable local alert log |
+| `MP_RECIPES_FOLDER` | `Recipes` | Apple Notes folder the recipe sync reads from |
 | `MP_HOUSEHOLD` | built-in default | household prose for the planner (see note) |
 
 > **`MP_HOUSEHOLD`**: the built-in default already encodes the hard constraint
@@ -200,7 +200,7 @@ isn't disabled, runs startup catch-up, then (because `MP_FIRE_ON_START=1`) fires
 one trigger and prints a **`[DRY-RUN post] channel=… ts=dryrun-1`** block with the
 fully rendered plan. Nothing is sent to Slack; a synthetic `ts` is used.
 
-**If the plan is empty / thin:** that's the [§6 recipe-index gap](#6-populate-the-recipe-index-known-gap), not a bug in the planner.
+**If the plan is empty / thin:** the recipe index probably isn't populated yet — run [§6 `pnpm sync`](#6-populate-the-recipe-index) first; it's not a bug in the planner.
 
 Then promote to a **dev live post** (real Slack, dev channel) to confirm the bot
 token + channel membership work end-to-end:
@@ -216,22 +216,27 @@ in the logs.
 
 ---
 
-## 6. Populate the recipe index (known gap)  · `bd q95.8`
+## 6. Populate the recipe index
 
-Until `q95.8` wires `syncNotes` into the daemon, the recipe index is never
-populated automatically. Two ways to handle it:
+The daemon auto-syncs before each real generation, but populate the index once
+up front so the first plan isn't empty:
 
-- **Preferred:** implement/land `q95.8` (wire `syncNotes` into `onTrigger`, or add
-  a `pnpm sync` entrypoint), then a normal run populates and refreshes the index.
-- **Stopgap for a first live run:** run a one-off sync harness that builds
-  `SyncDeps` (real `notes-reader` `readNotes`, `TransformersEmbedder`,
-  `VectorStore` as the `SyncStore`, `StructuredStore`, and a metered `llm`) and
-  calls `syncNotes(...)` once against the same `./data/*.sqlite` path the daemon
-  uses. The embedder downloads the `Xenova/all-MiniLM-L6-v2` model on first run
-  (needs network + a minute); extraction is hash-gated so re-runs are cheap.
+```bash
+# secrets + config from §3–§4 must be in the environment (loadConfig + loadSecrets run)
+pnpm sync            # one pass: read Apple Notes -> embed -> extract; prints total/processed/skipped + $ spend
+```
 
-Confirm afterwards that `./data/meal-planner.<profile>.sqlite` exists and has
-rows before trusting a real plan.
+- File your recipe notes under the Apple Notes folder named by
+  `MP_RECIPES_FOLDER` (default `Recipes`); anything else is ignored.
+- The first run downloads the local embedding model
+  (`Xenova/all-MiniLM-L6-v2` — needs network + a minute); extraction is
+  hash-gated, so re-runs are cheap.
+- `pnpm sync` writes the **same** index the daemon reads and posts nothing to
+  Slack — safe to run any time to refresh.
+
+Confirm afterwards that `./data/*.sqlite` exists and has rows before trusting a
+real plan. Thereafter the weekly run keeps it fresh; a whole-sync failure during
+a weekly run is non-fatal (proceed + alert to `#agent-alerts`).
 
 ---
 
@@ -284,7 +289,7 @@ export MP_ALERTS_CHANNEL_ID="C0GHI789"
 ```
 
 Load via launchd (§7). The daemon will:
-`boot → startup catch-up → wait for the weekly trigger → (sync, once q95.8) →
+`boot → startup catch-up → wait for the weekly trigger → sync recipes →
 compose pools → LLM select → validate + repair → enrich → post the draft to
 #meal-plan → track/hard-cap cost → alert #agent-alerts + local log on anomalies.`
 
@@ -319,7 +324,7 @@ in prod, confirming the post, then relaunching without it.
 | Weekly scheduler | `src/daemon/scheduler.ts` |
 | State machine / catch-up / re-run | `src/orchestrator/{generate,startup,resume,rerun}.ts` |
 | Planner pipeline | `src/planner/build-plan.ts` |
-| Recipe sync (⚠ unwired — `q95.8`) | `src/recipe-mcp/sync.ts` |
+| Recipe sync + wiring | `src/recipe-mcp/{sync,sync-runner}.ts`, `src/sync-cli.ts` |
 | Slack post + alerts | `src/slack/{slack-poster,slack-alerter,render}.ts` |
 | Cost cap | `src/cost/{cost-meter,metered-llm-client}.ts` |
 
