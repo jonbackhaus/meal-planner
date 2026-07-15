@@ -13,6 +13,7 @@
     "typecheck:test": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "sync": "tsx src/sync-cli.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
     "dev": "tsx watch src/index.ts"

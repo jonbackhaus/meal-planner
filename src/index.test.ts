@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProfileSettings } from "./config/profile.js";
-import { applySecretsToEnv, buildAlert, DEFAULT_LOG_PATH } from "./index.js";
+import {
+  applySecretsToEnv,
+  buildAlert,
+  DEFAULT_LOG_PATH,
+  makeBuildPlanWithSync,
+} from "./index.js";
+import type { EnrichedWeekPlan } from "./planner/enrich.js";
+import type { SyncResult } from "./recipe-mcp/sync.js";
 import type { Secrets } from "./secrets/secrets.js";
 
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -136,5 +143,75 @@ describe("buildAlert", () => {
 
   it("defaults the local log path to DEFAULT_LOG_PATH when MP_LOG_PATH is unset", () => {
     expect(DEFAULT_LOG_PATH).toBe("./data/meal-planner.log");
+  });
+});
+
+describe("makeBuildPlanWithSync", () => {
+  const PLAN = { sentinel: "the-plan" } as unknown as EnrichedWeekPlan;
+
+  function okSyncResult(): SyncResult {
+    return { total: 3, processed: 1, skipped: 2, extractionFailures: 0 };
+  }
+
+  it("syncs before planning, logs the summary, and returns the plan", async () => {
+    const calls: string[] = [];
+    const runSync = vi.fn(async () => {
+      calls.push("sync");
+      return okSyncResult();
+    });
+    const buildPlan = vi.fn(async (_wk: string) => {
+      calls.push("plan");
+      return PLAN;
+    });
+    const alert = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+    const result = await fn("2026-07-12");
+
+    expect(calls).toEqual(["sync", "plan"]);
+    expect(buildPlan).toHaveBeenCalledWith("2026-07-12");
+    expect(result).toBe(PLAN);
+    expect(alert).not.toHaveBeenCalled();
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining("processed=1"),
+    );
+  });
+
+  it("proceeds to plan and alerts (does not throw) when sync fails", async () => {
+    const runSync = vi.fn(async () => {
+      throw new Error("Notes not authorized");
+    });
+    const buildPlan = vi.fn(async (_wk: string) => PLAN);
+    const alert = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+    const result = await fn("2026-07-12");
+
+    expect(result).toBe(PLAN);
+    expect(buildPlan).toHaveBeenCalledWith("2026-07-12");
+    expect(alert).toHaveBeenCalledWith(
+      expect.stringContaining("recipe sync failed"),
+    );
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining("2026-07-12"));
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("does not leak the sync error into a rejected plan when alert itself throws", async () => {
+    const runSync = vi.fn(async () => {
+      throw new Error("boom");
+    });
+    const buildPlan = vi.fn(async (_wk: string) => PLAN);
+    // A never-throwing alerter is the contract (see ops/alerter), but guard
+    // the wiring anyway: a broken alert must not sink the whole generation.
+    const alert = vi.fn(async () => {
+      throw new Error("alert transport down");
+    });
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+
+    await expect(fn("2026-07-12")).resolves.toBe(PLAN);
   });
 });
