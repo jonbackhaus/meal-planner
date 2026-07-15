@@ -43,18 +43,45 @@ interface RawNoteJson {
   modifiedAt: string;
 }
 
+/**
+ * Read timeout for the osascript call. Bulk property reads make a healthy read
+ * fast (~seconds), but a first-run macOS automation-permission prompt can stall
+ * `osascript` indefinitely; this bounds that so a hang surfaces as a clear error
+ * instead of blocking the daemon/CLI forever.
+ */
+const READ_TIMEOUT_MS = 180_000;
+
+/**
+ * stdout buffer cap for the osascript call. A large Notes folder (hundreds of
+ * recipe bodies) easily exceeds execFile's 1 MB default, which would otherwise
+ * fail the read with "maxBuffer exceeded". 64 MB comfortably covers a big
+ * corpus.
+ */
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+interface ExecFileOpts {
+  timeout: number;
+  maxBuffer: number;
+}
+
 function execFile(
   file: string,
   args: readonly string[],
+  options: ExecFileOpts,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFileCallback(file, args as string[], (error, stdout, stderr) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve({ stdout, stderr });
-    });
+    execFileCallback(
+      file,
+      args as string[],
+      options,
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve({ stdout, stderr });
+      },
+    );
   });
 }
 
@@ -92,25 +119,66 @@ export function stripHtml(html: string): string {
  * name as `argv[0]` and prints a JSON array of `{id, title, body,
  * modifiedAt}` to stdout. `body` is the raw HTML note body; callers of
  * `readNotes` strip it to plain text via `stripHtml`.
+ *
+ * Performance + robustness (bd meal-planner-q95.9). Two problems with the naive
+ * `notes.map(n => ({ id: n.id(), body: n.body(), ... }))`:
+ *
+ *   1. One Apple Event PER property PER note (4 x N round-trips) — on a real
+ *      corpus (~800 notes at ~70ms/event) that takes minutes and effectively
+ *      hangs. Fixed by reading each property in BULK (one Apple Event across all
+ *      notes).
+ *   2. `note.body()` returns the note's rich-text HTML, which on real recipes
+ *      embeds full-resolution images as base64 data URIs — ~350 KB PER note,
+ *      hundreds of MB across the folder. That overflows the read buffer and
+ *      makes `JSON.stringify` fail (silently returning an empty result), and a
+ *      single un-coercible note poisons a whole-collection `body()` read
+ *      (AppleEvent -1741). Fixed by reading `note.plaintext()` instead: the
+ *      text-only view (no markup, no images), ~1.8 KB/note, which is exactly
+ *      what the downstream extraction/embedding wants anyway (the old code
+ *      immediately stripped the HTML to text via `stripHtml`).
+ *
+ * Folder lookup iterates accounts and matches on the TRIMMED folder name, so a
+ * stray trailing space in a Notes folder name (a common cause of a silent empty
+ * read) still matches, and account-scoped folders are found.
  */
 export const NOTES_READER_SCRIPT = `
 function run(argv) {
-  const folderName = argv[0];
+  const target = String(argv[0] == null ? "" : argv[0]).trim();
   const Notes = Application("Notes");
   Notes.includeStandardAdditions = true;
-  const folders = Notes.folders.whose({ name: folderName });
-  if (folders.length === 0) {
-    return JSON.stringify([]);
+
+  var folder = null;
+  var accounts = Notes.accounts();
+  for (var a = 0; a < accounts.length && !folder; a++) {
+    var folders = accounts[a].folders();
+    for (var i = 0; i < folders.length; i++) {
+      var fname = "";
+      try { fname = String(folders[i].name()).trim(); } catch (e) { continue; }
+      if (fname === target) { folder = folders[i]; break; }
+    }
   }
-  const notes = folders[0].notes();
-  const result = notes.map(function (n) {
-    return {
-      id: n.id(),
-      title: n.name(),
-      body: n.body(),
-      modifiedAt: n.modificationDate().toISOString(),
+  if (!folder) { return JSON.stringify([]); }
+
+  var notes = folder.notes;
+  var count = notes.length;
+  if (count === 0) { return JSON.stringify([]); }
+
+  var ids = notes.id();
+  var names = notes.name();
+  var mods = notes.modificationDate();
+  var texts = notes.plaintext();
+
+  var result = new Array(count);
+  for (var k = 0; k < count; k++) {
+    var iso;
+    try { iso = mods[k].toISOString(); } catch (e3) { iso = new Date(0).toISOString(); }
+    result[k] = {
+      id: String(ids[k]),
+      title: names[k] == null ? "" : String(names[k]),
+      body: texts[k] == null ? "" : String(texts[k]),
+      modifiedAt: iso
     };
-  });
+  }
   return JSON.stringify(result);
 }
 `;
@@ -144,13 +212,22 @@ export async function readNotes(
   options: NotesReaderOptions = {},
 ): Promise<RawNote[]> {
   const folderName = options.folderName ?? DEFAULT_RECIPES_FOLDER;
-  const { stdout } = await execFile("osascript", [
-    "-l",
-    "JavaScript",
-    "-e",
-    NOTES_READER_SCRIPT,
-    folderName,
-  ]);
+  let stdout: string;
+  try {
+    ({ stdout } = await execFile(
+      "osascript",
+      ["-l", "JavaScript", "-e", NOTES_READER_SCRIPT, folderName],
+      { timeout: READ_TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
+    ));
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException & { killed?: boolean };
+    if (err.killed || err.code === "ETIMEDOUT") {
+      throw new Error(
+        `notes-reader: reading Apple Notes folder "${folderName}" timed out after ${READ_TIMEOUT_MS}ms. Notes may be prompting for automation permission — grant the terminal/daemon control of Notes and retry.`,
+      );
+    }
+    throw error;
+  }
   const rawNotes = parseNotesJson(stdout);
   return rawNotes.map((note) => ({
     id: note.id,
