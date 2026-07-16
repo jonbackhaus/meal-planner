@@ -72,6 +72,77 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
     expect(options).not.toHaveProperty("thinking");
   });
 
+  it("isolates runtime calls from filesystem settings and gives a plain completion no tools (bd q95.10)", async () => {
+    queryMock.mockReturnValue(
+      fakeQueryResult([{ type: "result", subtype: "success", result: "done" }]),
+    );
+
+    const client = createLlmClient(baseConfig());
+    await client.runQuery({ prompt: "hello" });
+
+    const [{ options }] = queryMock.mock.calls[0];
+    // Unset, the SDK loads the developer's CLAUDE.md + .claude settings + all
+    // default tools into every call (~13x input-token blowup, agentic framing).
+    expect(options?.settingSources).toEqual([]);
+    expect(options?.tools).toEqual([]);
+  });
+
+  it("keeps tools available (not forced empty) when MCP servers are provided", async () => {
+    queryMock.mockReturnValue(
+      fakeQueryResult([{ type: "result", subtype: "success", result: "done" }]),
+    );
+
+    const client = createLlmClient(baseConfig());
+    await client.runQuery({
+      prompt: "hello",
+      mcpServers: [{ name: "recipe", command: "node", args: ["server.js"] }],
+    });
+
+    const [{ options }] = queryMock.mock.calls[0];
+    expect(options?.settingSources).toEqual([]); // still isolated from CLAUDE.md
+    expect(options?.tools).toBeUndefined(); // must NOT block the MCP tools
+    expect(options?.mcpServers).toBeDefined();
+  });
+
+  it("uses the result message's authoritative, cache-inclusive usage totals when present (bd q95.10)", async () => {
+    // The streaming `assistant` turns under-report (esp. output_tokens); the
+    // final `result` message carries the true cumulative usage the cost meter
+    // and cost cap depend on. Input must include the cache token categories:
+    // the SDK prompt-caches by default, so `input_tokens` alone reports only
+    // the non-cached remainder (~2) while the real prompt sits in
+    // `cache_creation_input_tokens`. Counting all input categories keeps the
+    // cost cap conservative (never silently undercounts spend).
+    queryMock.mockReturnValue(
+      fakeQueryResult([
+        {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "partial" }],
+            usage: { input_tokens: 5, output_tokens: 1 },
+          },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          result: "final",
+          usage: {
+            input_tokens: 2,
+            cache_creation_input_tokens: 1600,
+            cache_read_input_tokens: 30,
+            output_tokens: 240,
+          },
+        },
+      ]),
+    );
+
+    const client = createLlmClient(baseConfig());
+    const result = await client.runQuery({ prompt: "hi" });
+
+    expect(result.text).toBe("final");
+    // input = 2 + 1600 + 30
+    expect(result.usage).toEqual({ inputTokens: 1632, outputTokens: 240 });
+  });
+
   it("aggregates usage across multiple turns and returns the final result text", async () => {
     queryMock.mockReturnValue(
       fakeQueryResult([

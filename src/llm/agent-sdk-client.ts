@@ -48,6 +48,16 @@ export class AgentSdkLlmClient implements LlmClient {
       // Sonnet 5 also rejects non-default `temperature`/`top_p`/`top_k` with
       // an HTTP 400 — the SDK's `Options` type doesn't even expose them, so
       // there is nothing to set here and nothing to omit.
+      //
+      // Runtime isolation (bd meal-planner-q95.10). With `settingSources`
+      // UNSET the SDK loads ALL filesystem settings — the developer's
+      // project/user `CLAUDE.md`, `.claude/settings.json`, etc. — into every
+      // LLM call. Measured on this repo that was ~19k extra INPUT tokens per
+      // call (a ~13x blowup: 21,976 → ~1,600) AND it framed the model as a
+      // coding agent, derailing the clean-JSON extraction/selection these
+      // calls need. Dev-machine config must never bleed into runtime
+      // inference, so isolate explicitly with `[]`.
+      settingSources: [],
     };
 
     if (input.system !== undefined) {
@@ -57,12 +67,27 @@ export class AgentSdkLlmClient implements LlmClient {
     const mcpServers = toSdkMcpServers(input.mcpServers);
     if (mcpServers !== undefined) {
       options.mcpServers = mcpServers;
+    } else {
+      // No MCP tools requested — this is a pure text completion (ingest
+      // extraction / planner selection). Give the model NO tools so it
+      // answers directly instead of reaching for the SDK's default Claude
+      // Code tools (which also drops their schema tokens). When `mcpServers`
+      // ARE provided (a future MCP-driven call) we leave `tools` unset so
+      // those tools stay available.
+      options.tools = [];
     }
 
     let inputTokens = 0;
     let outputTokens = 0;
     let lastAssistantText: string | undefined;
     let finalText: string | undefined;
+    // The authoritative cumulative usage from the final `result` message. The
+    // streaming `assistant` turns under-report (esp. output_tokens — observed
+    // as ~1 per turn regardless of the real output), so summing them
+    // undercounts spend and would let the cost cap (SPEC §9.3) be bypassed.
+    // We prefer this when present and fall back to the assistant sum only when
+    // there is no result message at all.
+    let resultUsage: { inputTokens: number; outputTokens: number } | undefined;
 
     for await (const message of query({ prompt: input.prompt, options })) {
       if (message.type === "assistant") {
@@ -99,6 +124,35 @@ export class AgentSdkLlmClient implements LlmClient {
       } else if (message.type === "result") {
         if (message.subtype === "success") {
           finalText = message.result;
+          // `SDKResultSuccess.usage` is typed non-optional, but guard the
+          // field reads so a partial/older message shape falls back to the
+          // assistant-sum rather than yielding NaN/undefined token counts.
+          const ru = message.usage as
+            | {
+                input_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+                output_tokens?: number;
+              }
+            | undefined;
+          if (
+            ru &&
+            typeof ru.input_tokens === "number" &&
+            typeof ru.output_tokens === "number"
+          ) {
+            // Count every input category (fresh + cache-write + cache-read):
+            // the SDK prompt-caches by default, so `input_tokens` alone is only
+            // the non-cached remainder. Summing keeps the cost cap conservative
+            // (a slight over-estimate of $, since cache reads bill cheaper, is
+            // the safe direction for a spend guard).
+            resultUsage = {
+              inputTokens:
+                ru.input_tokens +
+                (ru.cache_creation_input_tokens ?? 0) +
+                (ru.cache_read_input_tokens ?? 0),
+              outputTokens: ru.output_tokens,
+            };
+          }
         } else {
           // `SDKResultError.errors` carries the actionable detail; the
           // `subtype` alone (e.g. "error_during_execution") isn't enough for
@@ -114,7 +168,7 @@ export class AgentSdkLlmClient implements LlmClient {
 
     return {
       text: finalText ?? lastAssistantText ?? "",
-      usage: { inputTokens, outputTokens },
+      usage: resultUsage ?? { inputTokens, outputTokens },
     };
   }
 }
