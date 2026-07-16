@@ -47,6 +47,7 @@ describe("StructuredStore", () => {
       extractorVersion: EXTRACTOR_VERSION,
       fields: fields(),
       needsReview: false,
+      tags: [],
     });
     store.close();
   });
@@ -89,6 +90,7 @@ describe("StructuredStore", () => {
       extractorVersion: EXTRACTOR_VERSION,
       fields: null,
       needsReview: true,
+      tags: [],
     });
     store.close();
   });

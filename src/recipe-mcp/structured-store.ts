@@ -26,7 +26,8 @@ export interface StructuredStoreOptions {
   path?: string;
 }
 
-export interface StructuredRecord {
+/** The extraction-owned portion of a structured record (LLM output + its cache keys). */
+export interface UpsertStructuredInput {
   contentHash: string;
   extractorVersion: number;
   /** null when extraction has never succeeded for this note (e.g. a needs_review-only record after a failed attempt). */
@@ -34,13 +35,22 @@ export interface StructuredRecord {
   needsReview: boolean;
 }
 
-export type UpsertStructuredInput = StructuredRecord;
+export interface StructuredRecord extends UpsertStructuredInput {
+  /**
+   * The note's Apple Notes hashtags (normalized), sourced from NoteStore and
+   * written independently of extraction (`upsertTags`) — they can change
+   * without the recipe body changing. `[]` when the note has none / never
+   * synced tags. Merged over the LLM extraction at query time (search.ts).
+   */
+  tags: string[];
+}
 
 interface StructuredFieldsRow {
   content_hash: string;
   extractor_version: number;
   fields_json: string | null;
   needs_review: number;
+  tags_json: string | null;
 }
 
 export class StructuredStore {
@@ -69,13 +79,23 @@ export class StructuredStore {
         needs_review INTEGER NOT NULL DEFAULT 0
       );
     `);
+    // Migration: add the NoteStore-tags column to pre-existing DBs. SQLite has
+    // no "ADD COLUMN IF NOT EXISTS", so guard on the current column set.
+    const hasTags = (
+      this.db.prepare("PRAGMA table_info(structured_fields)").all() as Array<{
+        name: string;
+      }>
+    ).some((c) => c.name === "tags_json");
+    if (!hasTags) {
+      this.db.exec("ALTER TABLE structured_fields ADD COLUMN tags_json TEXT");
+    }
   }
 
   /** The stored structured record for a note id, or null if never upserted. */
   getStructured(noteId: string): StructuredRecord | null {
     const row = this.db
       .prepare(
-        "SELECT content_hash, extractor_version, fields_json, needs_review FROM structured_fields WHERE note_id = ?",
+        "SELECT content_hash, extractor_version, fields_json, needs_review, tags_json FROM structured_fields WHERE note_id = ?",
       )
       .get(noteId) as StructuredFieldsRow | undefined;
     if (!row) {
@@ -88,6 +108,7 @@ export class StructuredStore {
         ? (JSON.parse(row.fields_json) as ExtractedFields)
         : null,
       needsReview: row.needs_review !== 0,
+      tags: row.tags_json ? (JSON.parse(row.tags_json) as string[]) : [],
     };
   }
 
@@ -110,6 +131,24 @@ export class StructuredStore {
         record.fields ? JSON.stringify(record.fields) : null,
         record.needsReview ? 1 : 0,
       );
+  }
+
+  /**
+   * Writes a note's NoteStore hashtags, independent of the extraction record —
+   * tags can change (user edits a hashtag) without the recipe body changing,
+   * so sync updates them every pass while the (expensive) LLM extraction stays
+   * body-hash-gated. Creates a tags-only row (null extraction) if the note has
+   * no structured record yet; on an existing row it touches ONLY `tags_json`,
+   * preserving any extraction already there.
+   */
+  upsertTags(noteId: string, tags: string[]): void {
+    this.db
+      .prepare(
+        `INSERT INTO structured_fields (note_id, content_hash, extractor_version, fields_json, needs_review, tags_json)
+         VALUES (?, '', 0, NULL, 0, ?)
+         ON CONFLICT(note_id) DO UPDATE SET tags_json = excluded.tags_json`,
+      )
+      .run(noteId, JSON.stringify(tags));
   }
 
   close(): void {

@@ -3,6 +3,7 @@ import type { LlmClient } from "../llm/llm-client.js";
 import type { Embedder } from "./embedder.js";
 import { type ExtractedFields, extractRecipeFields } from "./extraction.js";
 import { contentHash, type RawNote } from "./notes-reader.js";
+import { noteIdSuffix } from "./notes-tags.js";
 import { EXTRACTOR_VERSION } from "./structured-store.js";
 
 /**
@@ -43,6 +44,8 @@ export interface SyncStructuredRecord {
 export interface SyncStructuredStore {
   getStructured(noteId: string): SyncStructuredRecord | null;
   upsertStructured(noteId: string, record: SyncStructuredRecord): void;
+  /** Writes the note's NoteStore hashtags, independent of the extraction record. */
+  upsertTags(noteId: string, tags: string[]): void;
 }
 
 export interface SyncDeps {
@@ -51,6 +54,14 @@ export interface SyncDeps {
   store: SyncStore;
   structuredStore: SyncStructuredStore;
   llm: LlmClient;
+  /**
+   * Returns every note's NoteStore hashtags, keyed by the note-id suffix
+   * ("p<N>"). Injected (default: the real `readNoteTags`) so sync is testable
+   * with a canned map and no dependency on the local Notes DB. Read ONCE per
+   * sync (one query), then applied per note — cheap, so tags refresh every
+   * sync while the expensive LLM extraction stays body-hash-gated.
+   */
+  readNoteTags: () => Map<string, string[]>;
 }
 
 export interface SyncResult {
@@ -110,6 +121,7 @@ export function embeddableTextHash(note: RawNote): string {
  */
 export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   const notes = await deps.readNotes();
+  const tagsByNote = deps.readNoteTags();
 
   let processed = 0;
   let skipped = 0;
@@ -131,6 +143,14 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
       });
       processed += 1;
     }
+
+    // Tags refresh every sync (cheap), independent of the extraction gate
+    // below — a hashtag edit must take effect without a body change. Written
+    // BEFORE the extraction `continue` so unchanged notes still get updated.
+    deps.structuredStore.upsertTags(
+      note.id,
+      tagsByNote.get(noteIdSuffix(note.id)) ?? [],
+    );
 
     const bodyHash = contentHash(note);
     const structured = deps.structuredStore.getStructured(note.id);

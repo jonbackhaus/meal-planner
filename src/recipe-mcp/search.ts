@@ -2,6 +2,7 @@ import type { Embedder } from "./embedder.js";
 import type { ExtractedFields } from "./extraction.js";
 import type { Minutes, RecipeCandidate, VegStatus } from "./schema.js";
 import type { StructuredStore } from "./structured-store.js";
+import { type TagMetadata, tagMetadata } from "./tag-metadata.js";
 import type { SearchResult, VectorStore } from "./vector-store.js";
 
 /**
@@ -27,6 +28,8 @@ export interface SearchFilters {
   season?: string;
   /** Include-any: keep candidates whose effort_tags intersect this list (see note below). */
   effort?: string[];
+  /** HARD course gate: drop candidates that aren't standalone dinners (#side/#dessert/#breakfast/#appetizer). */
+  main_dinner_only?: boolean;
   /** v2.0 recency dedup — wired now, passed through to the vector store. */
   exclude_ids?: string[];
   /** How many candidates to return. Default: DEFAULT_LIMIT. */
@@ -83,12 +86,15 @@ export async function searchRecipes(
     }
     const record = deps.structuredStore.getStructured(hit.id);
     const fields = record?.fields ?? null;
+    // Tags are authoritative for course/quality/season/effort/veg (SPEC §5.2);
+    // merged over the LLM extraction here at projection time.
+    const tm = tagMetadata(record?.tags ?? []);
 
-    if (!passesFilters(fields, filters)) {
+    if (!passesFilters(fields, tm, filters)) {
       continue;
     }
 
-    candidates.push(assembleCandidate(hit, fields));
+    candidates.push(assembleCandidate(hit, fields, tm));
   }
 
   return candidates;
@@ -108,33 +114,46 @@ export async function searchRecipes(
  */
 function passesFilters(
   fields: ExtractedFields | null,
+  tm: TagMetadata,
   filters: SearchFilters | undefined,
 ): boolean {
   if (!filters) {
     return true;
   }
 
+  // Course gate is tag-driven (a side dish with a failed/absent extraction is
+  // still excluded — its is_side is known from tags, not the body).
+  if (filters.main_dinner_only && !tm.main_dinner_eligible) {
+    return false;
+  }
+
   if (!passesActiveMax(fields, filters.active_max)) {
     return false;
   }
 
-  if (
-    filters.veg_status !== undefined &&
-    fields?.veg_status !== filters.veg_status
-  ) {
+  // Effective values apply the tag overrides (SPEC §5.2 authority), so a filter
+  // matches on the same merged metadata the assembled candidate will carry.
+  const effectiveVeg = tm.veg_from_tags ?? fields?.veg_status;
+  const effectiveSeasons =
+    tm.season_tags.length > 0 ? tm.season_tags : (fields?.season_tags ?? []);
+  const effectiveEffort =
+    tm.effort_tags.length > 0 ? tm.effort_tags : (fields?.effort_tags ?? []);
+
+  if (filters.veg_status !== undefined && effectiveVeg !== filters.veg_status) {
     return false;
   }
 
   if (
     filters.season !== undefined &&
-    !fields?.season_tags.includes(filters.season)
+    !effectiveSeasons.includes(filters.season)
   ) {
     return false;
   }
 
   if (filters.effort !== undefined && filters.effort.length > 0) {
-    const tags = fields?.effort_tags ?? [];
-    const hasOverlap = filters.effort.some((tag) => tags.includes(tag));
+    const hasOverlap = filters.effort.some((tag) =>
+      effectiveEffort.includes(tag),
+    );
     if (!hasOverlap) {
       return false;
     }
@@ -180,24 +199,40 @@ function passesActiveMax(
 function assembleCandidate(
   hit: SearchResult,
   fields: ExtractedFields | null,
+  tm: TagMetadata,
 ): RecipeCandidate {
+  // Tag overrides win over the LLM extraction (SPEC §5.2); the extraction
+  // supplies the fallback where the user left a category untagged, plus the
+  // body-derived time. `is_side` / `main_dinner_eligible` / `tags` come solely
+  // from the tags and are set even when extraction is missing.
+  const tagFields = {
+    tags: tm.tags,
+    is_side: tm.is_side,
+    main_dinner_eligible: tm.main_dinner_eligible,
+  };
+
   if (!fields) {
     return {
       id: hit.id,
       title: hit.title,
       time: { active: null, total: null, prep: null, confidence: 0 },
-      effort_tags: [],
-      season_tags: [],
-      veg_status: "unknown",
+      effort_tags: tm.effort_tags,
+      season_tags: tm.season_tags,
+      quality: tm.quality,
+      veg_status: tm.veg_from_tags ?? "unknown",
+      ...tagFields,
     };
   }
   return {
     id: hit.id,
     title: hit.title,
     time: fields.time,
-    effort_tags: fields.effort_tags,
-    season_tags: fields.season_tags,
-    quality: fields.quality,
-    veg_status: fields.veg_status,
+    effort_tags:
+      tm.effort_tags.length > 0 ? tm.effort_tags : fields.effort_tags,
+    season_tags:
+      tm.season_tags.length > 0 ? tm.season_tags : fields.season_tags,
+    quality: tm.quality ?? fields.quality,
+    veg_status: tm.veg_from_tags ?? fields.veg_status,
+    ...tagFields,
   };
 }
