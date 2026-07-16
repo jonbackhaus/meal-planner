@@ -131,13 +131,12 @@ function passesFilters(
     return false;
   }
 
-  // Effective values apply the tag overrides (SPEC §5.2 authority), so a filter
-  // matches on the same merged metadata the assembled candidate will carry.
+  // season/effort come solely from tags now (the extraction no longer infers
+  // them — bd tag-slim); veg keeps its LLM fallback since most veg recipes
+  // aren't tagged #vegetarian.
   const effectiveVeg = tm.veg_from_tags ?? fields?.veg_status;
-  const effectiveSeasons =
-    tm.season_tags.length > 0 ? tm.season_tags : (fields?.season_tags ?? []);
-  const effectiveEffort =
-    tm.effort_tags.length > 0 ? tm.effort_tags : (fields?.effort_tags ?? []);
+  const effectiveSeasons = tm.season_tags;
+  const effectiveEffort = tm.effort_tags;
 
   if (filters.veg_status !== undefined && effectiveVeg !== filters.veg_status) {
     return false;
@@ -227,11 +226,11 @@ function assembleCandidate(
     id: hit.id,
     title: hit.title,
     time: fields.time,
-    effort_tags:
-      tm.effort_tags.length > 0 ? tm.effort_tags : fields.effort_tags,
-    season_tags:
-      tm.season_tags.length > 0 ? tm.season_tags : fields.season_tags,
-    quality: tm.quality ?? fields.quality,
+    // season/effort/quality are tag-owned now (extraction no longer infers
+    // them); veg falls back to the extraction when the note isn't tagged.
+    effort_tags: tm.effort_tags,
+    season_tags: tm.season_tags,
+    quality: tm.quality,
     veg_status: tm.veg_from_tags ?? fields.veg_status,
     ...tagFields,
   };

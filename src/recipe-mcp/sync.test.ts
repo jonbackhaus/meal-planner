@@ -28,9 +28,6 @@ function extractedFields() {
       },
     ],
     veg_status: "contains_meat" as const,
-    effort_tags: ["weeknight"],
-    season_tags: ["all"],
-    quality: "untested" as const,
   };
 }
 

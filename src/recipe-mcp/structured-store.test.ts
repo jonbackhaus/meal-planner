@@ -17,9 +17,6 @@ function fields(overrides: Partial<ExtractedFields> = {}): ExtractedFields {
       },
     ],
     veg_status: "contains_meat",
-    effort_tags: ["weeknight"],
-    season_tags: ["all"],
-    quality: "untested",
     ...overrides,
   };
 }

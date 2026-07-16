@@ -5,7 +5,6 @@ import type { LlmClient } from "../llm/llm-client.js";
 import type { RawNote } from "./notes-reader.js";
 import {
   IngredientSchema,
-  QualitySchema,
   TimeFieldsSchema,
   VegStatusSchema,
 } from "./schema.js";
@@ -17,21 +16,23 @@ import {
  * structured-store.ts).
  *
  * `ExtractedFields` is COMPOSED from the existing frozen `schema.ts` pieces
- * (`TimeFieldsSchema`, `IngredientSchema`, `VegStatusSchema`,
- * `QualitySchema`) — it does not redefine them. Unlike the schema.ts object
- * schemas (which are deliberately non-strict, per the schema review), this
- * top-level schema IS `.strict()`: it validates raw LLM output, so an
- * unknown/hallucinated/drifted key must fail loudly rather than being
- * silently dropped.
+ * (`TimeFieldsSchema`, `IngredientSchema`, `VegStatusSchema`) — it does not
+ * redefine them. Unlike the schema.ts object schemas (which are deliberately
+ * non-strict, per the schema review), this top-level schema IS `.strict()`: it
+ * validates raw LLM output, so an unknown/hallucinated/drifted key must fail
+ * loudly rather than being silently dropped.
+ *
+ * Scope (bd tag-slim): the LLM extracts only what lives in the note BODY —
+ * times, ingredients, and a veg_status fallback. `quality`/`season`/`effort`
+ * come from the note's NoteStore hashtags (authoritative; see tag-metadata.ts),
+ * so they were removed here to shrink the prompt and stop re-inferring what the
+ * user already tagged.
  */
 export const ExtractedFieldsSchema = z
   .object({
     time: TimeFieldsSchema,
     ingredients: z.array(IngredientSchema),
     veg_status: VegStatusSchema,
-    effort_tags: z.array(z.string()),
-    season_tags: z.array(z.string()),
-    quality: QualitySchema.optional(),
   })
   .strict();
 
@@ -75,15 +76,12 @@ Return ONLY a single JSON object (no markdown code fences, no commentary before 
       "needs_review": boolean
     }
   ],
-  "veg_status": "vegetarian" | "contains_meat" | "unknown",
-  "effort_tags": string[],
-  "season_tags": string[],
-  "quality": 3 | 4 | 5 | "untested"
+  "veg_status": "vegetarian" | "contains_meat" | "unknown"
 }
 
 Field rules:
 - "raw" on every ingredient is the ORIGINAL ingredient line, verbatim, untouched — always keep it, even when you also fill in the parsed fields.
-- "prep", "unit", "alternatives", "group", and "quality" are optional — omit the key entirely rather than using null/empty when not applicable ("unit" may be explicit null when there truly is no unit).
+- "prep", "unit", "alternatives", and "group" are optional — omit the key entirely rather than using null/empty when not applicable ("unit" may be explicit null when there truly is no unit).
 - Times are in MINUTES. Convert messy phrasing precisely and reflect uncertainty in "confidence":
   - "20-25 min" -> a single best-estimate number (e.g. 22 or 25) with confidence around 0.7-0.9.
   - "an hour and a half" -> 90.

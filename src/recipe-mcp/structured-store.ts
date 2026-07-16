@@ -19,7 +19,7 @@ import { DEFAULT_VECTOR_STORE_PATH } from "./vector-store.js";
  */
 
 /** Bump this to force re-extraction of every note on the next sync, even when a note's body hash is unchanged. */
-export const EXTRACTOR_VERSION = 1;
+export const EXTRACTOR_VERSION = 2;
 
 export interface StructuredStoreOptions {
   /** Database file path — same file as the VectorStore. Default: DEFAULT_VECTOR_STORE_PATH. Use ":memory:" for tests. */

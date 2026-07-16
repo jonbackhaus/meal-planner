@@ -1,5 +1,6 @@
 import { type Recipe, RecipeSchema } from "./schema.js";
 import type { StructuredStore } from "./structured-store.js";
+import { tagMetadata } from "./tag-metadata.js";
 import type { StoredNote } from "./vector-store.js";
 
 /**
@@ -62,17 +63,25 @@ export async function getRecipe(
     return null;
   }
 
+  // Tags are authoritative for course/quality/season/effort (SPEC §5.2),
+  // merged over the body-derived extraction here just as `searchRecipes` does,
+  // so the enriched Recipe matches the candidate it was selected from.
+  const tm = tagMetadata(record?.tags ?? []);
+
   const recipe: Recipe = {
     id: note.id,
     title: note.title,
     time: fields.time,
-    effort_tags: fields.effort_tags,
-    season_tags: fields.season_tags,
-    quality: fields.quality,
-    veg_status: fields.veg_status,
+    effort_tags: tm.effort_tags,
+    season_tags: tm.season_tags,
+    quality: tm.quality,
+    veg_status: tm.veg_from_tags ?? fields.veg_status,
     ingredients: fields.ingredients,
     body: note.body,
     source_note_id: note.id,
+    tags: tm.tags,
+    is_side: tm.is_side,
+    main_dinner_eligible: tm.main_dinner_eligible,
   };
 
   return RecipeSchema.parse(recipe);
