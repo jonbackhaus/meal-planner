@@ -47,9 +47,17 @@ function skippableDeps(theNote: RawNote) {
       needsReview: false,
     })),
     upsertStructured: vi.fn(),
+    upsertTags: vi.fn(),
   };
   const llm = { runQuery: vi.fn() };
-  return { embedder: { embed }, vectorStore, structuredStore, llm };
+  return {
+    embedder: { embed },
+    vectorStore,
+    structuredStore,
+    llm,
+    // Hermetic: never touch the real NoteStore DB in unit tests.
+    readNoteTags: () => new Map<string, string[]>(),
+  };
 }
 
 describe("runSync", () => {
@@ -58,11 +66,11 @@ describe("runSync", () => {
     const readNotes = vi.fn(async (_opts?: { folderName?: string }) => [
       theNote,
     ]);
-    const { embedder, vectorStore, structuredStore, llm } =
+    const { embedder, vectorStore, structuredStore, llm, readNoteTags } =
       skippableDeps(theNote);
 
     const result = await runSync(
-      { readNotes, embedder, vectorStore, structuredStore, llm },
+      { readNotes, embedder, vectorStore, structuredStore, llm, readNoteTags },
       { folderName: "Desserts" },
     );
 
@@ -80,10 +88,17 @@ describe("runSync", () => {
     const readNotes = vi.fn(async (_opts?: { folderName?: string }) => [
       theNote,
     ]);
-    const { embedder, vectorStore, structuredStore, llm } =
+    const { embedder, vectorStore, structuredStore, llm, readNoteTags } =
       skippableDeps(theNote);
 
-    await runSync({ readNotes, embedder, vectorStore, structuredStore, llm });
+    await runSync({
+      readNotes,
+      embedder,
+      vectorStore,
+      structuredStore,
+      llm,
+      readNoteTags,
+    });
 
     expect(readNotes).toHaveBeenCalledWith({ folderName: undefined });
   });

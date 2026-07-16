@@ -89,6 +89,7 @@ describe("composePools", () => {
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
+      main_dinner_only: true,
       limit: 16,
     });
   });
@@ -107,7 +108,10 @@ describe("composePools", () => {
 
     await composePools("family dinner", baseCfg, { search });
 
-    expect(search).toHaveBeenCalledWith("family dinner", { limit: 8 });
+    expect(search).toHaveBeenCalledWith("family dinner", {
+      main_dinner_only: true,
+      limit: 8,
+    });
     const weekendCall = search.mock.calls.find(
       ([, filters]) => filters?.limit === 8,
     );
@@ -132,6 +136,7 @@ describe("composePools", () => {
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
+      main_dinner_only: true,
       veg_status: "vegetarian",
       limit: 16,
     });

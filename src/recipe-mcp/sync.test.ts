@@ -73,15 +73,21 @@ function makeFakeStructuredStore(
   initial: Record<string, FakeStructuredRecord> = {},
 ) {
   const records = new Map(Object.entries(initial));
+  const tags = new Map<string, string[]>();
   const upsertStructured = vi.fn(
     (noteId: string, record: FakeStructuredRecord) => {
       records.set(noteId, record);
     },
   );
+  const upsertTags = vi.fn((noteId: string, t: string[]) => {
+    tags.set(noteId, t);
+  });
   return {
     getStructured: vi.fn((noteId: string) => records.get(noteId) ?? null),
     upsertStructured,
+    upsertTags,
     records,
+    tags,
   };
 }
 
@@ -115,6 +121,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(embedder.embed).toHaveBeenCalledTimes(1);
@@ -151,6 +158,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(embedder.embed).not.toHaveBeenCalled();
@@ -175,6 +183,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(embedder.embed).toHaveBeenCalledTimes(1);
@@ -211,6 +220,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(embedder.embed).toHaveBeenCalledTimes(1);
@@ -233,7 +243,14 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
     const readNotes = vi.fn(async () => [note()]);
 
     await expect(
-      syncNotes({ readNotes, embedder, store, structuredStore, llm }),
+      syncNotes({
+        readNotes,
+        embedder,
+        store,
+        structuredStore,
+        llm,
+        readNoteTags: () => new Map(),
+      }),
     ).rejects.toThrow("embedding failed");
   });
 
@@ -250,6 +267,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(result).toEqual({
@@ -279,7 +297,14 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     const llm = llmReturning(extractedFields());
     const readNotes = vi.fn(async () => [unchangedNote]);
 
-    await syncNotes({ readNotes, embedder, store, structuredStore, llm });
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
 
     expect(llm.runQuery).not.toHaveBeenCalled();
     expect(structuredStore.upsertStructured).not.toHaveBeenCalled();
@@ -300,7 +325,14 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     const llm = llmReturning(extractedFields());
     const readNotes = vi.fn(async () => [changedNote]);
 
-    await syncNotes({ readNotes, embedder, store, structuredStore, llm });
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
 
     expect(llm.runQuery).toHaveBeenCalledTimes(1);
     expect(structuredStore.upsertStructured).toHaveBeenCalledWith(
@@ -321,7 +353,14 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     const llm = llmReturning(extractedFields());
     const readNotes = vi.fn(async () => [note()]);
 
-    await syncNotes({ readNotes, embedder, store, structuredStore, llm });
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
 
     expect(llm.runQuery).toHaveBeenCalledTimes(1);
     expect(structuredStore.upsertStructured).toHaveBeenCalledTimes(1);
@@ -344,7 +383,14 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     const llm = llmReturning(extractedFields());
     const readNotes = vi.fn(async () => [unchangedNote]);
 
-    await syncNotes({ readNotes, embedder, store, structuredStore, llm });
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
 
     expect(llm.runQuery).toHaveBeenCalledTimes(1);
     expect(structuredStore.upsertStructured).toHaveBeenCalledWith(
@@ -375,6 +421,7 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(embedder.embed).toHaveBeenCalledTimes(1); // re-embedded
@@ -415,6 +462,7 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
       store,
       structuredStore,
       llm,
+      readNoteTags: () => new Map(),
     });
 
     expect(result.extractionFailures).toBe(1);
@@ -458,7 +506,14 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     const llm = llmReturning(extractedFields());
     const readNotes = vi.fn(async () => [flaggedNote]);
 
-    await syncNotes({ readNotes, embedder, store, structuredStore, llm });
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
 
     expect(llm.runQuery).toHaveBeenCalledTimes(1);
     expect(structuredStore.upsertStructured).toHaveBeenCalledWith(
@@ -467,6 +522,58 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
         needsReview: false,
         fields: extractedFields(),
       }),
+    );
+  });
+});
+
+describe("syncNotes — NoteStore tags (bd tags feature)", () => {
+  it("writes each note's tags (keyed by id suffix) even when extraction is skipped", async () => {
+    const unchangedNote = note({ id: "x-coredata://S/ICNote/p10474" });
+    const store = makeFakeStore({
+      "x-coredata://S/ICNote/p10474": embeddableTextHash(unchangedNote),
+    });
+    const structuredStore = makeFakeStructuredStore({
+      "x-coredata://S/ICNote/p10474": {
+        contentHash: contentHash(unchangedNote),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+    const embedder = makeFakeEmbedder();
+    const llm = llmReturning(extractedFields());
+
+    await syncNotes({
+      readNotes: vi.fn(async () => [unchangedNote]),
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map([["p10474", ["side", "5-stars"]]]),
+    });
+
+    // Skipped for embedding AND extraction, but tags still refreshed.
+    expect(structuredStore.upsertTags).toHaveBeenCalledWith(
+      "x-coredata://S/ICNote/p10474",
+      ["side", "5-stars"],
+    );
+    expect(llm.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("writes an empty tag list for a note with no hashtags", async () => {
+    const structuredStore = makeFakeStructuredStore();
+    await syncNotes({
+      readNotes: vi.fn(async () => [note({ id: "x-coredata://S/ICNote/p7" })]),
+      embedder: makeFakeEmbedder(),
+      store: makeFakeStore(),
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    expect(structuredStore.upsertTags).toHaveBeenCalledWith(
+      "x-coredata://S/ICNote/p7",
+      [],
     );
   });
 });

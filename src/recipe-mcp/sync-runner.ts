@@ -1,6 +1,7 @@
 import type { LlmClient } from "../llm/llm-client.js";
 import type { Embedder } from "./embedder.js";
 import type { RawNote } from "./notes-reader.js";
+import { readNoteTags } from "./notes-tags.js";
 import {
   type SyncResult,
   type SyncStore,
@@ -24,6 +25,8 @@ export interface RunSyncDeps {
   /** Structured-field cache; satisfied structurally by `StructuredStore`. */
   structuredStore: SyncStructuredStore;
   llm: LlmClient;
+  /** NoteStore hashtag reader; defaults to the real `readNoteTags`. Injectable for hermetic tests. */
+  readNoteTags?: () => Map<string, string[]>;
 }
 
 export interface RunSyncOptions {
@@ -48,5 +51,6 @@ export function runSync(
     store: deps.vectorStore,
     structuredStore: deps.structuredStore,
     llm: deps.llm,
+    readNoteTags: deps.readNoteTags ?? (() => readNoteTags()),
   });
 }

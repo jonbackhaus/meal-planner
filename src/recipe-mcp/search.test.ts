@@ -482,3 +482,61 @@ describe("searchRecipes", () => {
     expect(results[0].id).toBe("veg-1");
   });
 });
+
+describe("searchRecipes — NoteStore tags (bd tags feature)", () => {
+  it("main_dinner_only drops a #side candidate (even with a valid extraction)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "potato-salad",
+      [1, 0, 0],
+      "Potato Salad",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("potato-salad", ["side", "5-stars"]);
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "chili",
+      [0.9, 0.1, 0],
+      "Chili",
+      defaultFields({ veg_status: "contains_meat" }),
+    );
+    structuredStore.upsertTags("chili", ["dinner"]);
+
+    const results = await searchRecipes(
+      "dinner",
+      { main_dinner_only: true },
+      { embedder: makeFakeEmbedder([1, 0, 0]), vectorStore, structuredStore },
+    );
+
+    expect(results.map((r) => r.id)).toEqual(["chili"]);
+  });
+
+  it("overlays tag quality/veg and surfaces is_side/tags on the candidate", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "tofu",
+      [1, 0, 0],
+      "BBQ Tofu",
+      // Extraction guessed contains_meat + untested; tags are authoritative.
+      defaultFields({ veg_status: "contains_meat", quality: "untested" }),
+    );
+    structuredStore.upsertTags("tofu", ["vegetarian", "5-stars", "side"]);
+
+    const [c] = await searchRecipes("tofu", undefined, {
+      embedder: makeFakeEmbedder([1, 0, 0]),
+      vectorStore,
+      structuredStore,
+    });
+
+    expect(c.veg_status).toBe("vegetarian"); // tag override
+    expect(c.quality).toBe(5); // tag override
+    expect(c.is_side).toBe(true);
+    expect(c.main_dinner_eligible).toBe(false);
+    expect(c.tags?.sort()).toEqual(["5-stars", "side", "vegetarian"]);
+  });
+});

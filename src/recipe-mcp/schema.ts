@@ -95,6 +95,12 @@ export const RecipeCandidateSchema = z.object({
   season_tags: z.array(z.string()),
   quality: QualitySchema.optional(),
   veg_status: VegStatusSchema,
+  // NoteStore hashtags (normalized) + planner-relevant derivations. Optional
+  // for back-compat with existing candidate construction; a missing
+  // `main_dinner_eligible` is treated as eligible, a missing `is_side` as false.
+  tags: z.array(z.string()).optional(),
+  is_side: z.boolean().optional(),
+  main_dinner_eligible: z.boolean().optional(),
 });
 export type RecipeCandidate = z.infer<typeof RecipeCandidateSchema>;
 

@@ -89,12 +89,16 @@ export async function composePools(
 ): Promise<Pools> {
   const { search } = deps;
 
+  // Dinners only: side dishes / desserts / breakfasts / appetizers (by their
+  // NoteStore course tags) are never valid standalone weeknight/weekend meals.
   const weeknightFilters: SearchFilters = {
     active_max: cfg.activeMaxMinutes,
+    main_dinner_only: true,
     ...(cfg.season !== undefined ? { season: cfg.season } : {}),
     limit: cfg.cookNights.constrained * cfg.fanoutMultiplier,
   };
   const weekendFilters: SearchFilters = {
+    main_dinner_only: true,
     ...(cfg.season !== undefined ? { season: cfg.season } : {}),
     limit: cfg.cookNights.relaxed * cfg.fanoutMultiplier,
   };
