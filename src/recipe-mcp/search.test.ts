@@ -28,8 +28,6 @@ function defaultFields(
     time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
     ingredients: [],
     veg_status: "vegetarian",
-    effort_tags: [],
-    season_tags: [],
     ...overrides,
   };
 }
@@ -274,16 +272,18 @@ describe("searchRecipes", () => {
       "summer",
       [1, 0, 0],
       "Summer",
-      defaultFields({ season_tags: ["summer"] }),
+      defaultFields(),
     );
+    structuredStore.upsertTags("summer", ["summer"]);
     upsertRecipe(
       vectorStore,
       structuredStore,
       "winter",
       [1, 0, 0],
       "Winter",
-      defaultFields({ season_tags: ["winter"] }),
+      defaultFields(),
     );
+    structuredStore.upsertTags("winter", ["winter"]);
     const embedder = makeFakeEmbedder([1, 0, 0]);
 
     const results = await searchRecipes(
@@ -303,24 +303,28 @@ describe("searchRecipes", () => {
       "quick",
       [1, 0, 0],
       "Quick",
-      defaultFields({ effort_tags: ["quick"] }),
+      defaultFields(),
     );
+    structuredStore.upsertTags("quick", ["quick"]);
     upsertRecipe(
       vectorStore,
       structuredStore,
       "do-ahead",
       [1, 0, 0],
       "Do ahead",
-      defaultFields({ effort_tags: ["do-ahead"] }),
+      defaultFields(),
     );
+    structuredStore.upsertTags("do-ahead", ["do-ahead"]);
     upsertRecipe(
       vectorStore,
       structuredStore,
       "involved",
       [1, 0, 0],
       "Involved",
-      defaultFields({ effort_tags: ["involved"] }),
+      defaultFields(),
     );
+    // "involved" isn't a recognized effort tag -> effort_tags stays empty.
+    structuredStore.upsertTags("involved", ["involved"]);
     const embedder = makeFakeEmbedder([1, 0, 0]);
 
     const results = await searchRecipes(
@@ -522,8 +526,8 @@ describe("searchRecipes — NoteStore tags (bd tags feature)", () => {
       "tofu",
       [1, 0, 0],
       "BBQ Tofu",
-      // Extraction guessed contains_meat + untested; tags are authoritative.
-      defaultFields({ veg_status: "contains_meat", quality: "untested" }),
+      // Extraction guessed contains_meat; tags override veg + own quality.
+      defaultFields({ veg_status: "contains_meat" }),
     );
     structuredStore.upsertTags("tofu", ["vegetarian", "5-stars", "side"]);
 

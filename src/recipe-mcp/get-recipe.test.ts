@@ -22,8 +22,6 @@ function defaultFields(
   return {
     time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
     veg_status: "vegetarian",
-    effort_tags: [],
-    season_tags: [],
     ingredients: [],
     ...overrides,
   };
@@ -65,9 +63,6 @@ describe("getRecipe", () => {
       extractorVersion: 1,
       fields: defaultFields({
         veg_status: "vegetarian",
-        effort_tags: ["quick"],
-        season_tags: ["summer"],
-        quality: 5,
         ingredients,
       }),
       needsReview: false,
@@ -83,13 +78,16 @@ describe("getRecipe", () => {
       id: "note-1",
       title: "Tomato Soup",
       time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
-      effort_tags: ["quick"],
-      season_tags: ["summer"],
-      quality: 5,
       veg_status: "vegetarian",
       ingredients,
       body: "Simmer tomatoes...",
       source_note_id: "note-1",
+      // Tag-derived fields (no tags set on this note -> empty/defaults).
+      effort_tags: [],
+      season_tags: [],
+      tags: [],
+      is_side: false,
+      main_dinner_eligible: true,
     });
     expect(recipe?.ingredients).toEqual(ingredients);
   });

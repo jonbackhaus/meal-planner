@@ -32,9 +32,6 @@ function validFields() {
       },
     ],
     veg_status: "contains_meat",
-    effort_tags: ["weeknight"],
-    season_tags: ["all"],
-    quality: "untested",
   };
 }
 
@@ -66,6 +63,21 @@ describe("ExtractedFieldsSchema", () => {
 });
 
 describe("extractRecipeFields", () => {
+  it("does NOT ask the LLM for quality/season/effort (tags own those — bd tag-slim)", async () => {
+    const llm = makeFakeLlm(JSON.stringify(validFields()));
+
+    await extractRecipeFields(note(), llm);
+
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt).not.toContain("season_tags");
+    expect(prompt).not.toContain("effort_tags");
+    expect(prompt).not.toContain("quality");
+    // still extracts the body-derived fields
+    expect(prompt).toContain("veg_status");
+    expect(prompt).toContain("ingredients");
+  });
+
   it("parses a well-formed mocked LLM JSON response into ExtractedFields", async () => {
     const llm = makeFakeLlm(JSON.stringify(validFields()));
 
