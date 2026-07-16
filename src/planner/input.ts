@@ -142,8 +142,8 @@ export function buildSelectionPrompt(input: PlannerInput): string {
 
   sections.push(
     "SLOTS\n" +
-      `Select exactly ${input.slots.constrained} weeknight + ${input.slots.relaxed} weekend meals, ` +
-      'each tagged by slot_type ("weeknight" or "weekend"). Do NOT assign days — ' +
+      `Select exactly ${input.slots.constrained} weeknight meals (slot_type "constrained") ` +
+      `+ ${input.slots.relaxed} weekend meals (slot_type "relaxed"). Do NOT assign days — ` +
       "slot-to-day scheduling happens later, outside this selection.",
   );
 
@@ -190,8 +190,29 @@ export function buildSelectionPrompt(input: PlannerInput): string {
 
   sections.push(
     "OUTPUT\n" +
-      "Emit a single WeekPlan JSON object and nothing else — no prose, no markdown fences, " +
-      "just the JSON object describing the selected meals for the week.",
+      "Emit a SINGLE JSON object and nothing else — no prose, no markdown fences. It must " +
+      "have EXACTLY these keys and no others (this is the shape, not the values):\n" +
+      "{\n" +
+      `  "week_key": "${input.week_key}",\n` +
+      '  "meals": [\n' +
+      "    {\n" +
+      '      "slot_type": "constrained" | "relaxed",\n' +
+      '      "recipe_id": "<an id from a pool above>",\n' +
+      '      "title": "<that recipe\'s title>",\n' +
+      '      "day": null,\n' +
+      '      "veg": { "kind": "inherent" }\n' +
+      '            | { "kind": "separable", "note": "<how she is served meat-free>" }\n' +
+      '            | { "kind": "second_dish", "recipe_id": "<a vegetarian id from a pool>", "title": "<its title>" },\n' +
+      '      "flags": ["<tag>"],\n' +
+      '      "rationale": "<one sentence: why this meal>"\n' +
+      "    }\n" +
+      "  ],\n" +
+      '  "summary": "<optional: one short line about the week>"\n' +
+      "}\n" +
+      `Emit exactly ${input.slots.constrained} meals with slot_type "constrained" and ` +
+      `${input.slots.relaxed} with slot_type "relaxed" — one object per selected meal. Do NOT ` +
+      'wrap the object in any outer key (no "week_plan" envelope). Every key shown is required ' +
+      'except "summary"; "flags" is [] when none apply; "day" is always null.',
   );
 
   return sections.join("\n\n");

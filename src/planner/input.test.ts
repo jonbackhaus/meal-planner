@@ -150,6 +150,33 @@ describe("buildSelectionPrompt", () => {
     );
   });
 
+  it("specifies the exact WeekPlan output shape with schema field names (bd 8zs.7)", () => {
+    const prompt = buildSelectionPrompt(makeInput());
+
+    // Root + per-meal field names from WeekPlanSchema / SelectedMealSchema.
+    expect(prompt).toContain("week_key");
+    expect(prompt).toContain("meals");
+    expect(prompt).toContain("recipe_id");
+    expect(prompt).toContain("rationale");
+    expect(prompt).toContain("flags");
+    // slot_type VALUES must be the schema enum, not day-category words.
+    expect(prompt).toContain('"constrained"');
+    expect(prompt).toContain('"relaxed"');
+    // veg discriminated-union kinds.
+    expect(prompt).toContain("inherent");
+    expect(prompt).toContain("separable");
+    expect(prompt).toContain("second_dish");
+    // day is the literal null (v1.0).
+    expect(prompt).toMatch(/"day":\s*null/);
+  });
+
+  it("renders the actual week_key value so the model can echo it (bd 8zs.7)", () => {
+    const prompt = buildSelectionPrompt(makeInput());
+
+    // makeInput's default week_key.
+    expect(prompt).toContain("2026-W29");
+  });
+
   it("includes every candidate id from both pools", () => {
     const input = makeInput();
     const prompt = buildSelectionPrompt(input);
@@ -226,10 +253,12 @@ describe("buildSelectionPrompt", () => {
     );
   });
 
-  it("instructs a single WeekPlan JSON object as output", () => {
+  it("instructs a single JSON object as output with no outer envelope", () => {
     const prompt = buildSelectionPrompt(makeInput());
 
-    expect(prompt).toContain("WeekPlan");
-    expect(prompt.toLowerCase()).toMatch(/json/);
+    expect(prompt.toLowerCase()).toMatch(/single json object/);
+    // Explicitly forbid the "week_plan" envelope the model otherwise adds.
+    expect(prompt.toLowerCase()).toContain("week_plan");
+    expect(prompt.toLowerCase()).toMatch(/no.{0,20}envelope|do not wrap/);
   });
 });
