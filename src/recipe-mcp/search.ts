@@ -26,6 +26,13 @@ export interface SearchFilters {
   veg_status?: VegStatus;
   /** Keep only candidates whose season_tags include this. */
   season?: string;
+  /**
+   * Quality class gate (bd meal-planner-8zs.6): `"rated"` keeps only 3/4/5-star
+   * recipes (the known-good base pool); `"untested"` keeps only `#untested`
+   * ones (the controlled discovery-injection fraction). Unrated / no-quality-tag
+   * recipes match NEITHER — they only surface in an unfiltered search.
+   */
+  quality?: "rated" | "untested";
   /** Include-any: keep candidates whose effort_tags intersect this list (see note below). */
   effort?: string[];
   /** HARD course gate: drop candidates that aren't standalone dinners (#side/#dessert/#breakfast/#appetizer). */
@@ -150,6 +157,15 @@ function passesFilters(
     effectiveSeasons.length > 0 &&
     !effectiveSeasons.includes(filters.season)
   ) {
+    return false;
+  }
+
+  if (filters.quality === "rated") {
+    const q = tm.quality;
+    if (q !== 3 && q !== 4 && q !== 5) {
+      return false;
+    }
+  } else if (filters.quality === "untested" && tm.quality !== "untested") {
     return false;
   }
 

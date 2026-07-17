@@ -351,6 +351,76 @@ describe("searchRecipes", () => {
     expect(results.map((r) => r.id)).toEqual([]);
   });
 
+  it("quality:'rated' keeps only 3/4/5-star recipes, dropping untested and unrated (bd meal-planner-8zs.6)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    for (const [id, tag] of [
+      ["five", "5-stars"],
+      ["four", "4-stars"],
+      ["three", "3-stars"],
+      ["untested", "untested"],
+    ] as const) {
+      upsertRecipe(
+        vectorStore,
+        structuredStore,
+        id,
+        [1, 0, 0],
+        id,
+        defaultFields(),
+      );
+      structuredStore.upsertTags(id, [tag]);
+    }
+    // A recipe with NO quality tag at all (unrated) — must also drop.
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "notag",
+      [1, 0, 0],
+      "notag",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("notag", ["dinner"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "x",
+      { quality: "rated" },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    expect(results.map((r) => r.id).sort()).toEqual(["five", "four", "three"]);
+  });
+
+  it("quality:'untested' keeps only #untested recipes (bd meal-planner-8zs.6)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "u",
+      [1, 0, 0],
+      "u",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("u", ["untested"]);
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "r",
+      [1, 0, 0],
+      "r",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("r", ["4-stars"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "x",
+      { quality: "untested" },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    expect(results.map((r) => r.id)).toEqual(["u"]);
+  });
+
   it("filters by effort tags using include-any semantics", async () => {
     const { vectorStore, structuredStore } = makeStores();
     upsertRecipe(

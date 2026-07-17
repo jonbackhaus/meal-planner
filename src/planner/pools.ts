@@ -55,35 +55,36 @@ export interface ComposePoolsDeps {
 }
 
 /**
- * Over-fetch factor for the best-effort untested-injection overfetch query
- * (step 4), mirroring the spirit of `search.ts`'s `OVER_FETCH_FACTOR`: since
- * `searchRecipes` has no quality/untested filter, the only way to surface
- * `quality === "untested"` candidates is to ask for a broader result set
- * over the SAME eligibility filters and see what naturally turns up.
+ * Over-fetch factor for the untested-injection query (step 4): the injection
+ * asks for a broader result set (`poolSize * this`) over the untested-filtered
+ * search so enough distinct `quality === "untested"` candidates survive dedup
+ * to reach the target count.
  */
 const UNTESTED_OVERFETCH_MULTIPLIER = 3;
 
 /**
- * Composes the weeknight + weekend candidate pools per ADR 0001/0003:
+ * Composes the weeknight + weekend candidate pools per ADR 0001/0003, using
+ * quality-aware retrieval (bd meal-planner-8zs.6):
  *
- * 1. Weeknight pool: `search(seedQuery, { active_max, season?, limit:
- *    constrained * fanout })`.
+ * 1. Weeknight pool: for each seed, `search(seed, { active_max, season?,
+ *    quality: "rated", limit: constrained * fanout })` — only RATED (3/4/5-star)
+ *    recipes form the known-good base; each seed's results are merged+deduped,
+ *    per-seed capped so no one seed dominates.
  * 2. Weekend pool: same, WITHOUT `active_max` (do-aheads etc. stay eligible).
  * 3. Veg floor: if a pool has fewer than `vegFloorK` `veg_status:
- *    "vegetarian"` candidates, top it up with a `veg_status: "vegetarian"`
- *    query over the SAME pool filters (weeknight keeps `active_max`) and
- *    merge, deduping by `id`.
- * 4. Untested injection (best-effort, retrieval-level — ADR 0003 D2): ensure
- *    the pool holds up to `ceil(untestedRate * poolSize)` `quality ===
- *    "untested"` candidates by over-fetching a broader result set over the
- *    same filters and retaining whatever untested candidates surface, up to
- *    the target. If none surface, this is a no-op — see the module doc.
+ *    "vegetarian"` candidates, top it up with a rated `veg_status:
+ *    "vegetarian"` query over the SAME pool filters (weeknight keeps
+ *    `active_max`) and merge, deduping by `id`.
+ * 4. Untested injection (ADR 0003 D2): re-inject up to `ceil(untestedRate *
+ *    poolSize)` `quality === "untested"` candidates via a `quality: "untested"`
+ *    search (NOT the rated base filter) so the pool holds a CONTROLLED
+ *    discovery fraction rather than being dominated by untested recipes.
  *
  * All merges dedupe by `id`, preserving existing-pool order first, then
  * newly-added candidates in the order they were returned.
  */
 export async function composePools(
-  seedQuery: string,
+  seeds: string[],
   cfg: PoolCompositionConfig,
   deps: ComposePoolsDeps,
 ): Promise<Pools> {
@@ -106,28 +107,55 @@ export async function composePools(
   // Sequential (not Promise.all): keeps per-pool call ordering simple and
   // easy to reason about/test; this runs once per plan cycle, not on a hot
   // path, so the (small) latency cost of not parallelizing is a non-issue.
-  const weeknight = await composePool(seedQuery, weeknightFilters, cfg, search);
-  const weekend = await composePool(seedQuery, weekendFilters, cfg, search);
+  const weeknight = await composePool(seeds, weeknightFilters, cfg, search);
+  const weekend = await composePool(seeds, weekendFilters, cfg, search);
 
   return { weeknight, weekend };
 }
 
 async function composePool(
-  seedQuery: string,
+  seeds: string[],
   baseFilters: SearchFilters,
   cfg: PoolCompositionConfig,
   search: ComposePoolsDeps["search"],
 ): Promise<RecipeCandidate[]> {
-  const basePool = await search(seedQuery, baseFilters);
+  // Multi-seed retrieval (bd meal-planner-8zs.6 Stage 2 / l7x): a single generic
+  // seed under-recalls (its nearest neighbours are a narrow, low-signal cluster),
+  // so the base pool is built from a SET of category seeds. Each seed contributes
+  // up to `perSeedCap` NEW candidates (round-robin fairness so no one seed
+  // dominates), merged+deduped up to the pool's target size.
+  //
+  // Quality-aware (Stage 1): the base + veg-floor pull only RATED (3/4/5-star)
+  // recipes — the "known-good" set — so the pool isn't dominated by untested
+  // candidates that merely rank near a seed. `untestedRate` then re-injects a
+  // CONTROLLED fraction of untested recipes for discovery (see injectUntested,
+  // which deliberately does NOT carry the rated filter).
+  const targetSize = baseFilters.limit ?? 0;
+  const perSeedCap = Math.max(
+    1,
+    Math.ceil(targetSize / Math.max(1, seeds.length)),
+  );
+  const ratedFilters: SearchFilters = { ...baseFilters, quality: "rated" };
+
+  let basePool: RecipeCandidate[] = [];
+  for (const seed of seeds) {
+    if (basePool.length >= targetSize) {
+      break;
+    }
+    const hits = await search(seed, ratedFilters);
+    const room = Math.min(perSeedCap, targetSize - basePool.length);
+    basePool = mergeDeduped(basePool, hits, room);
+  }
+
   const withVegFloor = await ensureVegFloor(
-    seedQuery,
+    seeds,
     basePool,
-    baseFilters,
+    ratedFilters,
     cfg.vegFloorK,
     search,
   );
   return injectUntested(
-    seedQuery,
+    seeds,
     withVegFloor,
     baseFilters,
     cfg.untestedRate,
@@ -136,54 +164,53 @@ async function composePool(
 }
 
 /**
- * Step 3: veg-floor top-up, merged and deduped by `id`, capped at the actual
- * deficit (`vegFloorK - vegCount`) via `mergeDeduped`'s `maxAdd` — mirroring
- * `injectUntested`'s capping below. The top-up query's `limit` is
- * intentionally left at the full pool size (unbounded search result), but
- * only as many NEW candidates as still needed to reach the floor are merged
- * in, so the pool doesn't balloon past its intended
- * `constrained/relaxed * fanoutMultiplier` size.
+ * Step 3: veg-floor top-up, iterating the seed set until the pool holds
+ * `vegFloorK` rated vegetarian candidates. Each seed runs a rated
+ * `veg_status: "vegetarian"` search; only as many NEW candidates as still
+ * needed to reach the floor are merged in (deduped by `id`), so the pool
+ * doesn't balloon past its intended size. With multi-seed retrieval the base
+ * often already meets the floor (a vegetarian seed surfaces rated-veg), making
+ * this a fallback.
  *
- * LIMITATION (documented, not fixed here): this is single-shot best-effort,
- * like `injectUntested` — a top-up may still leave the pool below
- * `vegFloorK` (e.g. a small corpus, or the top-up re-surfacing ids already in
- * the pool instead of new ones).
+ * LIMITATION (documented, not fixed here): still best-effort — if the seeds'
+ * rated-veg results are exhausted before the floor is reached (a small corpus,
+ * or re-surfacing ids already in the pool), the pool may remain below
+ * `vegFloorK`.
  */
 async function ensureVegFloor(
-  seedQuery: string,
+  seeds: string[],
   pool: RecipeCandidate[],
   baseFilters: SearchFilters,
   vegFloorK: number,
   search: ComposePoolsDeps["search"],
 ): Promise<RecipeCandidate[]> {
-  const vegCount = pool.filter((c) => c.veg_status === "vegetarian").length;
-  if (vegCount >= vegFloorK) {
-    return pool;
-  }
+  let result = pool;
+  const vegCount = () =>
+    result.filter((c) => c.veg_status === "vegetarian").length;
 
-  const topUp = await search(seedQuery, {
-    ...baseFilters,
-    veg_status: "vegetarian",
-  });
-  return mergeDeduped(pool, topUp, vegFloorK - vegCount);
+  for (const seed of seeds) {
+    if (vegCount() >= vegFloorK) {
+      break;
+    }
+    const topUp = await search(seed, {
+      ...baseFilters,
+      veg_status: "vegetarian",
+    });
+    result = mergeDeduped(result, topUp, vegFloorK - vegCount());
+  }
+  return result;
 }
 
 /**
- * Step 4: best-effort untested injection (ADR 0003 D2). `searchRecipes` has
- * no quality/untested filter (and this task does NOT modify it — see the
- * module doc), so this over-fetches a broader set over the SAME eligibility
- * filters and keeps whatever `quality === "untested"` candidates surface, up
- * to the target count. If the target is already met, or nothing untested
- * surfaces in the broader fetch, this is a no-op.
- *
- * LIMITATION (documented, not fixed here): because there's no dedicated
- * retrieval-level filter for untested/quality, this can under-deliver (or
- * even fail to find any untested candidates at all) on a pool/corpus where
- * none happen to rank within the overfetch window — a possible follow-up is
- * a `quality`/untested filter on `search_recipes` itself.
+ * Step 4: controlled untested injection (ADR 0003 D2). Iterates the seed set,
+ * running a `quality: "untested"` search over the SAME eligibility filters
+ * (active_max, season, main_dinner_only — but NOT the rated base filter, or it
+ * could never surface untested) and merging up to `ceil(untestedRate *
+ * poolSize)` new untested candidates. Stops once the target is met; a no-op if
+ * `untestedRate` is 0 or the seeds hold no matching untested recipes.
  */
 async function injectUntested(
-  seedQuery: string,
+  seeds: string[],
   pool: RecipeCandidate[],
   baseFilters: SearchFilters,
   untestedRate: number,
@@ -194,18 +221,24 @@ async function injectUntested(
     return pool;
   }
 
-  const alreadyPresent = pool.filter((c) => c.quality === "untested").length;
-  const needed = targetCount - alreadyPresent;
-  if (needed <= 0) {
-    return pool;
-  }
+  let result = pool;
+  const untestedCount = () =>
+    result.filter((c) => c.quality === "untested").length;
 
-  const overfetched = await search(seedQuery, {
-    ...baseFilters,
-    limit: pool.length * UNTESTED_OVERFETCH_MULTIPLIER,
-  });
-  const untestedFound = overfetched.filter((c) => c.quality === "untested");
-  return mergeDeduped(pool, untestedFound, needed);
+  for (const seed of seeds) {
+    const needed = targetCount - untestedCount();
+    if (needed <= 0) {
+      break;
+    }
+    const overfetched = await search(seed, {
+      ...baseFilters,
+      quality: "untested",
+      limit: pool.length * UNTESTED_OVERFETCH_MULTIPLIER,
+    });
+    const untestedFound = overfetched.filter((c) => c.quality === "untested");
+    result = mergeDeduped(result, untestedFound, needed);
+  }
+  return result;
 }
 
 /**
