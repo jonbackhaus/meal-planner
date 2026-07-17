@@ -142,8 +142,12 @@ function passesFilters(
     return false;
   }
 
+  // Season filter is untagged-EXEMPT (bd meal-planner-8zs.9): a recipe with no
+  // season tags is year-round and always eligible; only recipes explicitly
+  // tagged for OTHER seasons (e.g. a winter/fall/spring soup in summer) drop.
   if (
     filters.season !== undefined &&
+    effectiveSeasons.length > 0 &&
     !effectiveSeasons.includes(filters.season)
   ) {
     return false;

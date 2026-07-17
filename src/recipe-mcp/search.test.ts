@@ -295,6 +295,62 @@ describe("searchRecipes", () => {
     expect(results.map((r) => r.id)).toEqual(["summer"]);
   });
 
+  it("keeps season-UNTAGGED recipes under a season filter (untagged = year-round; bd meal-planner-8zs.9)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "summer",
+      [1, 0, 0],
+      "Summer",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("summer", ["summer"]);
+    // A year-round staple the user never season-tagged (empty season_tags).
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "yearround",
+      [1, 0, 0],
+      "Year-round Pasta",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("yearround", ["5-stars"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "dinner",
+      { season: "summer" },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    // In-season AND untagged both survive; only explicitly-other-season drop.
+    expect(results.map((r) => r.id).sort()).toEqual(["summer", "yearround"]);
+  });
+
+  it("drops recipes explicitly tagged for OTHER seasons even when multi-season (Khao Soi in July; bd meal-planner-8zs.9)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    // Tagged winter/fall/spring but NOT summer -> must drop under season=summer.
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "khao-soi",
+      [1, 0, 0],
+      "Chicken Khao Soi",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("khao-soi", ["winter", "fall", "spring"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "soup",
+      { season: "summer" },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    expect(results.map((r) => r.id)).toEqual([]);
+  });
+
   it("filters by effort tags using include-any semantics", async () => {
     const { vectorStore, structuredStore } = makeStores();
     upsertRecipe(
