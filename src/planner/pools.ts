@@ -55,29 +55,29 @@ export interface ComposePoolsDeps {
 }
 
 /**
- * Over-fetch factor for the best-effort untested-injection overfetch query
- * (step 4), mirroring the spirit of `search.ts`'s `OVER_FETCH_FACTOR`: since
- * `searchRecipes` has no quality/untested filter, the only way to surface
- * `quality === "untested"` candidates is to ask for a broader result set
- * over the SAME eligibility filters and see what naturally turns up.
+ * Over-fetch factor for the untested-injection query (step 4): the injection
+ * asks for a broader result set (`poolSize * this`) over the untested-filtered
+ * search so enough distinct `quality === "untested"` candidates survive dedup
+ * to reach the target count.
  */
 const UNTESTED_OVERFETCH_MULTIPLIER = 3;
 
 /**
- * Composes the weeknight + weekend candidate pools per ADR 0001/0003:
+ * Composes the weeknight + weekend candidate pools per ADR 0001/0003, using
+ * quality-aware retrieval (bd meal-planner-8zs.6):
  *
- * 1. Weeknight pool: `search(seedQuery, { active_max, season?, limit:
- *    constrained * fanout })`.
+ * 1. Weeknight pool: `search(seedQuery, { active_max, season?, quality:
+ *    "rated", limit: constrained * fanout })` — only RATED (3/4/5-star)
+ *    recipes form the known-good base.
  * 2. Weekend pool: same, WITHOUT `active_max` (do-aheads etc. stay eligible).
  * 3. Veg floor: if a pool has fewer than `vegFloorK` `veg_status:
- *    "vegetarian"` candidates, top it up with a `veg_status: "vegetarian"`
- *    query over the SAME pool filters (weeknight keeps `active_max`) and
- *    merge, deduping by `id`.
- * 4. Untested injection (best-effort, retrieval-level — ADR 0003 D2): ensure
- *    the pool holds up to `ceil(untestedRate * poolSize)` `quality ===
- *    "untested"` candidates by over-fetching a broader result set over the
- *    same filters and retaining whatever untested candidates surface, up to
- *    the target. If none surface, this is a no-op — see the module doc.
+ *    "vegetarian"` candidates, top it up with a rated `veg_status:
+ *    "vegetarian"` query over the SAME pool filters (weeknight keeps
+ *    `active_max`) and merge, deduping by `id`.
+ * 4. Untested injection (ADR 0003 D2): re-inject up to `ceil(untestedRate *
+ *    poolSize)` `quality === "untested"` candidates via a `quality: "untested"`
+ *    search (NOT the rated base filter) so the pool holds a CONTROLLED
+ *    discovery fraction rather than being dominated by untested recipes.
  *
  * All merges dedupe by `id`, preserving existing-pool order first, then
  * newly-added candidates in the order they were returned.
@@ -118,11 +118,18 @@ async function composePool(
   cfg: PoolCompositionConfig,
   search: ComposePoolsDeps["search"],
 ): Promise<RecipeCandidate[]> {
-  const basePool = await search(seedQuery, baseFilters);
+  // Quality-aware retrieval (bd meal-planner-8zs.6): the base pool and its
+  // veg-floor top-up pull only RATED (3/4/5-star) recipes — the "known-good"
+  // set — so the pool isn't dominated by untested candidates that merely rank
+  // near the seed. `untestedRate` then re-injects a CONTROLLED fraction of
+  // untested recipes for discovery (see injectUntested, which deliberately
+  // does NOT carry the rated filter).
+  const ratedFilters: SearchFilters = { ...baseFilters, quality: "rated" };
+  const basePool = await search(seedQuery, ratedFilters);
   const withVegFloor = await ensureVegFloor(
     seedQuery,
     basePool,
-    baseFilters,
+    ratedFilters,
     cfg.vegFloorK,
     search,
   );
@@ -169,18 +176,12 @@ async function ensureVegFloor(
 }
 
 /**
- * Step 4: best-effort untested injection (ADR 0003 D2). `searchRecipes` has
- * no quality/untested filter (and this task does NOT modify it — see the
- * module doc), so this over-fetches a broader set over the SAME eligibility
- * filters and keeps whatever `quality === "untested"` candidates surface, up
- * to the target count. If the target is already met, or nothing untested
- * surfaces in the broader fetch, this is a no-op.
- *
- * LIMITATION (documented, not fixed here): because there's no dedicated
- * retrieval-level filter for untested/quality, this can under-deliver (or
- * even fail to find any untested candidates at all) on a pool/corpus where
- * none happen to rank within the overfetch window — a possible follow-up is
- * a `quality`/untested filter on `search_recipes` itself.
+ * Step 4: controlled untested injection (ADR 0003 D2). Runs a `quality:
+ * "untested"` search over the SAME eligibility filters (active_max, season,
+ * main_dinner_only — but NOT the rated base filter, or it could never surface
+ * untested) and merges up to `ceil(untestedRate * poolSize)` new untested
+ * candidates. If the target is already met, or the corpus holds no matching
+ * untested recipes, this is a no-op.
  */
 async function injectUntested(
   seedQuery: string,
@@ -202,6 +203,7 @@ async function injectUntested(
 
   const overfetched = await search(seedQuery, {
     ...baseFilters,
+    quality: "untested",
     limit: pool.length * UNTESTED_OVERFETCH_MULTIPLIER,
   });
   const untestedFound = overfetched.filter((c) => c.quality === "untested");

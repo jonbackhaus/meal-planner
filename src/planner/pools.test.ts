@@ -26,9 +26,6 @@ const baseCfg: PoolCompositionConfig = {
   untestedRate: 0.15,
 };
 
-const WEEKNIGHT_BASE_LIMIT = 16; // constrained(4) * fanoutMultiplier(4)
-const WEEKEND_BASE_LIMIT = 8; // relaxed(2) * fanoutMultiplier(4)
-
 interface Fixtures {
   weeknightBase: RecipeCandidate[];
   weeknightVegTopUp?: RecipeCandidate[];
@@ -42,31 +39,29 @@ interface Fixtures {
  * A fake `search` keyed by FILTER SHAPE, not call order: composePools's exact
  * call sequencing (e.g. whether weeknight/weekend run sequentially or
  * interleaved) is an implementation detail these tests shouldn't pin down.
- * The three query kinds are structurally distinguishable: base has neither
- * `veg_status` nor an overfetched limit; the veg top-up carries
- * `veg_status: "vegetarian"`; the untested overfetch has neither but a
- * `limit` different from the base pool's.
+ * The three query kinds are structurally distinguishable by their quality-aware
+ * filters (bd meal-planner-8zs.6): the untested injection carries
+ * `quality: "untested"`; the veg-floor top-up carries `veg_status: "vegetarian"`
+ * (over the rated base); the rated base carries neither.
  */
 function makeFakeSearch(fixtures: Fixtures) {
   return vi.fn(async (_query: string, filters?: SearchFilters) => {
     const isWeeknight = filters?.active_max !== undefined;
-    const isVegQuery = filters?.veg_status === "vegetarian";
-    const baseLimit = isWeeknight ? WEEKNIGHT_BASE_LIMIT : WEEKEND_BASE_LIMIT;
 
-    if (isVegQuery) {
+    if (filters?.quality === "untested") {
+      return (
+        (isWeeknight
+          ? fixtures.weeknightUntestedOverfetch
+          : fixtures.weekendUntestedOverfetch) ?? []
+      );
+    }
+    if (filters?.veg_status === "vegetarian") {
       return (
         (isWeeknight ? fixtures.weeknightVegTopUp : fixtures.weekendVegTopUp) ??
         []
       );
     }
-    if (filters?.limit === baseLimit) {
-      return isWeeknight ? fixtures.weeknightBase : fixtures.weekendBase;
-    }
-    return (
-      (isWeeknight
-        ? fixtures.weeknightUntestedOverfetch
-        : fixtures.weekendUntestedOverfetch) ?? []
-    );
+    return isWeeknight ? fixtures.weeknightBase : fixtures.weekendBase;
   });
 }
 
@@ -90,6 +85,7 @@ describe("composePools", () => {
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
       main_dinner_only: true,
+      quality: "rated",
       limit: 16,
     });
   });
@@ -110,10 +106,11 @@ describe("composePools", () => {
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       main_dinner_only: true,
+      quality: "rated",
       limit: 8,
     });
     const weekendCall = search.mock.calls.find(
-      ([, filters]) => filters?.limit === 8,
+      ([, filters]) => filters?.limit === 8 && filters?.quality === "rated",
     );
     expect(weekendCall?.[1]).not.toHaveProperty("active_max");
   });
@@ -137,6 +134,7 @@ describe("composePools", () => {
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
       main_dinner_only: true,
+      quality: "rated",
       veg_status: "vegetarian",
       limit: 16,
     });
@@ -247,6 +245,36 @@ describe("composePools", () => {
       .map((c) => c.id);
     expect(untestedIds).toEqual(["wn-untested-1", "wn-untested-2"]);
     expect(pools.weeknight).toHaveLength(12);
+  });
+
+  it("issues the untested-injection search with quality:'untested' (not the rated base filter) — bd meal-planner-8zs.6", async () => {
+    const search = makeFakeSearch({
+      weeknightBase: Array.from({ length: 10 }, (_, i) =>
+        candidate(`wn-${i}`, {
+          veg_status: i < 2 ? "vegetarian" : "contains_meat",
+        }),
+      ),
+      weeknightUntestedOverfetch: [
+        candidate("wn-untested-1", { quality: "untested" }),
+      ],
+      weekendBase: [
+        candidate("we-1", { veg_status: "vegetarian" }),
+        candidate("we-2", { veg_status: "vegetarian" }),
+      ],
+    });
+
+    await composePools("family dinner", baseCfg, { search });
+
+    const untestedCall = search.mock.calls.find(
+      ([, filters]) => filters?.quality === "untested",
+    );
+    expect(untestedCall).toBeDefined();
+    // The injection must NOT restrict to rated, or it could never find untested.
+    expect(untestedCall?.[1]).toMatchObject({
+      active_max: 60,
+      main_dinner_only: true,
+      quality: "untested",
+    });
   });
 
   it("is a no-op when the untested overfetch surfaces no untested candidates", async () => {
