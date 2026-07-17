@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import type { Recipe, RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { SearchFilters } from "../recipe-mcp/search.js";
-import { buildPlan, DEFAULT_SEED_QUERY } from "./build-plan.js";
+import { buildPlan, DEFAULT_SEEDS } from "./build-plan.js";
 import type { SelectedMeal, WeekPlan } from "./select.js";
 
 function candidate(
@@ -105,7 +105,7 @@ describe("buildPlan", () => {
     expect(getRecipe).toHaveBeenCalledWith("we-veg");
   });
 
-  it("passes the default v1.0 seed query to search when cfg.seedQuery is omitted", async () => {
+  it("searches each of the default v1.0 seeds when cfg.seeds is omitted", async () => {
     const search = fakeSearch();
     const llm = fakeLlm(JSON.stringify(planJson()));
     const getRecipe = fakeGetRecipe();
@@ -117,22 +117,25 @@ describe("buildPlan", () => {
       deps: { search, llm, getRecipe },
     });
 
-    expect(search).toHaveBeenCalledWith(DEFAULT_SEED_QUERY, expect.anything());
+    for (const seed of DEFAULT_SEEDS) {
+      expect(search).toHaveBeenCalledWith(seed, expect.anything());
+    }
   });
 
-  it("passes a custom cfg.seedQuery to search when provided", async () => {
+  it("passes custom cfg.seeds to search when provided", async () => {
     const search = fakeSearch();
     const llm = fakeLlm(JSON.stringify(planJson()));
     const getRecipe = fakeGetRecipe();
 
     await buildPlan({
       weekKey: "2026-W29",
-      cfg: { ...baseCfg, seedQuery: "custom seed" },
+      cfg: { ...baseCfg, seeds: ["custom seed a", "custom seed b"] },
       household: "Vegetarian daughter every night.",
       deps: { search, llm, getRecipe },
     });
 
-    expect(search).toHaveBeenCalledWith("custom seed", expect.anything());
+    expect(search).toHaveBeenCalledWith("custom seed a", expect.anything());
+    expect(search).toHaveBeenCalledWith("custom seed b", expect.anything());
   });
 
   it("threads cfg.season into BOTH the search filters (hard) and the selection prompt (soft) — bd meal-planner-8zs.9", async () => {

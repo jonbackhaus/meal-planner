@@ -18,24 +18,33 @@ import { selectValidatedPlan } from "./validate.js";
  */
 
 /**
- * v1.0's default semantic seed query (ADR 0003): a thin, generic diversity
- * seed rather than a category-seeded or recency/weather-framed multi-query.
- * The actual seed-query STRATEGY is still an open decision
- * (bd meal-planner-l7x), to be finalized during the plan-quality tuning task
- * (8zs.6) — this default is a reasonable placeholder, not the final answer.
- * Callers may override it per-run via `cfg.seedQuery`.
+ * v1.0's default semantic seed SET (ADR 0003 / bd meal-planner-l7x, resolved in
+ * 8zs.6): a category-seeded multi-query, NOT a single generic seed. Live
+ * measurement showed one bland seed under-recalls — its nearest neighbours are
+ * a narrow, low-signal cluster (only ~2 rated dinners, 0 rated-veg, of its top
+ * 48) — so `composePools` retrieves a coherent cluster per seed and merges them
+ * (per-seed capped for fairness). One seed is explicitly vegetarian to guarantee
+ * rated-veg coverage for the every-night vegetarian constraint. Seed wording is
+ * tunable (part of 8zs.6). Callers may override per-run via `cfg.seeds`.
  */
-export const DEFAULT_SEED_QUERY = "varied family weeknight and weekend dinners";
+export const DEFAULT_SEEDS: string[] = [
+  "vegetarian family dinner",
+  "chicken dinner",
+  "beef or pork main dish",
+  "fish or seafood dinner",
+  "pasta, noodle, or grain bowl dinner",
+  "curry, stir-fry, or braise",
+];
 
 /**
  * The planner-relevant `Config` subset `buildPlan` needs: everything
  * `composePools` needs (`cookNights` — which also supplies the exact slot
  * counts for selection/validation — `activeMaxMinutes`, `fanoutMultiplier`,
  * `vegFloorK`, `untestedRate`, optional `season`), plus an optional
- * `seedQuery` override (see `DEFAULT_SEED_QUERY` above).
+ * `seeds` override (see `DEFAULT_SEEDS` above).
  */
 export type BuildPlanConfig = PoolCompositionConfig & {
-  seedQuery?: string;
+  seeds?: string[];
 };
 
 export interface BuildPlanDeps {
@@ -75,9 +84,9 @@ export async function buildPlan(
   args: BuildPlanArgs,
 ): Promise<EnrichedWeekPlan> {
   const { weekKey, cfg, household, deps } = args;
-  const seedQuery = cfg.seedQuery ?? DEFAULT_SEED_QUERY;
+  const seeds = cfg.seeds ?? DEFAULT_SEEDS;
 
-  const pools = await composePools(seedQuery, cfg, { search: deps.search });
+  const pools = await composePools(seeds, cfg, { search: deps.search });
 
   const slots = {
     constrained: cfg.cookNights.constrained,

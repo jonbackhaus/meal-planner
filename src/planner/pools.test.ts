@@ -80,7 +80,7 @@ describe("composePools", () => {
       ],
     });
 
-    await composePools("family dinner", baseCfg, { search });
+    await composePools(["family dinner"], baseCfg, { search });
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
@@ -102,7 +102,7 @@ describe("composePools", () => {
       ],
     });
 
-    await composePools("family dinner", baseCfg, { search });
+    await composePools(["family dinner"], baseCfg, { search });
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       main_dinner_only: true,
@@ -129,7 +129,7 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     expect(search).toHaveBeenCalledWith("family dinner", {
       active_max: 60,
@@ -154,7 +154,7 @@ describe("composePools", () => {
       ],
     });
 
-    await composePools("family dinner", baseCfg, { search });
+    await composePools(["family dinner"], baseCfg, { search });
 
     const vegQueryForWeeknight = search.mock.calls.some(
       ([, filters]) =>
@@ -180,7 +180,7 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     const ids = pools.weeknight.map((c) => c.id);
     expect(ids).toEqual(["wn-1", "wn-2", "wn-veg-new"]);
@@ -208,7 +208,7 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     expect(pools.weeknight.map((c) => c.id)).toEqual([
       "wn-1",
@@ -238,7 +238,7 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     const untestedIds = pools.weeknight
       .filter((c) => c.quality === "untested")
@@ -263,7 +263,7 @@ describe("composePools", () => {
       ],
     });
 
-    await composePools("family dinner", baseCfg, { search });
+    await composePools(["family dinner"], baseCfg, { search });
 
     const untestedCall = search.mock.calls.find(
       ([, filters]) => filters?.quality === "untested",
@@ -293,7 +293,7 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     expect(pools.weeknight).toHaveLength(10);
     expect(pools.weeknight.some((c) => c.quality === "untested")).toBe(false);
@@ -311,12 +311,83 @@ describe("composePools", () => {
       ],
     });
 
-    const pools = await composePools("family dinner", baseCfg, { search });
+    const pools = await composePools(["family dinner"], baseCfg, { search });
 
     for (const c of [...pools.weeknight, ...pools.weekend]) {
       expect(c).not.toHaveProperty("ingredients");
       expect(typeof c.id).toBe("string");
       expect(typeof c.title).toBe("string");
     }
+  });
+
+  // ── Multi-seed retrieval (bd meal-planner-8zs.6 Stage 2 / l7x) ──
+  // A query-AWARE fake: distinct seeds return distinct rated candidates, so we
+  // can assert cross-seed merge + per-seed capping (the shape-based fake above
+  // ignores the query and can't).
+  function makeSeedAwareSearch(bySeed: Record<string, RecipeCandidate[]>) {
+    return vi.fn(async (query: string, filters?: SearchFilters) => {
+      if (filters?.quality === "untested") return [];
+      if (filters?.veg_status === "vegetarian") return [];
+      return bySeed[query] ?? [];
+    });
+  }
+
+  it("multi-seed base pulls rated candidates from EACH seed, deduped (l7x)", async () => {
+    const search = makeSeedAwareSearch({
+      "seed-a": [
+        candidate("a1", { veg_status: "vegetarian" }),
+        candidate("a2", { veg_status: "vegetarian" }),
+      ],
+      "seed-b": [
+        candidate("b1"),
+        candidate("a1", { veg_status: "vegetarian" }),
+      ], // a1 re-surfaces
+    });
+
+    const pools = await composePools(["seed-a", "seed-b"], baseCfg, { search });
+
+    // a1 appears once (deduped); every seed contributes.
+    expect(pools.weeknight.map((c) => c.id).sort()).toEqual(["a1", "a2", "b1"]);
+  });
+
+  it("caps each seed's contribution so no single seed dominates (per-seed cap)", async () => {
+    // weeknight target = 16, 2 seeds -> perSeedCap = ceil(16/2) = 8.
+    const search = makeSeedAwareSearch({
+      "seed-a": Array.from({ length: 12 }, (_, i) => candidate(`a${i}`)),
+      "seed-b": Array.from({ length: 12 }, (_, i) => candidate(`b${i}`)),
+    });
+
+    const pools = await composePools(["seed-a", "seed-b"], baseCfg, { search });
+
+    const aCount = pools.weeknight.filter((c) => c.id.startsWith("a")).length;
+    const bCount = pools.weeknight.filter((c) => c.id.startsWith("b")).length;
+    expect(aCount).toBe(8);
+    expect(bCount).toBe(8);
+    expect(pools.weeknight).toHaveLength(16);
+  });
+
+  it("veg-floor iterates seeds until the floor is met when the base lacks veg (l7x)", async () => {
+    // Base seeds return non-veg; a later veg-floor pass over the seeds supplies veg.
+    const search = vi.fn(async (query: string, filters?: SearchFilters) => {
+      if (filters?.quality === "untested") return [];
+      if (filters?.veg_status === "vegetarian") {
+        return query === "veg-seed"
+          ? [
+              candidate("v1", { veg_status: "vegetarian" }),
+              candidate("v2", { veg_status: "vegetarian" }),
+            ]
+          : [];
+      }
+      return query === "meat-seed" ? [candidate("m1"), candidate("m2")] : [];
+    });
+
+    const pools = await composePools(["meat-seed", "veg-seed"], baseCfg, {
+      search,
+    });
+
+    const vegCount = pools.weeknight.filter(
+      (c) => c.veg_status === "vegetarian",
+    ).length;
+    expect(vegCount).toBeGreaterThanOrEqual(baseCfg.vegFloorK);
   });
 });
