@@ -82,17 +82,25 @@ key** (`src/secrets/secrets.ts`). Pick one source — `loadSecrets` auto-detects
 
 ### Option A — 1Password (recommended)
 
-1. Store both secrets as items/fields in a vault (e.g. an item `meal-planner`
-   with fields `slack-bot-token` and `anthropic-api-key`).
-2. Create a **service account** with read access to that vault; copy its token.
+1. Use a **dedicated vault** (`Meal-Planner`) holding one item per secret, each
+   with a `credential` field: `anthropic-api` (the `sk-ant-…` key) and
+   `slack-app` (the `xoxb-…` token). A dedicated vault keeps these isolated from
+   unrelated secrets and lets the service account be scoped to exactly them.
+2. Create a **service account** with **read-only** access to **only** the
+   `Meal-Planner` vault (least privilege); copy its token (shown once).
 3. Set these env vars for the daemon (the `op` CLI must be installed and on
    `PATH`):
 
    ```bash
    export OP_SERVICE_ACCOUNT_TOKEN="ops_…"
-   export MP_OP_SLACK_TOKEN_REF="op://Vault/meal-planner/slack-bot-token"
-   export MP_OP_ANTHROPIC_KEY_REF="op://Vault/meal-planner/anthropic-api-key"
+   export MP_OP_SLACK_TOKEN_REF="op://Meal-Planner/slack-app/credential"
+   export MP_OP_ANTHROPIC_KEY_REF="op://Meal-Planner/anthropic-api/credential"
    ```
+
+   Verify the refs resolve without printing the secrets:
+   `op read "$MP_OP_ANTHROPIC_KEY_REF" >/dev/null && echo ok`. To rotate the
+   service account, issue the new token and confirm `op read` works **before**
+   revoking the old one.
 
    > If `OP_CONNECT_HOST` / `OP_CONNECT_TOKEN` are set in the environment, the
    > loader strips them from the `op` child env on purpose — Connect vars
