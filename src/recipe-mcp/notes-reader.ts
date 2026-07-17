@@ -16,9 +16,15 @@ import { createHash } from "node:crypto";
  * AppleScript text output.
  *
  * "Recipe" scoping: notes are read from a single named Notes folder
- * (default "Recipes", configurable via `NotesReaderOptions.folderName`).
+ * (default "Food", configurable via `NotesReaderOptions.folderName`).
  * This keeps scoping simple and user-controlled: file recipe notes under
  * that folder in Notes and they're picked up; anything else is ignored.
+ *
+ * The default is the food-only folder DELIBERATELY, not the "Recipes" smart
+ * folder that aggregates Food + Drinks: a smart folder pulls in beverages
+ * (e.g. "Christmas Mimosas!"), which — being untagged — pass the dinner course
+ * gate and get planned as meals (bd meal-planner-nit). Point this at the real
+ * food folder, never the aggregating smart folder.
  */
 
 /** A single note as read from Apple Notes, before any structured extraction. */
@@ -30,11 +36,11 @@ export interface RawNote {
 }
 
 export interface NotesReaderOptions {
-  /** Name of the Notes folder to scope "recipe" notes to. Default: "Recipes". */
+  /** Name of the Notes folder to scope "recipe" notes to. Default: "Food". */
   folderName?: string;
 }
 
-export const DEFAULT_RECIPES_FOLDER = "Recipes";
+export const DEFAULT_RECIPES_FOLDER = "Food";
 
 interface RawNoteJson {
   id: string;
