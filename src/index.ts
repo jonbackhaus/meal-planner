@@ -13,6 +13,7 @@ import { resumeQuietly } from "./orchestrator/resume.js";
 import { SessionStore } from "./orchestrator/session-store.js";
 import { buildPlan } from "./planner/build-plan.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
+import { seasonForDate } from "./planner/season.js";
 import { TransformersEmbedder } from "./recipe-mcp/embedder.js";
 import { getRecipe } from "./recipe-mcp/get-recipe.js";
 import { readNotes } from "./recipe-mcp/notes-reader.js";
@@ -301,6 +302,12 @@ export async function main(): Promise<void> {
         fanoutMultiplier: config.fanoutMultiplier,
         vegFloorK: config.vegFloorK,
         untestedRate: config.untestedRate,
+        // v1.0 tag-based seasonality (bd meal-planner-8zs.9): derive the
+        // current season from the wall clock in the configured zone. Read once
+        // per real generation (buildPlanFor only runs past the idempotency
+        // gate). main() is the clock-owning composition root — cf. nowDate
+        // below. Flows to both the hard search filter and the soft prompt bias.
+        season: seasonForDate(new Date(), config.timezone),
       },
       household,
       deps: { search, llm, getRecipe: getRecipeBound },

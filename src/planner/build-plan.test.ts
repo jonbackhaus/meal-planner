@@ -135,6 +135,48 @@ describe("buildPlan", () => {
     expect(search).toHaveBeenCalledWith("custom seed", expect.anything());
   });
 
+  it("threads cfg.season into BOTH the search filters (hard) and the selection prompt (soft) — bd meal-planner-8zs.9", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await buildPlan({
+      weekKey: "2026-W29",
+      cfg: { ...baseCfg, season: "summer" },
+      household: "Vegetarian daughter every night.",
+      deps: { search, llm, getRecipe },
+    });
+
+    // Hard: every search call carries the season predicate.
+    for (const call of search.mock.calls) {
+      expect(call[1]).toMatchObject({ season: "summer" });
+    }
+    // Soft: the selection prompt names the current season.
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt).toContain("summer");
+  });
+
+  it("omits the season signal entirely when cfg.season is undefined (dormant, pre-8zs.9 behavior)", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await buildPlan({
+      weekKey: "2026-W29",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: { search, llm, getRecipe },
+    });
+
+    for (const call of search.mock.calls) {
+      expect(call[1]).not.toHaveProperty("season");
+    }
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt).not.toContain("current season");
+  });
+
   it("wires the SAME composed pools into both selection and validation: a plan referencing a non-pool id throws", async () => {
     const search = fakeSearch();
     // The LLM "selects" a recipe id that isn't in either composed pool at all,
