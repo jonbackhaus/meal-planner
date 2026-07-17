@@ -151,7 +151,7 @@ vars have no default and fail boot loudly if missing.
 | `MP_SQLITE_PATH_DEV` | `./data/meal-planner.dev.sqlite` | dev session DB (must differ from prod) |
 | `MP_FIRE_ON_START` | unset | set to `1` to fire one trigger immediately at boot (test-fire) |
 | `MP_LOG_PATH` | `./data/meal-planner.log` | durable local alert log |
-| `MP_RECIPES_FOLDER` | `Recipes` | Apple Notes folder the recipe sync reads from |
+| `MP_RECIPES_FOLDER` | `Food` | food-only Apple Notes folder the sync reads from (never a smart folder that also aggregates Drinks) |
 | `MP_HOUSEHOLD` | built-in default | household prose for the planner (see note) |
 
 > **`MP_HOUSEHOLD`**: the built-in default already encodes the hard constraint
@@ -227,7 +227,10 @@ pnpm sync            # one pass: read Apple Notes -> embed -> extract; prints to
 ```
 
 - File your recipe notes under the Apple Notes folder named by
-  `MP_RECIPES_FOLDER` (default `Recipes`); anything else is ignored.
+  `MP_RECIPES_FOLDER` (default `Food`); anything else is ignored. Point this at
+  the food-only folder, **not** a smart folder that aggregates other courses
+  (e.g. a `Recipes` smart folder pulling in a `Drinks` subfolder) — beverages
+  are untagged, pass the dinner gate, and get planned as meals.
 - The first run downloads the local embedding model
   (`Xenova/all-MiniLM-L6-v2` — needs network + a minute); extraction is
   hash-gated, so re-runs are cheap.
