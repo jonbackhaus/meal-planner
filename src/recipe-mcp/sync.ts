@@ -60,8 +60,13 @@ export interface SyncDeps {
    * with a canned map and no dependency on the local Notes DB. Read ONCE per
    * sync (one query), then applied per note — cheap, so tags refresh every
    * sync while the expensive LLM extraction stays body-hash-gated.
+   *
+   * Returns `null` when the read FAILED (NoteStore missing/locked/unreadable),
+   * as distinct from an empty map ("read succeeded, no note has any hashtag").
+   * On `null` the tag pass is skipped so cached tags are preserved, not wiped
+   * to `[]` (q95.13).
    */
-  readNoteTags: () => Map<string, string[]>;
+  readNoteTags: () => Map<string, string[]> | null;
 }
 
 export interface SyncResult {
@@ -121,7 +126,17 @@ export function embeddableTextHash(note: RawNote): string {
  */
 export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   const notes = await deps.readNotes();
+  // `null` == the NoteStore read FAILED (locked/unreadable), which must NOT be
+  // conflated with an empty map ("no tags anywhere"): wiping every note's cached
+  // tags to `[]` on a transient hiccup would empty the tag-driven pools and fail
+  // the plan run (q95.13). On failure we skip the tag pass entirely (below),
+  // preserving cached tags, and warn ONCE for the whole sync.
   const tagsByNote = deps.readNoteTags();
+  if (tagsByNote === null) {
+    console.warn(
+      "sync: NoteStore tag read failed; preserving existing cached tags (skipping tag refresh this sync)",
+    );
+  }
 
   let processed = 0;
   let skipped = 0;
@@ -147,10 +162,14 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
     // Tags refresh every sync (cheap), independent of the extraction gate
     // below — a hashtag edit must take effect without a body change. Written
     // BEFORE the extraction `continue` so unchanged notes still get updated.
-    deps.structuredStore.upsertTags(
-      note.id,
-      tagsByNote.get(noteIdSuffix(note.id)) ?? [],
-    );
+    // Skipped entirely when the read failed (`tagsByNote === null`) so cached
+    // tags survive a NoteStore hiccup rather than being wiped to `[]`.
+    if (tagsByNote !== null) {
+      deps.structuredStore.upsertTags(
+        note.id,
+        tagsByNote.get(noteIdSuffix(note.id)) ?? [],
+      );
+    }
 
     const bodyHash = contentHash(note);
     const structured = deps.structuredStore.getStructured(note.id);

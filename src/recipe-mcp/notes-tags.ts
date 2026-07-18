@@ -17,9 +17,11 @@ import { normalizeTag } from "./tag-metadata.js";
  * the Core Data store UUID: callers match on the trailing segment of the
  * osascript id (`x-coredata://<uuid>/ICNote/p10474`).
  *
- * Fails SOFT: a missing/locked/unreadable DB (or absent table) yields an empty
- * map and a single warning, never a throw — a Notes-DB hiccup must not abort a
- * sync (metadata simply falls back to the LLM-extracted values that run).
+ * Fails SOFT but SIGNALLED: a missing/locked/unreadable DB (or absent table)
+ * returns `null` plus a single warning, never a throw — a Notes-DB hiccup must
+ * not abort a sync. `null` ("read failed") is deliberately DISTINCT from an
+ * empty map ("read succeeded, no note has any hashtag"): the caller preserves
+ * its cached tags on `null` rather than wiping them all to `[]` (q95.13).
  */
 
 const HASHTAG_UTI = "com.apple.notes.inlinetextattachment.hashtag";
@@ -41,7 +43,7 @@ function defaultStorePath(): string {
 
 export function readNoteTags(
   opts: NotesTagsOptions = {},
-): Map<string, string[]> {
+): Map<string, string[]> | null {
   const storePath = opts.storePath ?? defaultStorePath();
   const byNote = new Map<string, string[]>();
 
@@ -50,9 +52,9 @@ export function readNoteTags(
     db = new Database(storePath, { readonly: true, fileMustExist: true });
   } catch (error) {
     console.warn(
-      `notes-tags: could not open NoteStore at "${storePath}" (${(error as Error).message}); continuing without hashtags`,
+      `notes-tags: could not open NoteStore at "${storePath}" (${(error as Error).message}); returning null so the caller preserves cached tags`,
     );
-    return byNote;
+    return null;
   }
 
   try {
@@ -78,9 +80,9 @@ export function readNoteTags(
     }
   } catch (error) {
     console.warn(
-      `notes-tags: failed reading hashtags from NoteStore (${(error as Error).message}); continuing without hashtags`,
+      `notes-tags: failed reading hashtags from NoteStore (${(error as Error).message}); returning null so the caller preserves cached tags`,
     );
-    byNote.clear();
+    return null;
   } finally {
     db.close();
   }
