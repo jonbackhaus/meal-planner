@@ -28,6 +28,8 @@ export interface RunDaemonOptions {
   onStartup: OnStartupHook;
   /** Injected async hook invoked at each weekly trigger (and by `triggerNow()`). E3 supplies the real `generateForWeek` call. */
   onTrigger: OnTriggerHook;
+  /** The never-throwing `alert` composite (from `buildAlert`). Used by the Scheduler's trigger watchdog to surface a hung run through the existing alert mechanism (bd meal-planner-bd6.11). */
+  alert: (message: string) => Promise<void>;
   /** If true, fires `onTrigger` once immediately after startup + scheduling begins (SPEC §9.4 "do one real test-fire"). Does not alter the weekly schedule itself. */
   fireOnStart?: boolean;
   /** Injectable process object (for SIGINT/SIGTERM signal wiring in tests); defaults to the real `process`. */
@@ -70,7 +72,12 @@ export async function runDaemon(
   const scheduler = new Scheduler({
     timezone: options.config.timezone,
     triggerTime: options.config.triggerTime,
+    triggerTimeoutMs: options.config.triggerTimeoutMs,
     onTrigger: options.onTrigger,
+    onTimeout: () =>
+      options.alert(
+        `Scheduler watchdog: a weekly trigger run exceeded the ${options.config.triggerTimeoutMs}ms timeout and was abandoned (alert-only, no state change — the post window is undecidable, cf. startup catch-up D4). The underlying run may still be in flight; a manual re-run may be required.`,
+      ),
     onOverlap: () =>
       logger.warn(
         "Scheduler: a trigger fired while a previous onTrigger run was still in progress; skipping the overlapping run.",

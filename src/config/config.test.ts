@@ -29,7 +29,20 @@ describe("loadConfig", () => {
       vegFloorK: 2,
       untestedRate: 0.15,
       generationDollarCap: 2,
+      triggerTimeoutMs: 2_700_000,
     });
+  });
+
+  it("applies a MP_TRIGGER_TIMEOUT_MS override", () => {
+    const config = loadConfig(validEnv({ MP_TRIGGER_TIMEOUT_MS: "600000" }));
+
+    expect(config.triggerTimeoutMs).toBe(600_000);
+  });
+
+  it("throws when triggerTimeoutMs is not a positive number", () => {
+    const env = validEnv({ MP_TRIGGER_TIMEOUT_MS: "0" });
+
+    expect(() => loadConfig(env)).toThrowError(/triggerTimeoutMs/i);
   });
 
   it("applies overrides for profile, model, and effort from env", () => {

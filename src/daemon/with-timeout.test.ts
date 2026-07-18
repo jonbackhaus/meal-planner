@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withTimeout } from "./with-timeout.js";
+import { TimeoutError, withTimeout } from "./with-timeout.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -37,6 +37,17 @@ describe("withTimeout", () => {
     await assertion;
 
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects with a TimeoutError on timeout, so callers can distinguish it from the wrapped promise's own rejection", async () => {
+    vi.useFakeTimers();
+
+    const hungPromise = new Promise<string>(() => {});
+    const settled = withTimeout(hungPromise, { timeoutMs: 1000 });
+    const assertion = expect(settled).rejects.toBeInstanceOf(TimeoutError);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
   });
 
   it("does not leak a pending timeout timer once the wrapped promise resolves early", async () => {

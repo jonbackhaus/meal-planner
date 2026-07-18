@@ -353,6 +353,10 @@ export async function main(): Promise<void> {
     secrets,
     onStartup,
     onTrigger,
+    // Reuses the same never-throwing composite the orchestrator alerts through,
+    // so the Scheduler's trigger watchdog surfaces a hung run to #agent-alerts
+    // + the local log (bd meal-planner-bd6.11).
+    alert,
     fireOnStart: process.env.MP_FIRE_ON_START === "1",
   });
 
