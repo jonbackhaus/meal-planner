@@ -15,6 +15,7 @@ import { z } from "zod";
  * - MP_VEG_FLOOR_K                -> vegFloorK
  * - MP_UNTESTED_RATE              -> untestedRate
  * - MP_GENERATION_DOLLAR_CAP      -> generationDollarCap
+ * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
  *
  * `modelRates` is not env-configurable (it's a map); it is seeded here with
  * SPEC §9.3 intro-pricing values and can be edited in code when pricing changes.
@@ -118,6 +119,18 @@ const configSchema = z
       .number()
       .positive("generationDollarCap must be a positive number")
       .default(2),
+    // Watchdog cap for a single weekly trigger run (bd meal-planner-bd6.11).
+    // If `onTrigger` (sync -> generate -> post) hangs past this, the Scheduler
+    // stops WAITING on it (releasing its re-entrant `busy` flag so future
+    // Sundays still fire) and ALERTS — alert-only, no state change, since the
+    // post window is undecidable (same rationale as startup catch-up D4).
+    // Generous by design: a real weekly run is minutes; this only trips on a
+    // genuine hang (blocked macOS Automation dialog, stalled SDK subprocess,
+    // wedged Slack call). Default 45 min.
+    triggerTimeoutMs: z
+      .number()
+      .positive("triggerTimeoutMs must be a positive number")
+      .default(45 * 60 * 1000),
   })
   .strict();
 
@@ -181,6 +194,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     vegFloorK: optionalNumber(env.MP_VEG_FLOOR_K),
     untestedRate: optionalNumber(env.MP_UNTESTED_RATE),
     generationDollarCap: optionalNumber(env.MP_GENERATION_DOLLAR_CAP),
+    triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
   };
 
   return validateConfig(raw);

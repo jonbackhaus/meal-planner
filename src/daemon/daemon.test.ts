@@ -31,6 +31,7 @@ function fakeConfig(): Config {
     vegFloorK: 2,
     untestedRate: 0.15,
     generationDollarCap: 2,
+    triggerTimeoutMs: 2_700_000,
   };
 }
 
@@ -61,6 +62,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
     });
 
@@ -80,6 +82,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
     });
 
@@ -98,6 +101,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
     });
 
@@ -116,6 +120,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
     });
 
@@ -133,6 +138,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
     });
 
@@ -153,6 +159,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       fireOnStart: true,
       process: proc as unknown as NodeJS.Process,
     });
@@ -178,6 +185,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
       logger,
     });
@@ -204,6 +212,7 @@ describe("runDaemon", () => {
       secrets: fakeSecrets(),
       onStartup,
       onTrigger,
+      alert: vi.fn(async () => {}),
       process: proc as unknown as NodeJS.Process,
       logger,
     });

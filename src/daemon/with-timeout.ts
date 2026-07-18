@@ -7,6 +7,21 @@
  * instead.
  */
 
+/**
+ * The error `withTimeout` rejects with when the timeout elapses first. A named
+ * subclass (rather than a bare `Error`) so callers can tell a genuine timeout
+ * apart from a rejection propagated from the wrapped promise itself — the
+ * trigger watchdog (`Scheduler`) relies on this to alert only on real timeouts
+ * and let other errors flow through their existing handling. Never carries any
+ * value from the wrapped promise (secret-free, same as the message).
+ */
+export class TimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
+
 export interface WithTimeoutOptions {
   /** Milliseconds to wait before rejecting, if the wrapped promise has not settled. */
   timeoutMs: number;
@@ -29,7 +44,9 @@ export function withTimeout<T>(
 
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new Error(message ?? `Operation timed out after ${timeoutMs}ms`));
+      reject(
+        new TimeoutError(message ?? `Operation timed out after ${timeoutMs}ms`),
+      );
     }, timeoutMs);
 
     promise.then(

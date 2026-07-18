@@ -18,6 +18,7 @@ function baseConfig(profile: "dev" | "prod"): Config {
     vegFloorK: 2,
     untestedRate: 0.15,
     generationDollarCap: 2,
+    triggerTimeoutMs: 2_700_000,
   };
 }
 

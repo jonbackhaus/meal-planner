@@ -212,6 +212,113 @@ describe("Scheduler", () => {
     });
   });
 
+  describe("trigger watchdog (timeout)", () => {
+    it("times out a hung trigger, alerts, releases the busy flag, and the next fire still runs", async () => {
+      vi.useFakeTimers();
+      try {
+        // Pin fake "now" ~1h before that week's Sunday 06:00 America/Chicago
+        // trigger (kept close to the trigger so the fake-timer replay through
+        // croner's <=30s chunked waits stays fast; see the containment test).
+        const reference = new Date("2026-03-01T11:00:00Z"); // Sun (America/Chicago)
+        vi.setSystemTime(reference);
+
+        let callCount = 0;
+        const onTrigger = vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            // Simulates a blocked osascript permission dialog / hung Agent SDK
+            // subprocess / stalled Slack call: the run never settles.
+            await new Promise<void>(() => {});
+          }
+        });
+        const onTimeout = vi.fn();
+        const logger = { warn: vi.fn() };
+
+        const scheduler = new Scheduler({
+          timezone: "America/Chicago",
+          triggerTime: "06:00",
+          triggerTimeoutMs: 1000,
+          onTrigger,
+          onTimeout,
+          logger,
+        });
+
+        const firstTrigger = scheduler.nextRun(reference) as Date;
+        scheduler.start();
+
+        // Advance past the scheduled Sunday fire: run #1 starts and hangs.
+        await vi.advanceTimersByTimeAsync(
+          firstTrigger.getTime() - reference.getTime() + 100,
+        );
+        expect(onTrigger).toHaveBeenCalledTimes(1);
+        expect(onTimeout).not.toHaveBeenCalled();
+
+        // Advance past the watchdog cap: the hung run times out and ALERTS
+        // (alert-only, no state change — same undecidable-post-window
+        // rationale as D4). The underlying run is left in flight.
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(onTimeout).toHaveBeenCalledTimes(1);
+
+        // The busy flag was released despite the still-hung run: a subsequent
+        // fire runs normally, proving the daemon is not wedged for the life of
+        // the process (this is the core bug meal-planner-bd6.11 fixes).
+        await scheduler.triggerNow();
+        expect(onTrigger).toHaveBeenCalledTimes(2);
+
+        scheduler.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("scheduled-overlap logging (croner protect callback)", () => {
+    it("warns (does not silently skip) when a scheduled fire overlaps a still-running trigger", async () => {
+      vi.useFakeTimers();
+      try {
+        const reference = new Date("2026-03-01T11:00:00Z"); // Sun (America/Chicago)
+        vi.setSystemTime(reference);
+
+        const onTrigger = vi.fn(async () => {
+          // The first run never completes, so croner's own overlap guard stays
+          // engaged (`blocking` true) when the NEXT week's fire arrives.
+          await new Promise<void>(() => {});
+        });
+        const onOverlap = vi.fn();
+
+        const scheduler = new Scheduler({
+          timezone: "America/Chicago",
+          triggerTime: "06:00",
+          // No watchdog here: we want the hung first run to still be in-flight
+          // at the next Sunday fire so croner's protect path is exercised.
+          onTrigger,
+          onOverlap,
+        });
+
+        scheduler.start();
+
+        // First Sunday fire starts and hangs; advance across a full week so the
+        // next Sunday fire overlaps it. With a boolean `protect:true` this skip
+        // was fully silent; with a protect *callback* it warns instead.
+        await vi.advanceTimersByTimeAsync(8 * 24 * 60 * 60 * 1000);
+
+        // The overlapping fire did NOT enter guardedTrigger (croner skipped the
+        // callback)...
+        expect(onTrigger).toHaveBeenCalledTimes(1);
+        // ...but the protect callback fired the warn rather than skipping silently.
+        expect(onOverlap).toHaveBeenCalled();
+
+        scheduler.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+      // Generous per-test timeout (default is 5s): proving the overlap needs a
+      // hung first run still in-flight at the NEXT weekly fire, i.e. a full week
+      // of croner's <=30s chunked fake-timer re-arms (~23k async ticks, ~5s on a
+      // fast machine) — enough to exceed the default on a slower CI runner.
+    }, 30_000);
+  });
+
   describe("scheduled-trigger error containment", () => {
     it("contains an onTrigger error on a SCHEDULED fire: no unhandled rejection, the error is logged, and the schedule stays active for the next fire", async () => {
       vi.useFakeTimers();
