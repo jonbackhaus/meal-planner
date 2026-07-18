@@ -48,6 +48,7 @@ describe("readNoteTags", () => {
     ]);
 
     const map = readNoteTags({ storePath });
+    if (map === null) throw new Error("expected a successful read, got null");
 
     expect(map.get("p10474")?.sort()).toEqual(["5-stars", "side"]);
     expect(map.get("p639")).toEqual(["dinner"]);
@@ -62,18 +63,20 @@ describe("readNoteTags", () => {
       { uti: HASHTAG_UTI, note: 1, tag: "#do-ahead" },
     ]);
 
-    expect(readNoteTags({ storePath }).get("p1")?.sort()).toEqual([
+    expect(readNoteTags({ storePath })?.get("p1")?.sort()).toEqual([
       "do-ahead",
       "side",
     ]);
   });
 
-  it("fails soft (empty map + warn, no throw) when the store file is missing", () => {
+  it("returns null (distinct from an empty map) + warns, without throwing, when the store file is missing", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const map = readNoteTags({ storePath: join(dir, "does-not-exist.sqlite") });
 
-    expect(map.size).toBe(0);
+    // null == "read failed" (caller must preserve cached tags); an empty map
+    // would (wrongly) mean "read succeeded, no tags anywhere".
+    expect(map).toBeNull();
     expect(warn).toHaveBeenCalled();
   });
 });

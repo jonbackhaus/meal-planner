@@ -573,4 +573,36 @@ describe("syncNotes — NoteStore tags (bd tags feature)", () => {
       [],
     );
   });
+
+  it("preserves cached tags (skips the upsertTags pass, warns once) when the tag read fails", async () => {
+    // A null read == "NoteStore locked/unreadable" (e.g. Notes.app syncing or
+    // Full Disk Access revoked), which must NOT be mistaken for "no tags exist"
+    // and wipe every note's cached tags to [].
+    const structuredStore = makeFakeStructuredStore();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => [
+        note({ id: "x-coredata://S/ICNote/p10474" }),
+      ]),
+      embedder: makeFakeEmbedder(),
+      store: makeFakeStore(),
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => null,
+    });
+
+    // The tag pass is skipped entirely — cached tags are left untouched.
+    expect(structuredStore.upsertTags).not.toHaveBeenCalled();
+    // Exactly one warning for the failed read (not one per note).
+    const tagWarnings = warnSpy.mock.calls.filter((c) =>
+      c.join(" ").includes("tag"),
+    );
+    expect(tagWarnings).toHaveLength(1);
+    // The rest of the sync still runs — embedding/extraction are unaffected.
+    expect(result.total).toBe(1);
+    expect(result.processed).toBe(1);
+
+    warnSpy.mockRestore();
+  });
 });

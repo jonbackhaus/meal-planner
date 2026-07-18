@@ -25,8 +25,8 @@ export interface RunSyncDeps {
   /** Structured-field cache; satisfied structurally by `StructuredStore`. */
   structuredStore: SyncStructuredStore;
   llm: LlmClient;
-  /** NoteStore hashtag reader; defaults to the real `readNoteTags`. Injectable for hermetic tests. */
-  readNoteTags?: () => Map<string, string[]>;
+  /** NoteStore hashtag reader; defaults to the real `readNoteTags`. Returns `null` when the read failed. Injectable for hermetic tests. */
+  readNoteTags?: () => Map<string, string[]> | null;
 }
 
 export interface RunSyncOptions {
