@@ -51,11 +51,16 @@ export interface SearchRecipesDeps {
 
 /**
  * Confidence floor below which a candidate's `time.active` is treated as
- * unreliable enough to fail the (fail-closed) `active_max` gate. The exact
- * value is the still-open, data-dependent decision `meal-planner-b7n`, to be
- * finalized during the q95.6 corpus validation pass against real extraction
- * confidence distributions — 0.5 is a reasonable interim default, not a
- * validated one.
+ * unreliable enough to fail the (fail-closed) `active_max` gate. Ratified at
+ * 0.5 by the q95.6 corpus validation pass (bd meal-planner-b7n) against the
+ * real 764-recipe extraction distribution: `time.confidence` tracks how
+ * EXPLICITLY the note stated a time, not how wrong the estimate is, so the
+ * genuinely unreliable estimates cluster at conf <= 0.2 (multi-day cures,
+ * bad totals) while moderate-confidence recipes carry sound step-inferred
+ * times. 0.5 sits just above that danger cluster and at a natural break
+ * before the large [0.5, 0.7) mode — keeping 547 weeknight-eligible recipes
+ * (vs. ~6 needed/week), so raising it only drops sound recipes as false
+ * negatives.
  */
 export const CONFIDENCE_THRESHOLD = 0.5;
 
