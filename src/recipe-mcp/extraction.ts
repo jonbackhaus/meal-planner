@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import { extractJsonObject } from "../lib/json-extraction.js";
 import { summarizeZodError } from "../lib/zod-errors.js";
 import type { LlmClient } from "../llm/llm-client.js";
@@ -120,6 +121,13 @@ async function runLlm(
     const result = await llm.runQuery({ prompt });
     return result.text;
   } catch (error) {
+    // The per-run dollar cap (SPEC §9.3) is NOT a per-note extraction failure:
+    // it must propagate UNWRAPPED so sync.ts can detect it via `instanceof`
+    // and abort the whole batch (bd meal-planner-fkg.6), rather than being
+    // masked as an ExtractionError that marks this note needs_review.
+    if (error instanceof CostCapExceededError) {
+      throw error;
+    }
     throw new ExtractionError(
       noteId,
       `LLM ${step} query failed: ${(error as Error).message}`,

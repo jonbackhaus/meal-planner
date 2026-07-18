@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import type { Embedder } from "./embedder.js";
 import { type ExtractedFields, extractRecipeFields } from "./extraction.js";
@@ -122,7 +123,10 @@ export function embeddableTextHash(note: RawNote): string {
  * only — never the body or raw LLM output), recorded as a minimal
  * `needs_review: true` cache entry (so it's retried on the next sync
  * regardless of body hash), and does NOT stop the batch — reflected in
- * `SyncResult.extractionFailures`.
+ * `SyncResult.extractionFailures`. The one exception is a
+ * `CostCapExceededError` (SPEC §9.3, bd meal-planner-fkg.6): the per-run
+ * dollar cap is NOT a per-note failure, so it rethrows to abort the batch
+ * WITHOUT marking the note `needs_review`.
  */
 export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   const notes = await deps.readNotes();
@@ -191,7 +195,15 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
         fields,
         needsReview: false,
       });
-    } catch {
+    } catch (err) {
+      // The per-run dollar cap (SPEC §9.3, bd meal-planner-fkg.6) is NOT an
+      // isolated extraction failure: once tripped, every remaining note would
+      // re-extract uncapped AND be mislabeled needs_review. Rethrow to ABORT
+      // the batch, leaving this note's cache record untouched (no needs_review
+      // write). Everything else stays a per-note failure handled below.
+      if (err instanceof CostCapExceededError) {
+        throw err;
+      }
       extractionFailures += 1;
       console.warn(
         `sync: extraction failed for note ${note.id}; marking needs_review for retry on next sync`,

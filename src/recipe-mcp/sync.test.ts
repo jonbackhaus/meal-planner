@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import { contentHash, type RawNote } from "./notes-reader.js";
 import { EXTRACTOR_VERSION } from "./structured-store.js";
 import { embeddableTextHash, syncNotes } from "./sync.js";
@@ -484,6 +485,44 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
     for (const call of warnSpy.mock.calls) {
       expect(call.join(" ")).not.toContain(badNote.body);
     }
+
+    warnSpy.mockRestore();
+  });
+
+  it("ABORTS the batch (rethrows) on CostCapExceededError without corrupting the note record", async () => {
+    // The per-run dollar cap (SPEC §9.3) is NOT an ordinary extraction failure:
+    // once the metered llm trips it, every remaining note would be re-extracted
+    // uncapped AND mislabeled needs_review. So the cap error must rethrow and
+    // stop the batch, leaving the offending note's cache record untouched.
+    const firstNote = note({ id: "note-first" });
+    const secondNote = note({ id: "note-second" });
+    const store = makeFakeStore();
+    const embedder = makeFakeEmbedder();
+    const structuredStore = makeFakeStructuredStore();
+    const llm = {
+      runQuery: vi.fn(async () => {
+        throw new CostCapExceededError(3, 2);
+      }),
+    };
+    const readNotes = vi.fn(async () => [firstNote, secondNote]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      syncNotes({
+        readNotes,
+        embedder,
+        store,
+        structuredStore,
+        llm,
+        readNoteTags: () => new Map(),
+      }),
+    ).rejects.toThrow(CostCapExceededError);
+
+    // The note is NOT marked needs_review -- its good/absent record is preserved.
+    expect(structuredStore.upsertStructured).not.toHaveBeenCalled();
+    // The batch aborted at the first note: the second note was never reached.
+    expect(llm.runQuery).toHaveBeenCalledTimes(1);
+    expect(store.upsert).toHaveBeenCalledTimes(1);
 
     warnSpy.mockRestore();
   });

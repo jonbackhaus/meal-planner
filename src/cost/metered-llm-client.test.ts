@@ -153,6 +153,51 @@ describe("meteredLlmClient", () => {
       expect(meter.totals().costUsd).toBeCloseTo(10, 10);
     });
 
+    it("throws BEFORE calling inner.runQuery once already over the cap -- no further spend", async () => {
+      // First call blows past the $2 cap ($3 spent); the SECOND call must be
+      // rejected by the pre-call gate WITHOUT ever reaching inner.runQuery, so
+      // an over-cap run stops spending immediately instead of paying full price
+      // on every remaining call before the post-call check catches it.
+      const meter = new CostMeter(CAP_RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 3_000_000, outputTokens: 0 },
+        })),
+      };
+      const metered = meteredLlmClient(inner, meter, { capUsd: 2 });
+
+      await expect(metered.runQuery({ prompt: "first" })).rejects.toThrow(
+        CostCapExceededError,
+      );
+      expect(inner.runQuery).toHaveBeenCalledTimes(1); // the over-cap call itself
+
+      await expect(metered.runQuery({ prompt: "second" })).rejects.toThrow(
+        CostCapExceededError,
+      );
+      // Still 1: the pre-call gate short-circuited before inner.runQuery ran.
+      expect(inner.runQuery).toHaveBeenCalledTimes(1);
+      // No additional spend recorded for the short-circuited call.
+      expect(meter.totals().costUsd).toBeCloseTo(3, 10);
+    });
+
+    it("with no capUsd, the pre-call gate never short-circuits", async () => {
+      const meter = new CostMeter(CAP_RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 10_000_000, outputTokens: 0 },
+        })),
+      };
+      const metered = meteredLlmClient(inner, meter);
+
+      await metered.runQuery({ prompt: "first" }); // $10, way over any cap
+      await expect(
+        metered.runQuery({ prompt: "second" }),
+      ).resolves.toBeDefined();
+      expect(inner.runQuery).toHaveBeenCalledTimes(2);
+    });
+
     it("the thrown error names the cost and the cap", async () => {
       const meter = new CostMeter(CAP_RATE);
       const inner: LlmClient = {

@@ -24,12 +24,20 @@ export interface MeteredLlmClientOptions {
  * `generateForWeek`'s wiring for how a run's already-recorded partial spend
  * still persists on a later failure).
  *
- * Cap check happens AFTER `meter.record` -- the call that pushes the run
- * over the cap really was spent, so it's counted, and THEN the throw
- * prevents any further calls this run. The thrown `CostCapExceededError`
- * propagates out of `buildPlan` and is caught by `generateForWeek`'s
- * existing failure path (row -> `failed`, alert fires, partial spend
- * persisted) -- no separate stop/alert mechanism here or there.
+ * TWO cap gates, both required (bd meal-planner-fkg.6):
+ *  - PRE-call: if the run is ALREADY over cap, throw BEFORE `inner.runQuery`
+ *    so no further money is spent. Without this, a run that trips the cap
+ *    mid-batch (e.g. an ~800-note sync re-extraction) would pay full price on
+ *    every remaining call before the post-call check caught each one.
+ *  - POST-call (after `meter.record`): catches a single call that itself
+ *    blows the cap -- that call really was spent, so it's counted, and THEN
+ *    the throw prevents any further calls this run.
+ *
+ * The thrown `CostCapExceededError` propagates out of `buildPlan` and is
+ * caught by `generateForWeek`'s existing failure path (row -> `failed`,
+ * alert fires, partial spend persisted); on the sync path it propagates out
+ * of `extractRecipeFields` (unwrapped) and aborts the batch in `syncNotes` --
+ * no separate stop/alert mechanism here or there.
  *
  * The returned `LlmResult` is passed through unchanged when under (or with
  * no) cap -- this is a pure side-effecting decorator, not a transform.
@@ -42,8 +50,16 @@ export function meteredLlmClient(
   const capUsd = options?.capUsd;
   return {
     async runQuery(input: RunQueryInput): Promise<LlmResult> {
+      // PRE-call gate: already over cap => refuse to spend anything more.
+      if (capUsd != null) {
+        const { costUsd } = meter.totals();
+        if (costUsd > capUsd) {
+          throw new CostCapExceededError(costUsd, capUsd);
+        }
+      }
       const result = await inner.runQuery(input);
       meter.record(result.usage);
+      // POST-call gate: this call itself may have pushed the run over.
       if (capUsd != null) {
         const { costUsd } = meter.totals();
         if (costUsd > capUsd) {
