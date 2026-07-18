@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import {
   ExtractedFieldsSchema,
@@ -160,5 +161,21 @@ describe("extractRecipeFields", () => {
     await expect(extractRecipeFields(theNote, llm)).rejects.not.toMatchObject({
       message: expect.stringContaining("SECRET_BODY_TEXT"),
     });
+  });
+
+  it("rethrows a CostCapExceededError UNWRAPPED (not as ExtractionError) so sync can abort the batch", async () => {
+    // The metered llm (SPEC §9.3) throws CostCapExceededError once the per-run
+    // cap is tripped. If runLlm wrapped it in ExtractionError like an ordinary
+    // failure, sync.ts's `instanceof CostCapExceededError` abort check could
+    // never fire -- so it must propagate untouched.
+    const llm: LlmClient = {
+      runQuery: vi.fn(async () => {
+        throw new CostCapExceededError(3, 2);
+      }),
+    };
+
+    await expect(extractRecipeFields(note(), llm)).rejects.toBeInstanceOf(
+      CostCapExceededError,
+    );
   });
 });
