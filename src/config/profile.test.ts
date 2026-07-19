@@ -106,6 +106,29 @@ describe("resolveProfile", () => {
     );
   });
 
+  it("throws when dev and prod sqlite paths differ as strings but resolve to the same file", () => {
+    // "data/mp.sqlite" vs "./data/mp.sqlite" are distinct raw strings but the
+    // SAME file — a raw-string compare would miss the collision SPEC §7 exists
+    // to prevent (dev forceRegenerate overwriting prod rows).
+    const env = baseEnv({
+      MP_SQLITE_PATH_DEV: "data/mp.sqlite",
+      MP_SQLITE_PATH_PROD: "./data/mp.sqlite",
+    });
+
+    expect(() => resolveProfile(baseConfig("dev"), env)).toThrowError(
+      /sqlitePath/i,
+    );
+  });
+
+  it("accepts genuinely different explicit sqlite paths", () => {
+    const env = baseEnv({
+      MP_SQLITE_PATH_DEV: "./data/dev.sqlite",
+      MP_SQLITE_PATH_PROD: "./data/prod.sqlite",
+    });
+
+    expect(() => resolveProfile(baseConfig("dev"), env)).not.toThrow();
+  });
+
   it("applies the MP_POST_MODE override to dry-run", () => {
     const env = baseEnv({ MP_POST_MODE: "dry-run" });
 

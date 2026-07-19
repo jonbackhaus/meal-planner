@@ -57,22 +57,28 @@ const DEFAULT_HOUSEHOLD =
  * bd meal-planner-bd6.9), used when `profile.postMode === "dry-run"`.
  * Renders the plan via the real `renderPlan` (E5, bj1.2) and logs it clearly
  * labelled DRY-RUN alongside the target channel, rather than calling
- * Slack's `chat.postMessage`. Returns a SYNTHETIC `ts` (an incrementing
- * counter, never `Date.now()`) so `generateForWeek`'s write-before-post
- * bookkeeping has something stable to persist.
+ * Slack's `chat.postMessage`. Returns a SYNTHETIC `ts` (never `Date.now()`)
+ * so `generateForWeek`'s write-before-post bookkeeping has something stable
+ * to persist.
+ *
+ * The synthetic ts is WEEK-SCOPED (`dryrun-${plan.week_key}`), not a
+ * per-process counter (bd meal-planner-bd6.14): a counter reset `dryrun-1` on
+ * every daemon reboot, so retained dev rows across reboots collided on
+ * `thread_ts=dryrun-1`, breaking the `getByThreadTs` reverse map those rows
+ * are retained for. Deriving it from the week gives each week a stable, unique
+ * ts. The reverse-map key is itself week-scoped (one session row per
+ * `week_key`), so even if two dry-run posts fired for the same week they'd
+ * share this ts by design — matching the single retained row for that week.
  *
  * The real `chat.postMessage`-backed `PostFn` (E5 bj1.3, `SlackPoster`) is
  * wired in `main()` below when `profile.postMode === "post"`.
  */
-function buildDryRunPost(
+export function buildDryRunPost(
   profile: ProfileSettings,
   logger: Pick<Console, "log"> = console,
 ): (plan: EnrichedWeekPlan) => Promise<{ ts: string }> {
-  let counter = 0;
-
   return async (plan: EnrichedWeekPlan) => {
-    counter += 1;
-    const ts = `dryrun-${counter}`;
+    const ts = `dryrun-${plan.week_key}`;
     logger.log(
       `[DRY-RUN post] channel=${profile.channelId} ts=${ts}\n${renderPlan(plan)}`,
     );
@@ -179,6 +185,79 @@ export function applySecretsToEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   env.ANTHROPIC_API_KEY = secrets.anthropicApiKey;
+}
+
+/**
+ * Time budget for the best-effort ALERT attempt inside {@link makeFatalHandler}
+ * (bd meal-planner-bd6.14). A fatal handler must ALWAYS reach its deliberate
+ * `exit(1)` — if the Slack alert transport hangs, waiting on it forever would
+ * leave a half-dead process alive and re-introduce the very flapping that
+ * launchd `KeepAlive` already masks. Bounding the alert guarantees exit.
+ */
+export const FATAL_ALERT_TIMEOUT_MS = 5_000;
+
+/** Injected deps for {@link makeFatalHandler}. `exit` is injected so tests can assert exit(1) without killing the runner. */
+export interface FatalHandlerDeps {
+  /** Synchronous durable local-log append (`appendLog` bound to a path/clock). */
+  appendLocal: (message: string) => void;
+  /** The never-throwing alert composite from {@link buildAlert} (log + best-effort Slack). */
+  alert: (message: string) => Promise<void>;
+  /** `process.exit`, injected so a test can assert the exit code without terminating the runner. */
+  exit: (code: number) => void;
+  logger?: Pick<Console, "error">;
+  /** Overridable in tests; defaults to {@link FATAL_ALERT_TIMEOUT_MS}. */
+  alertTimeoutMs?: number;
+}
+
+/**
+ * Builds the process-level fatal handler installed in `main()` for both
+ * `unhandledRejection` and `uncaughtException` (bd meal-planner-bd6.14).
+ * Without it, a stray rejection off the awaited chain crashes silently (only
+ * an err.log line) while launchd `KeepAlive` masks the flapping.
+ *
+ * On a fatal fault it does, in order:
+ *   1. A SYNCHRONOUS durable local-log append — happens before any async work,
+ *      so the crash is on disk even if the process is in an undefined state or
+ *      the alert transport is unreachable.
+ *   2. A best-effort ALERT (the never-throwing composite), bounded by
+ *      {@link FATAL_ALERT_TIMEOUT_MS} so a hung transport cannot prevent exit.
+ *   3. A DELIBERATE `exit(1)` — we do NOT swallow a truly fatal fault; a clean
+ *      launchd restart beats a half-dead process limping on.
+ *
+ * The handler itself never throws: the log append and the alert are each
+ * guarded, mirroring the codebase's never-let-alert-throw discipline.
+ */
+export function makeFatalHandler(
+  deps: FatalHandlerDeps,
+): (error: unknown) => Promise<void> {
+  const {
+    appendLocal,
+    alert,
+    exit,
+    logger = console,
+    alertTimeoutMs = FATAL_ALERT_TIMEOUT_MS,
+  } = deps;
+
+  return async (error: unknown) => {
+    const message = `FATAL: unhandled error crashed the daemon; exiting for launchd to restart: ${String(error)}`;
+
+    try {
+      appendLocal(message);
+    } catch (err) {
+      logger.error(`[fatal] local log append failed: ${String(err)}`);
+    }
+
+    try {
+      await withTimeout(alert(message), {
+        timeoutMs: alertTimeoutMs,
+        message: "fatal-handler alert timed out",
+      });
+    } catch (err) {
+      logger.error(`[fatal] alert attempt failed: ${String(err)}`);
+    }
+
+    exit(1);
+  };
 }
 
 /**
@@ -310,6 +389,25 @@ export async function main(): Promise<void> {
   // Built before buildPlanFor so the recipe-sync-failure path can post to
   // #agent-alerts (proceed + alert; see makeBuildPlanWithSync).
   const alert = buildAlert(profile, secrets);
+
+  // Process-level safety net (bd meal-planner-bd6.14): a stray rejection off
+  // the awaited chain would otherwise crash silently while launchd KeepAlive
+  // masks the flapping. Log durably + best-effort alert, then deliberately
+  // exit(1) for a clean restart. Uses the same local-log path buildAlert
+  // resolves internally (MP_LOG_PATH || DEFAULT_LOG_PATH).
+  const fatalLogPath = process.env.MP_LOG_PATH || DEFAULT_LOG_PATH;
+  const fatalHandler = makeFatalHandler({
+    appendLocal: (message: string) =>
+      appendLog(fatalLogPath, message, () => new Date()),
+    alert,
+    exit: (code: number) => process.exit(code),
+  });
+  process.on("unhandledRejection", (reason: unknown) => {
+    void fatalHandler(reason);
+  });
+  process.on("uncaughtException", (err: unknown) => {
+    void fatalHandler(err);
+  });
 
   // Recipe folder to sync from (notes-reader scopes to a single Notes folder);
   // empty/unset falls back to notes-reader's DEFAULT_RECIPES_FOLDER.
