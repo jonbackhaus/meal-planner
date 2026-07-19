@@ -169,6 +169,41 @@ describe("runDaemon", () => {
     await handle.shutdown();
   });
 
+  it("fireOnStart: a failing test-fire is contained -- runDaemon resolves, the daemon keeps running, and it alerts", async () => {
+    const onStartup = vi.fn(async () => {});
+    const boom = new Error("PRIMARY KEY constraint failed: sessions.week_key");
+    const onTrigger = vi.fn(async () => {
+      throw boom;
+    });
+    const alert = vi.fn(async () => {});
+    const proc = new FakeProcess();
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    // fireOnStart calls scheduler.triggerNow(), which (by design) propagates
+    // onTrigger's error to its caller -- unlike the scheduled fire, whose
+    // croner `catch` contains it. Left unguarded, that rejection rejects
+    // runDaemon -> main() -> process.exit(1); with MP_FIRE_ON_START persisted
+    // in launchd env (+ dev forceRegenerate re-firing into a PK-insert throw)
+    // that's a tight restart loop. runDaemon must contain it and keep running.
+    const handle = await runDaemon({
+      config: fakeConfig(),
+      secrets: fakeSecrets(),
+      onStartup,
+      onTrigger,
+      alert,
+      fireOnStart: true,
+      process: proc as unknown as NodeJS.Process,
+      logger,
+    });
+
+    expect(onTrigger).toHaveBeenCalledTimes(1);
+    // The failure is surfaced (alert-only discipline) and logged, not swallowed.
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalled();
+    // The daemon is alive: the handle works and shuts down cleanly.
+    await expect(handle.shutdown()).resolves.toBeUndefined();
+  });
+
   it("calls checkSystemSleepDisabled at boot and logs a warning (not a throw) when sleep is enabled", async () => {
     mockedCheckSystemSleepDisabled.mockImplementation(async () => ({
       disabled: false,

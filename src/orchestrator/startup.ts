@@ -76,7 +76,26 @@ export async function onStartup(deps: OnStartupDeps): Promise<void> {
       // Missed the trigger (e.g. the daemon was down at the time) -> catch
       // up now. `force: false` preserves generateForWeek's own idempotency
       // gate in case a row shows up between our `get` and this call.
-      await generateForWeek(wk, { force: false });
+      //
+      // CONTAIN a generateForWeek throw (bd6.12): generate.ts rethrows even
+      // after it has alerted + marked the row `failed`, and a throw from
+      // `store.insert` itself (disk full / SQLITE_BUSY) rethrows with no row
+      // written at all. Left unguarded, that propagates out of onStartup ->
+      // main() -> process.exit(1) -> launchd KeepAlive crash-boot loop,
+      // re-running full sync/LLM spend (+ alert spam) every restart. It has
+      // already alerted/recorded inside generateForWeek, so here we only log
+      // and CONTINUE booting so the scheduler still starts. (Log-only, not a
+      // second alert: the live-row branch below alerts because resumeQuietly
+      // does NOT alert internally; catch-up does the opposite.)
+      try {
+        await generateForWeek(wk, { force: false });
+      } catch (err) {
+        console.error(
+          `startup: catch-up generation for week ${wk} threw; continuing boot (scheduler still starts): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
     // else: not yet time -- do nothing; the in-process scheduler will fire
     // at the trigger moment.
@@ -113,10 +132,28 @@ export async function onStartup(deps: OnStartupDeps): Promise<void> {
       // auto-generate -- alert a human and mark `failed` so restarts don't
       // re-alert. The message names only the week_key: never the
       // working_plan/thread_ts (could carry household prose).
+      //
+      // Transition FIRST, then alert (bd6.12): the old order alerted BEFORE an
+      // undefended transition, so a store fault on the transition would crash
+      // boot AFTER alerting -- and, with the row still `generating`, re-alert +
+      // re-crash on every launchd restart (alert spam + crash loop, violating
+      // alert-once). Marking `failed` first means the normal path can't
+      // alert-then-crash. The transition is ALSO wrapped so even a persistent
+      // store fault is contained: log + continue booting (scheduler still
+      // starts). A fault leaves the row `generating` and MAY re-alert on a
+      // later restart -- an accepted degraded mode; a crash loop is not.
+      try {
+        transition(store, wk, "failed", {}, n.toISOString());
+      } catch (err) {
+        console.error(
+          `startup: marking interrupted week ${wk} as failed threw; continuing boot (scheduler still starts): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       await alert(
         `generation for week ${wk} was interrupted; check #meal-plan, re-run manually if needed`,
       );
-      transition(store, wk, "failed", {}, n.toISOString());
       return;
     case "failed":
     case "expired":

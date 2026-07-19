@@ -133,6 +133,29 @@ describe("onStartup", () => {
       expect(store.get("2026-07-05")).toBeNull();
     });
 
+    it("past the trigger but generateForWeek throws: boot CONTINUES (resolves, does not rethrow) so the scheduler still starts", async () => {
+      store = makeStore();
+      const now = new Date(TRIGGER_INSTANT);
+      const deps = makeDeps(store, now);
+      // generate.ts rethrows even after it has alerted + marked the row
+      // `failed` internally (and a throw from `store.insert` itself -- disk
+      // full / SQLITE_BUSY -- rethrows with no row written at all). Left
+      // unguarded, that propagates out of onStartup -> main() ->
+      // process.exit(1) -> launchd KeepAlive crash-boot loop, re-running full
+      // sync/LLM spend every restart. onStartup must contain it: log + continue.
+      const boom = new Error("SQLITE_BUSY: database is locked");
+      deps.generateForWeek.mockImplementationOnce(async () => {
+        throw boom;
+      });
+
+      await expect(onStartup(deps)).resolves.toBeUndefined();
+
+      expect(deps.generateForWeek).toHaveBeenCalledTimes(1);
+      // No double-alert: generateForWeek owns the alert for this path, so
+      // onStartup only logs and continues (never re-alerts here).
+      expect(deps.alert).not.toHaveBeenCalled();
+    });
+
     it("uses the SAME now for both currentPlanWeek and the trigger comparison (single now() call)", async () => {
       store = makeStore();
       const now = new Date(TRIGGER_INSTANT);
@@ -218,6 +241,30 @@ describe("onStartup", () => {
 
       const row = store.get(WEEK);
       expect(row?.status).toBe("failed");
+    });
+
+    it("a store fault on the transition-to-failed does NOT crash boot (contained; scheduler still starts)", async () => {
+      store = makeStore();
+      insertRow(store, "generating");
+      const now = new Date("2026-07-13T17:00:00.000Z");
+      const deps = makeDeps(store, now);
+      // Simulate a disk / SQLITE_BUSY fault on the `failed` write. Left
+      // undefended, this throw propagates out of onStartup -> boot crash; and
+      // because the row is still `generating` on the next launchd restart, it
+      // re-alerts and re-crashes forever (alert spam + crash loop, violating
+      // alert-once). onStartup must contain the transition: log + continue.
+      const updateSpy = vi.spyOn(store, "update").mockImplementation(() => {
+        throw new Error("SQLITE_BUSY: database is locked");
+      });
+
+      await expect(onStartup(deps)).resolves.toBeUndefined();
+
+      // The row is left `generating` (the write faulted) -- an accepted
+      // degraded mode: a later restart may re-alert, but boot never
+      // crash-loops. The human is still notified on this boot.
+      expect(store.get(WEEK)?.status).toBe("generating");
+      expect(deps.alert).toHaveBeenCalledTimes(1);
+      updateSpy.mockRestore();
     });
 
     it("repeated restarts do not re-alert once the row is already failed", async () => {
