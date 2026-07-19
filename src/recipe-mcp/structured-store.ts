@@ -33,9 +33,19 @@ export interface UpsertStructuredInput {
   /** null when extraction has never succeeded for this note (e.g. a needs_review-only record after a failed attempt). */
   fields: ExtractedFields | null;
   needsReview: boolean;
+  /**
+   * Count of CONSECUTIVE extraction failures for the current body+extractor
+   * version (q95.7). Drives sync.ts's attempt cap: a deterministically-failing
+   * note stops being re-extracted once this reaches the cap, until its body (and
+   * thus `contentHash`) changes. Omitted on write == 0 (backward-compat with
+   * pre-field rows / callers that don't track it).
+   */
+  failedAttempts?: number;
 }
 
 export interface StructuredRecord extends UpsertStructuredInput {
+  /** Always populated on read (defaults to 0 for pre-field rows). */
+  failedAttempts: number;
   /**
    * The note's Apple Notes hashtags (normalized), sourced from NoteStore and
    * written independently of extraction (`upsertTags`) — they can change
@@ -50,6 +60,7 @@ interface StructuredFieldsRow {
   extractor_version: number;
   fields_json: string | null;
   needs_review: number;
+  failed_attempts: number;
   tags_json: string | null;
 }
 
@@ -79,15 +90,22 @@ export class StructuredStore {
         needs_review INTEGER NOT NULL DEFAULT 0
       );
     `);
-    // Migration: add the NoteStore-tags column to pre-existing DBs. SQLite has
-    // no "ADD COLUMN IF NOT EXISTS", so guard on the current column set.
-    const hasTags = (
+    // Migrations: add newer columns to pre-existing DBs. SQLite has no
+    // "ADD COLUMN IF NOT EXISTS", so guard on the current column set. Both
+    // columns carry defaults so pre-migration rows read back cleanly ([] tags,
+    // 0 failed attempts).
+    const columns = (
       this.db.prepare("PRAGMA table_info(structured_fields)").all() as Array<{
         name: string;
       }>
-    ).some((c) => c.name === "tags_json");
-    if (!hasTags) {
+    ).map((c) => c.name);
+    if (!columns.includes("tags_json")) {
       this.db.exec("ALTER TABLE structured_fields ADD COLUMN tags_json TEXT");
+    }
+    if (!columns.includes("failed_attempts")) {
+      this.db.exec(
+        "ALTER TABLE structured_fields ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0",
+      );
     }
   }
 
@@ -95,7 +113,7 @@ export class StructuredStore {
   getStructured(noteId: string): StructuredRecord | null {
     const row = this.db
       .prepare(
-        "SELECT content_hash, extractor_version, fields_json, needs_review, tags_json FROM structured_fields WHERE note_id = ?",
+        "SELECT content_hash, extractor_version, fields_json, needs_review, failed_attempts, tags_json FROM structured_fields WHERE note_id = ?",
       )
       .get(noteId) as StructuredFieldsRow | undefined;
     if (!row) {
@@ -108,6 +126,7 @@ export class StructuredStore {
         ? (JSON.parse(row.fields_json) as ExtractedFields)
         : null,
       needsReview: row.needs_review !== 0,
+      failedAttempts: row.failed_attempts ?? 0,
       tags: row.tags_json ? (JSON.parse(row.tags_json) as string[]) : [],
     };
   }
@@ -116,13 +135,14 @@ export class StructuredStore {
   upsertStructured(noteId: string, record: UpsertStructuredInput): void {
     this.db
       .prepare(
-        `INSERT INTO structured_fields (note_id, content_hash, extractor_version, fields_json, needs_review)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO structured_fields (note_id, content_hash, extractor_version, fields_json, needs_review, failed_attempts)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(note_id) DO UPDATE SET
            content_hash = excluded.content_hash,
            extractor_version = excluded.extractor_version,
            fields_json = excluded.fields_json,
-           needs_review = excluded.needs_review`,
+           needs_review = excluded.needs_review,
+           failed_attempts = excluded.failed_attempts`,
       )
       .run(
         noteId,
@@ -130,6 +150,7 @@ export class StructuredStore {
         record.extractorVersion,
         record.fields ? JSON.stringify(record.fields) : null,
         record.needsReview ? 1 : 0,
+        record.failedAttempts ?? 0,
       );
   }
 

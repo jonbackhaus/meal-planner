@@ -65,6 +65,7 @@ interface FakeStructuredRecord {
   extractorVersion: number;
   fields: ReturnType<typeof extractedFields> | null;
   needsReview: boolean;
+  failedAttempts?: number;
 }
 
 function makeFakeStructuredStore(
@@ -559,6 +560,154 @@ describe("syncNotes — extraction gate (body-only hash + extractor version, ind
         fields: extractedFields(),
       }),
     );
+  });
+});
+
+describe("syncNotes — extraction attempt cap / backoff (q95.7)", () => {
+  function llmAlwaysFailing() {
+    // Returns unparseable text on every call, so both the initial attempt and
+    // the one repair retry fail -> deterministic ExtractionError every sync.
+    return makeFakeLlm(async () => ({
+      text: "not json at all",
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+  }
+
+  it("stops re-extracting a deterministically-failing note after the cap, then resumes when the body changes", async () => {
+    const failingNote = note();
+    const store = makeFakeStore();
+    const embedder = makeFakeEmbedder();
+    const structuredStore = makeFakeStructuredStore();
+    const llm = llmAlwaysFailing();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const deps = {
+      readNotes: vi.fn(async () => [failingNote]),
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map<string, string[]>(),
+    };
+
+    // Syncs 1..3 each attempt extraction (2 llm calls: initial + repair) and fail.
+    for (let i = 0; i < 3; i += 1) {
+      const r = await syncNotes(deps);
+      expect(r.extractionFailures).toBe(1);
+    }
+    // 3 failed attempts x 2 llm calls each.
+    expect(llm.runQuery).toHaveBeenCalledTimes(6);
+    expect(structuredStore.records.get("note-1")?.failedAttempts).toBe(3);
+
+    // Sync 4+: the note is capped -> extraction skipped, NOT counted as a failure.
+    const capped = await syncNotes(deps);
+    expect(capped.extractionFailures).toBe(0);
+    await syncNotes(deps);
+    expect(llm.runQuery).toHaveBeenCalledTimes(6); // unchanged: no further attempts
+
+    // Body change resets the counter and re-enables extraction.
+    const changedNote = note({ body: "A brand-new recipe body entirely." });
+    deps.readNotes = vi.fn(async () => [changedNote]);
+    await syncNotes(deps);
+    expect(llm.runQuery).toHaveBeenCalledTimes(8); // one fresh attempt (2 calls)
+    // Counter reset to 1 for the new body (a single fresh failure), not 4.
+    expect(structuredStore.records.get("note-1")?.failedAttempts).toBe(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it("does NOT count a store-write error after a SUCCESSFUL extraction as an extraction failure", async () => {
+    const store = makeFakeStore();
+    const embedder = makeFakeEmbedder();
+    const structuredStore = makeFakeStructuredStore();
+    // The extraction succeeds, but the success-path store write throws. It must
+    // surface as itself, not be swallowed/relabeled as an extraction failure.
+    structuredStore.upsertStructured.mockImplementation(() => {
+      throw new Error("db write failed");
+    });
+    const llm = llmReturning(extractedFields());
+
+    await expect(
+      syncNotes({
+        readNotes: vi.fn(async () => [note()]),
+        embedder,
+        store,
+        structuredStore,
+        llm,
+        readNoteTags: () => new Map(),
+      }),
+    ).rejects.toThrow("db write failed");
+
+    // The one upsert attempt was the SUCCESS write (fields present, not needs_review):
+    // the error was not caught and re-labeled a needs_review extraction failure.
+    expect(structuredStore.upsertStructured).toHaveBeenCalledTimes(1);
+    expect(structuredStore.upsertStructured).toHaveBeenCalledWith(
+      "note-1",
+      expect.objectContaining({
+        needsReview: false,
+        fields: extractedFields(),
+      }),
+    );
+  });
+
+  it("logs a redacted failure reason (error.message) on an extraction failure", async () => {
+    const store = makeFakeStore();
+    const embedder = makeFakeEmbedder();
+    const structuredStore = makeFakeStructuredStore();
+    const llm = llmAlwaysFailing();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await syncNotes({
+      readNotes: vi.fn(async () => [note()]),
+      embedder,
+      store,
+      structuredStore,
+      llm,
+      readNoteTags: () => new Map(),
+    });
+
+    const logged = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("note-1");
+    // The concrete (secret-free) reason from ExtractionError is surfaced.
+    expect(logged).toContain("could not parse JSON");
+    warnSpy.mockRestore();
+  });
+
+  it("a CostCapExceededError aborts the batch and does NOT increment the attempt counter", async () => {
+    // Regression for fkg.6 interplay: the per-run dollar cap must still abort
+    // (rethrow) AND must never be counted as a per-note attempt-cap failure.
+    const cappedNote = note();
+    const store = makeFakeStore({ "note-1": "stale-hash" });
+    const embedder = makeFakeEmbedder();
+    const structuredStore = makeFakeStructuredStore({
+      "note-1": {
+        contentHash: "stale-body-hash", // stale -> extraction attempted
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: null,
+        needsReview: true,
+        failedAttempts: 1,
+      },
+    });
+    const llm = {
+      runQuery: vi.fn(async () => {
+        throw new CostCapExceededError(3, 2);
+      }),
+    };
+
+    await expect(
+      syncNotes({
+        readNotes: vi.fn(async () => [cappedNote]),
+        embedder,
+        store,
+        structuredStore,
+        llm,
+        readNoteTags: () => new Map(),
+      }),
+    ).rejects.toThrow(CostCapExceededError);
+
+    // No cache write at all -> the existing counter is left untouched, not bumped.
+    expect(structuredStore.upsertStructured).not.toHaveBeenCalled();
+    expect(structuredStore.records.get("note-1")?.failedAttempts).toBe(1);
   });
 });
 
