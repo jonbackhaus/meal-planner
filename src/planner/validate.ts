@@ -3,8 +3,10 @@ import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import { buildSelectionPrompt, type PlannerInput } from "./input.js";
 import type { Pools } from "./pools.js";
 import {
-  llmSelect,
   llmSelectFromPrompt,
+  PlanSelectionError,
+  parseSelectionResponse,
+  runSelectionQuery,
   type SelectedMeal,
   type WeekPlan,
 } from "./select.js";
@@ -286,6 +288,41 @@ export function buildRepairPrompt(
   );
 }
 
+/**
+ * Builds the ONE repair prompt sent back to the LLM after a SHAPE failure —
+ * the initial selection response couldn't be parsed into / didn't match
+ * `WeekPlanSchema` (bad JSON, a `{week_plan: {...}}` envelope, an extra key, a
+ * string `"null"` day, …). Mirrors `recipe-mcp/extraction.ts`'s repair pattern:
+ * quote the model's own malformed `previousResponse` verbatim plus the concrete
+ * `reason` it failed, then ask for corrected JSON.
+ *
+ * Like `buildRepairPrompt`, it re-renders the full selection prompt
+ * (`buildSelectionPrompt`) first so the CANDIDATES section — the real ids /
+ * veg_status / quality — is present for the model to re-emit against. The only
+ * additions over that base prompt are the raw previous response and the parse/
+ * shape error; it introduces no new household context (and thus no new leakage
+ * surface) beyond what the base selection prompt already carries.
+ */
+export function buildShapeRepairPrompt(
+  input: PlannerInput,
+  previousResponse: string,
+  reason: string,
+): string {
+  const basePrompt = buildSelectionPrompt(input);
+
+  return (
+    `${basePrompt}\n\n` +
+    "REPAIR\n" +
+    "Your previous response below could NOT be parsed into the required " +
+    "WeekPlan JSON shape. Previous response:\n" +
+    `${previousResponse}\n\n` +
+    "Problem (fix it; do not wrap the object, add keys, or emit prose):\n" +
+    `${reason}\n\n` +
+    "Return ONLY a corrected WeekPlan JSON object, in the exact shape described " +
+    "above. No prose, no markdown fences."
+  );
+}
+
 export interface SelectValidatedPlanDeps {
   llm: LlmClient;
 }
@@ -293,14 +330,27 @@ export interface SelectValidatedPlanDeps {
 /**
  * ADR 0003's `buildPlan` steps 2-3 (minus the `get_recipe` enrich, which is
  * 8zs.5): runs the single selection call, validates it in code, and — on any
- * violation — makes EXACTLY ONE repair re-prompt naming the violations before
- * giving up. Net LLM calls: at most 2 (the initial `llmSelect` call, plus one
- * repair `llmSelectFromPrompt` call) — never an unbounded retry loop.
+ * violation — makes EXACTLY ONE repair re-prompt before giving up. Net LLM
+ * calls: at most 2 (the initial selection call plus one repair call) — never an
+ * unbounded retry loop.
  *
- * Throws `PlanValidationError` (never retries further) if the repaired plan
- * is STILL invalid. `llmSelect`/`llmSelectFromPrompt`'s own `PlanSelectionError`
- * (unparseable JSON / wrong shape) propagates as-is — this function does not
- * catch or repair a shape failure, only a SEMANTIC validation failure.
+ * The initial call can fail in two ways, and the ONE repair budget is SHARED
+ * between them — whichever occurs first consumes it (8zs.10):
+ *  - SHAPE failure: the response can't be parsed into / doesn't match
+ *    `WeekPlanSchema` (`PlanSelectionError` — bad JSON, a `{week_plan: {...}}`
+ *    envelope, an extra key, a string `"null"` day, …). Caught here; the repair
+ *    quotes the model's raw malformed text + the parse error
+ *    (`buildShapeRepairPrompt`, mirroring `recipe-mcp/extraction.ts`). The
+ *    repaired result must then pass BOTH shape AND semantics.
+ *  - SEMANTIC failure: the response parsed fine but `validateWeekPlan` found
+ *    rule violations (counts / hallucinated ids / veg-consistency / dupes). The
+ *    repair names the violations (`buildRepairPrompt`).
+ *
+ * Because the budget is shared, a SHAPE failure on the initial call does NOT
+ * additionally earn a semantic repair (that would be a 3rd call) — if the shape
+ * repair's result still fails (shape OR semantic), this throws immediately.
+ * Throws `PlanValidationError` on a residual semantic failure and
+ * `PlanSelectionError` on a residual shape failure — never retries further.
  */
 export async function selectValidatedPlan(
   input: PlannerInput,
@@ -308,7 +358,40 @@ export async function selectValidatedPlan(
   cfg: ValidatePlanConfig,
   deps: SelectValidatedPlanDeps,
 ): Promise<WeekPlan> {
-  const plan = await llmSelect(input, deps);
+  const initialText = await runSelectionQuery(
+    buildSelectionPrompt(input),
+    deps,
+  );
+
+  let plan: WeekPlan;
+  try {
+    plan = parseSelectionResponse(initialText);
+  } catch (error) {
+    if (!(error instanceof PlanSelectionError)) {
+      throw error;
+    }
+    // SHAPE failure on the initial call: spend the ONE shared repair budget on
+    // a shape-repair re-prompt. This is the whole budget — the repaired result
+    // must pass BOTH parse/shape AND semantics with NO further call. A residual
+    // shape failure re-throws `PlanSelectionError` from `parseSelectionResponse`
+    // (total 2 calls); a residual semantic failure throws `PlanValidationError`
+    // (also 2 calls). Either way: never a 3rd call.
+    const repairPrompt = buildShapeRepairPrompt(
+      input,
+      initialText,
+      error.message,
+    );
+    const repairedText = await runSelectionQuery(repairPrompt, deps);
+    const repairedPlan = parseSelectionResponse(repairedText);
+    const repairIssues = validateWeekPlan(repairedPlan, pools, cfg);
+    if (repairIssues.length > 0) {
+      throw new PlanValidationError(repairIssues);
+    }
+    return repairedPlan;
+  }
+
+  // Initial call parsed cleanly. SEMANTIC path (unchanged): spend the ONE shared
+  // repair budget on a semantic-repair re-prompt if code validation finds issues.
   const issues = validateWeekPlan(plan, pools, cfg);
   if (issues.length === 0) {
     return plan;
