@@ -44,6 +44,7 @@ describe("StructuredStore", () => {
       extractorVersion: EXTRACTOR_VERSION,
       fields: fields(),
       needsReview: false,
+      failedAttempts: 0,
       tags: [],
     });
     store.close();
@@ -87,8 +88,49 @@ describe("StructuredStore", () => {
       extractorVersion: EXTRACTOR_VERSION,
       fields: null,
       needsReview: true,
+      failedAttempts: 0,
       tags: [],
     });
+    store.close();
+  });
+
+  it("persists a failedAttempts counter and defaults it to 0 when omitted", () => {
+    const store = new StructuredStore({ path: ":memory:" });
+
+    // Omitted on write -> defaults to 0 on read (backward-compat for pre-field rows).
+    store.upsertStructured("note-1", {
+      contentHash: "hash-a",
+      extractorVersion: EXTRACTOR_VERSION,
+      fields: fields(),
+      needsReview: false,
+    });
+    expect(store.getStructured("note-1")?.failedAttempts).toBe(0);
+
+    // A non-zero counter round-trips.
+    store.upsertStructured("note-1", {
+      contentHash: "hash-a",
+      extractorVersion: EXTRACTOR_VERSION,
+      fields: null,
+      needsReview: true,
+      failedAttempts: 2,
+    });
+    expect(store.getStructured("note-1")?.failedAttempts).toBe(2);
+    store.close();
+  });
+
+  it("upsertTags does not disturb an existing record's failedAttempts", () => {
+    const store = new StructuredStore({ path: ":memory:" });
+
+    store.upsertStructured("note-1", {
+      contentHash: "hash-a",
+      extractorVersion: EXTRACTOR_VERSION,
+      fields: null,
+      needsReview: true,
+      failedAttempts: 3,
+    });
+    store.upsertTags("note-1", ["side"]);
+
+    expect(store.getStructured("note-1")?.failedAttempts).toBe(3);
     store.close();
   });
 

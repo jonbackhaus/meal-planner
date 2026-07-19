@@ -19,8 +19,11 @@ import { EXTRACTOR_VERSION } from "./structured-store.js";
  *  - Extraction gate: notes-reader's body-only `contentHash`, PLUS the
  *    `extractor_version` on the cached record, PLUS the cached record's
  *    `needsReview` flag (a prior failed extraction forces a retry on the
- *    next sync even if the body is unchanged). A body edit invalidates
- *    both gates; a title-only edit invalidates only the embedding gate.
+ *    next sync even if the body is unchanged) — UNTIL the note hits the
+ *    per-note attempt cap (`MAX_EXTRACTION_ATTEMPTS`, q95.7), after which
+ *    the `needsReview` retry is suppressed until the body changes. A body
+ *    edit invalidates both gates (and resets the failure counter); a
+ *    title-only edit invalidates only the embedding gate.
  */
 
 /** Minimal store surface sync.ts needs — satisfied structurally by VectorStore. */
@@ -39,7 +42,24 @@ export interface SyncStructuredRecord {
   extractorVersion: number;
   fields: ExtractedFields | null;
   needsReview: boolean;
+  /**
+   * Consecutive extraction failures for the current body + extractor version
+   * (q95.7). Optional on read (absent == 0 for pre-field rows); always written
+   * on a failure/success by sync so the attempt cap can bound retries.
+   */
+  failedAttempts?: number;
 }
+
+/**
+ * Max consecutive extraction attempts for one note before it's parked (q95.7).
+ * A note whose extraction deterministically fails would otherwise re-attempt
+ * (1 initial + 1 repair = 2 LLM calls) on EVERY sync forever, because
+ * `needsReview` is a staleness OR-condition and the failed record rewrites
+ * `contentHash` to current. After this many consecutive failures we STOP
+ * re-extracting it until its body changes (which resets the counter). A body
+ * edit or a successful extraction resets the count to 0.
+ */
+export const MAX_EXTRACTION_ATTEMPTS = 3;
 
 /** Minimal structured-cache surface sync.ts needs — satisfied structurally by StructuredStore. */
 export interface SyncStructuredStore {
@@ -119,11 +139,12 @@ export function embeddableTextHash(note: RawNote): string {
  *
  * Per-note error isolation: an embedder failure still propagates and fails
  * the whole sync (an embedding is required for the note to be findable at
- * all). An EXTRACTION failure for one note is caught, logged (note id
- * only — never the body or raw LLM output), recorded as a minimal
- * `needs_review: true` cache entry (so it's retried on the next sync
- * regardless of body hash), and does NOT stop the batch — reflected in
- * `SyncResult.extractionFailures`. The one exception is a
+ * all). An EXTRACTION failure for one note is caught, logged (note id +
+ * redacted reason — never the body or raw LLM output), recorded as a minimal
+ * `needs_review: true` cache entry with an incremented failure counter (so
+ * it's retried on the next sync regardless of body hash, but only until it
+ * hits `MAX_EXTRACTION_ATTEMPTS` — q95.7), and does NOT stop the batch —
+ * reflected in `SyncResult.extractionFailures`. The one exception is a
  * `CostCapExceededError` (SPEC §9.3, bd meal-planner-fkg.6): the per-run
  * dollar cap is NOT a per-note failure, so it rethrows to abort the batch
  * WITHOUT marking the note `needs_review`.
@@ -177,44 +198,69 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
 
     const bodyHash = contentHash(note);
     const structured = deps.structuredStore.getStructured(note.id);
+    // The failure counter only applies while the body + extractor version are
+    // unchanged; a body/version change is a fresh start (`priorFailures` == 0).
+    const priorFailures =
+      structured !== null &&
+      structured.contentHash === bodyHash &&
+      structured.extractorVersion === EXTRACTOR_VERSION
+        ? (structured.failedAttempts ?? 0)
+        : 0;
+    // Attempt cap (q95.7): once a note has failed MAX_EXTRACTION_ATTEMPTS times
+    // in a row on this same body+version, stop re-extracting it. The `needsReview`
+    // OR-condition below is suppressed while capped, so the note is parked until
+    // its body changes (which invalidates `contentHash` and forces re-extraction
+    // with the counter reset). Body/version changes still bypass the cap.
+    const cappedOut = priorFailures >= MAX_EXTRACTION_ATTEMPTS;
     const extractionIsStale =
       structured === null ||
       structured.contentHash !== bodyHash ||
       structured.extractorVersion !== EXTRACTOR_VERSION ||
-      structured.needsReview;
+      (structured.needsReview && !cappedOut);
 
     if (!extractionIsStale) {
       continue;
     }
 
+    let fields: ExtractedFields;
     try {
-      const fields = await extractRecipeFields(note, deps.llm);
-      deps.structuredStore.upsertStructured(note.id, {
-        contentHash: bodyHash,
-        extractorVersion: EXTRACTOR_VERSION,
-        fields,
-        needsReview: false,
-      });
+      fields = await extractRecipeFields(note, deps.llm);
     } catch (err) {
       // The per-run dollar cap (SPEC §9.3, bd meal-planner-fkg.6) is NOT an
       // isolated extraction failure: once tripped, every remaining note would
       // re-extract uncapped AND be mislabeled needs_review. Rethrow to ABORT
       // the batch, leaving this note's cache record untouched (no needs_review
-      // write). Everything else stays a per-note failure handled below.
+      // write, no attempt increment). Everything else stays a per-note failure.
       if (err instanceof CostCapExceededError) {
         throw err;
       }
       extractionFailures += 1;
+      // Log the (already proven secret-free) reason so failures are triageable
+      // — ExtractionError carries only the note id + a short reason, never the
+      // body or raw LLM output (see extraction.ts).
       console.warn(
-        `sync: extraction failed for note ${note.id}; marking needs_review for retry on next sync`,
+        `sync: extraction failed for note ${note.id}; marking needs_review for retry on next sync; reason: ${(err as Error).message}`,
       );
       deps.structuredStore.upsertStructured(note.id, {
         contentHash: bodyHash,
         extractorVersion: EXTRACTOR_VERSION,
         fields: null,
         needsReview: true,
+        failedAttempts: priorFailures + 1,
       });
+      continue;
     }
+
+    // Success path is OUTSIDE the try: a store-write error here is a real DB
+    // fault, not an extraction failure — let it surface as itself rather than
+    // discarding a good extraction and mislabeling the note needs_review (q95.7).
+    deps.structuredStore.upsertStructured(note.id, {
+      contentHash: bodyHash,
+      extractorVersion: EXTRACTOR_VERSION,
+      fields,
+      needsReview: false,
+      failedAttempts: 0,
+    });
   }
 
   return { total: notes.length, processed, skipped, extractionFailures };
