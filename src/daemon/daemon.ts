@@ -87,7 +87,25 @@ export async function runDaemon(
   scheduler.start();
 
   if (options.fireOnStart) {
-    await scheduler.triggerNow();
+    // CONTAIN a failing test-fire (bd meal-planner-bd6.12): scheduler.triggerNow()
+    // deliberately propagates onTrigger's error to its caller (unlike the
+    // scheduled fire, whose croner `catch` contains it). Left unguarded, that
+    // rejection rejects runDaemon -> main() -> process.exit(1); with
+    // MP_FIRE_ON_START persisted in launchd env (+ dev forceRegenerate
+    // re-firing into a PK-insert throw) that's a tight restart loop. Contain
+    // it: log + alert (reusing the never-throwing `alert` composite, bd6.11),
+    // and keep the already-scheduled daemon running.
+    try {
+      await scheduler.triggerNow();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error(
+        `fireOnStart: the startup test-fire failed; the daemon keeps running and the weekly schedule stays active: ${message}`,
+      );
+      await options.alert(
+        `Startup test-fire (fireOnStart) failed: ${message}. The weekly schedule is still active; a manual re-run may be required.`,
+      );
+    }
   }
 
   let resolveStopped: () => void = () => {};
