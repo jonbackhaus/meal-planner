@@ -124,6 +124,49 @@ Either way, the daemon wires the Anthropic key into `process.env.ANTHROPIC_API_K
 itself (the Agent SDK reads it there). **Never** commit either secret; keep them
 out of logs (the code is careful never to echo secret values).
 
+### Rotating the secrets
+
+Secrets are loaded **once at boot** — `loadSecrets()` runs during startup and the
+Anthropic key is wired into `process.env.ANTHROPIC_API_KEY` at that point
+(`src/secrets/secrets.ts` + the boot wiring in `src/index.ts`). The running
+daemon holds them in memory and **never re-reads them**, so a rotated secret is
+**not picked up until the daemon restarts**. Rotate in this order so the daemon
+is never running against a revoked credential:
+
+**Slack bot token (`xoxb-…`)**
+
+1. In the Slack app (**OAuth & Permissions**), rotate/reinstall to mint a new
+   Bot User OAuth Token. (If the old one is compromised, you can revoke after
+   step 3; otherwise leave it valid until then.)
+2. **Update the value in your secret store** — the 1Password `slack-app` item's
+   `credential` field (Option A), or `MP_SLACK_BOT_TOKEN` in the env file /
+   plist `EnvironmentVariables` (Option B). The `op://` ref does not change.
+3. **Restart the daemon** so it reloads the new token:
+   `launchctl unload … && launchctl load ~/Library/LaunchAgents/com.backhaus.meal-planner.plist`
+   (see §7).
+4. **Verify with a dev dry-run** before trusting prod — relaunch once in
+   dev + dry-run (§5, `MP_PROFILE=dev MP_POST_MODE=dry-run MP_FIRE_ON_START=1`),
+   or a dev live post, and confirm it posts / renders with no auth error. Then
+   revoke the old token in Slack.
+
+**Anthropic API key (`sk-ant-…`)**
+
+1. In the Anthropic Console (the dedicated workspace, §2), create a **new** API
+   key; keep the old one active until step 4.
+2. **Update the value in your secret store** — the 1Password `anthropic-api`
+   item's `credential` field, or `MP_ANTHROPIC_API_KEY` (env/plist). The `op://`
+   ref does not change.
+3. **Restart the daemon** (as above) so it reloads and re-wires
+   `process.env.ANTHROPIC_API_KEY`.
+4. **Verify with a dev dry-run** — a dev + dry-run fire still calls the Agent
+   SDK, so a bad key fails loudly there without touching prod spend. Once the
+   run succeeds, **revoke the old key** in the console.
+
+> Rotating the **1Password service-account token** itself (not the secrets it
+> guards) is different: issue the new token and confirm `op read` works
+> **before** revoking the old one (see Option A above), then update
+> `OP_SERVICE_ACCOUNT_TOKEN` and restart the daemon.
+
 ---
 
 ## 4. Configuration — environment variables
@@ -168,20 +211,28 @@ vars have no default and fail boot loudly if missing.
 > real prose (picky eaters, other dietary notes). Whatever you set, keep the
 > vegetarian constraint in the text.
 
-### Planner tuning (defaults are placeholders — open decisions)
+### Planner tuning (validated against the real corpus)
 
 | Var | Default | Decision |
 |-----|---------|----------|
 | `MP_COOK_NIGHTS_CONSTRAINED` / `MP_COOK_NIGHTS_RELAXED` | `4` / `2` | slot counts |
-| `MP_ACTIVE_MAX_MINUTES` | `60` | hard active-time filter — see `bd b7n` |
+| `MP_ACTIVE_MAX_MINUTES` | `60` | hard active-time gate; its fail-closed `confidence` threshold ratified at `0.5` — `bd b7n` |
 | `MP_FANOUT_MULTIPLIER` | `4` | candidate pool size |
-| `MP_VEG_FLOOR_K` | `2` | veg-satisfiable floor — see `bd kd5` |
-| `MP_UNTESTED_RATE` | `0.15` | untested-recipe injection rate — see `bd kd5` |
+| `MP_VEG_FLOOR_K` | `2` | veg-satisfiable floor — validated as-is, `bd kd5` |
+| `MP_UNTESTED_RATE` | `0.15` | untested-recipe injection rate — validated as-is, `bd kd5` |
 | `MP_GENERATION_DOLLAR_CAP` | `2` | **hard** per-run \$ cap; exceeding it fails the run + alerts |
 
-`bd b7n`, `bd kd5`, `bd l7x` are **open decisions** deliberately deferred until we
-can tune against your real corpus (`bd q95.6` / `8zs.6`). The defaults are safe
-placeholders — run with them, then revisit.
+`bd b7n`, `bd kd5`, `bd l7x` are now **ratified** against the real 764-recipe
+corpus (`bd q95.6` / `8zs.6`):
+
+- **b7n** — `active_max` `confidence` threshold ratified at **`0.5`** (commit
+  6b1d73d); 0.5 sits just above the low-confidence danger cluster (keeps 547
+  weeknight-eligible recipes).
+- **l7x** — seed-query strategy ratified as **category-seeded multi-query**
+  (6 category seeds, quality-aware; commit e10eb31), replacing the single
+  generic seed that under-recalled.
+- **kd5** — `vegFloorK` / `untestedRate` **validated as-is** once retrieval
+  became quality-aware + multi-seed (commit e10eb31).
 
 ---
 
@@ -261,20 +312,33 @@ boot-launch + restart-on-crash.
    ```bash
    sudo pmset -a sleep 0 disablesleep 1     # or configure "prevent sleep" appropriately
    ```
-2. Create a **LaunchAgent** plist (e.g. `~/Library/LaunchAgents/com.jonbackhaus.meal-planner.plist`)
-   with:
-   - `ProgramArguments` → `node /path/to/meal-planner/dist/index.js` (build first).
-   - `RunAtLoad` → `true` (boot-launch).
-   - `KeepAlive` → `true` (restart on crash — **not** a calendar `StartCalendarInterval`;
-     the weekly timing is owned in-process).
-   - `EnvironmentVariables` → all the `MP_*` / secret vars from §3–§4 (or have the
-     plist source them; do **not** inline raw secret values into a world-readable plist —
-     prefer the 1Password service-account path).
-   - `StandardOutPath` / `StandardErrorPath` → a log file for the daemon's stdout.
-3. Load it: `launchctl load ~/Library/LaunchAgents/com.jonbackhaus.meal-planner.plist`.
+2. **Install the committed LaunchAgent plist** — a template is checked in at
+   `deploy/launchd/com.backhaus.meal-planner.plist` (with a step-by-step
+   `deploy/launchd/README.md`). Copy it out of git and adapt the machine-local
+   copy; do **not** hand-author your own or edit real values into the tracked
+   file:
+   ```bash
+   cp -f deploy/launchd/com.backhaus.meal-planner.plist \
+     ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+   ```
+   Then edit the copy in `~/Library/LaunchAgents/`:
+   - Replace `/Users/YOUR_USERNAME/meal-planner` with the real absolute checkout
+     path (used by `ProgramArguments`, `WorkingDirectory`, `StandardOutPath`,
+     `StandardErrorPath`) and `pnpm build` first so `dist/index.js` exists.
+   - Replace `/usr/local/bin/node` with the output of `which node` if different
+     (launchd does not use your shell `PATH`).
+   - Fill in real secret/config values under `EnvironmentVariables` (or set
+     `OP_SERVICE_ACCOUNT_TOKEN` and rely on the 1Password source — see §3).
+     **Never commit the filled-in copy back to git.**
+   - `mkdir -p logs` so the `StandardOutPath`/`StandardErrorPath` files can be
+     created.
 
-> There is no plist checked into the repo yet — author it per the above. (Worth a
-> follow-up bd task if you want it templated/committed.)
+   The committed plist already fixes the invariant bits: `RunAtLoad` +
+   `KeepAlive` (boot-launch + restart-on-crash) and **no**
+   `StartCalendarInterval` — the weekly timing is owned in-process, never by
+   launchd.
+3. Load it: `launchctl load ~/Library/LaunchAgents/com.backhaus.meal-planner.plist`
+   (verify with `launchctl list | grep com.backhaus.meal-planner`).
 
 **Crash-safety you get for free:** the orchestrator writes the session row at
 `generating` *before* posting, so a mid-flight crash is detectable. On restart,
