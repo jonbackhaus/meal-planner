@@ -219,7 +219,18 @@ describe("validateWeekPlan", () => {
     expect(issues).toEqual([]);
   });
 
-  it("flags more than one untested meal in the same week", () => {
+  it("flags an untested candidate whose meal OMITS the untested flag (untested⟹flag)", () => {
+    // The bug: the model selected an untested recipe but left off the flag.
+    // Ground truth is the pool candidate's quality, not the model's flag.
+    const plan = validPlan();
+    plan.meals[0] = meal({ recipe_id: "wn-untested", flags: [] });
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(
+      issues.some((i) => /wn-untested/.test(i) && /untested/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags more than one untested meal in the same week (from pool quality, flags present)", () => {
     const wideCfg: ValidatePlanConfig = {
       slots: { constrained: 2, relaxed: 0 },
     };
@@ -232,6 +243,29 @@ describe("validateWeekPlan", () => {
       meals: [
         meal({ recipe_id: "wn-untested", flags: ["untested"] }),
         meal({ recipe_id: "wn-untested-2", flags: ["untested"] }),
+      ],
+    };
+    const issues = validateWeekPlan(plan, widePools, wideCfg);
+    expect(
+      issues.some((i) => /more than one/i.test(i) && /untested/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags more than one untested meal even when the model OMITS all untested flags", () => {
+    // The ≤1-untested count is derived from POOL quality (ground truth), not
+    // the model's flags: two untested candidates with no flags must still trip.
+    const wideCfg: ValidatePlanConfig = {
+      slots: { constrained: 2, relaxed: 0 },
+    };
+    const widePools = pools();
+    widePools.weeknight.push(
+      candidate("wn-untested-2", { quality: "untested" }),
+    );
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-untested", flags: [] }),
+        meal({ recipe_id: "wn-untested-2", flags: [] }),
       ],
     };
     const issues = validateWeekPlan(plan, widePools, wideCfg);
@@ -294,6 +328,21 @@ describe("selectValidatedPlan", () => {
   it("repairs an invalid first plan and returns the valid repair with exactly 2 llm calls", async () => {
     const badPlan = validPlan();
     badPlan.meals[0] = meal({ recipe_id: "does-not-exist" });
+    const goodPlan = validPlan();
+
+    const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(goodPlan);
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a plan whose untested candidate is missing its flag", async () => {
+    const badPlan = validPlan();
+    badPlan.meals[0] = meal({ recipe_id: "wn-untested", flags: [] });
     const goodPlan = validPlan();
 
     const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
