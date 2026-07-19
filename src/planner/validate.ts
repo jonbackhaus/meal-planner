@@ -97,8 +97,12 @@ function checkCounts(
  * `recipe_id`'s candidate (looked up in EITHER pool) to be
  * `veg_status:"vegetarian"`; `veg.kind:"separable"` is accepted as-is (not
  * verifiable in v1.0 — the ADR explicitly does not ask code to check it).
- * Flag sanity (per-meal half): the `"untested"` flag requires the meal's own
- * candidate to have `quality === "untested"`.
+ * Flag sanity (per-meal, BOTH directions, keyed on the POOL candidate as ground
+ * truth — 8zs.11): the `"untested"` flag must be present IFF the meal's own
+ * candidate has `quality === "untested"`. A flag on a non-untested candidate is
+ * a violation (the model over-claimed), AND an untested candidate WITHOUT the
+ * flag is a violation (the model omitted the render hint) — the latter is the
+ * bug the flag-only check missed.
  */
 function checkMealsIndividually(
   meals: SelectedMeal[],
@@ -138,12 +142,23 @@ function checkMealsIndividually(
     }
     // veg.kind === "separable": accepted, not verifiable at v1.0 — no check.
 
-    if (meal.flags.includes("untested") && ownCandidate) {
-      const quality = ownCandidate.quality ?? "unrated";
-      if (quality !== "untested") {
+    // Flag consistency, both directions (8zs.11). The pool candidate's quality
+    // is ground truth; the model's flag is only a render hint that must agree.
+    // Skipped when the id isn't in the pool — that hallucination is already
+    // reported above, and the lookup would be meaningless.
+    if (ownCandidate) {
+      const flagged = meal.flags.includes("untested");
+      const isUntested = ownCandidate.quality === "untested";
+      if (flagged && !isUntested) {
+        const quality = ownCandidate.quality ?? "unrated";
         issues.push(
           `${label}: flagged "untested" but its candidate's quality is ` +
             `"${quality}", not "untested"`,
+        );
+      } else if (isUntested && !flagged) {
+        issues.push(
+          `${label}: its candidate's quality is "untested" but the meal is ` +
+            'not flagged "untested"; add the "untested" flag',
         );
       }
     }
@@ -186,18 +201,28 @@ function checkNoDuplicates(meals: SelectedMeal[]): ValidationIssue[] {
 }
 
 /**
- * Flag-sanity check (week-wide half): at most one meal in the whole week may
- * carry the `"untested"` flag.
+ * Untested-cap check (week-wide, 8zs.11): at most one meal in the whole week
+ * may use an untested recipe. Counts by the POOL candidate's `quality ===
+ * "untested"` (ground truth), NOT the model's `"untested"` flag — the model can
+ * omit the flag on an untested pick, so trusting the flag would let a week full
+ * of never-cooked recipes pass. A meal whose id isn't in the matching pool has
+ * no candidate to key on and doesn't count here (the id-in-pool check fires).
  */
-function checkUntestedCount(meals: SelectedMeal[]): ValidationIssue[] {
+function checkUntestedCount(
+  meals: SelectedMeal[],
+  pools: Pools,
+): ValidationIssue[] {
   const untestedLabels = meals
     .map((meal, index) => ({ meal, label: `meal ${index + 1}` }))
-    .filter(({ meal }) => meal.flags.includes("untested"))
+    .filter(({ meal }) => {
+      const { pool } = poolForSlot(pools, meal.slot_type);
+      return findInPool(pool, meal.recipe_id)?.quality === "untested";
+    })
     .map(({ label }) => label);
 
   if (untestedLabels.length > 1) {
     return [
-      `more than one meal is flagged "untested" this week (${untestedLabels.join(", ")}); ` +
+      `more than one meal uses an untested recipe this week (${untestedLabels.join(", ")}); ` +
         "at most one untested meal is allowed",
     ];
   }
@@ -224,7 +249,7 @@ export function validateWeekPlan(
     ...checkCounts(plan.meals, cfg),
     ...checkMealsIndividually(plan.meals, pools),
     ...checkNoDuplicates(plan.meals),
-    ...checkUntestedCount(plan.meals),
+    ...checkUntestedCount(plan.meals, pools),
   ];
 }
 
