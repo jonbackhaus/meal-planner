@@ -87,7 +87,26 @@ export async function onStartup(deps: OnStartupDeps): Promise<void> {
     case "suggested":
     case "under_revision":
     case "committed":
-      await resumeQuietly(row);
+      // resumeQuietly throws `ResumeError` when the durable working_plan no
+      // longer parses (schema evolution: a v2.0 `day` field, a rename, an
+      // upgrade mid-week with a live row). Left unguarded, that throw would
+      // propagate out of onStartup -> main() -> process.exit(1), and launchd
+      // KeepAlive would crash-boot loop forever with the scheduler never
+      // started and no alert. v1.0 does NOT consume the resumed value, so a
+      // failed resume is recoverable: alert (the ResumeError message is
+      // already sanitized -- only week_key + a zod-issue summary), then
+      // CONTINUE booting without an in-memory plan so the scheduler still
+      // starts. Alert-only discipline: the row is NOT mutated (a human /
+      // late-reply mapping still needs it).
+      try {
+        await resumeQuietly(row);
+      } catch (err) {
+        await alert(
+          `resume for week ${wk} failed at startup; continuing without an in-memory plan (scheduler still starts): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       return;
     case "generating":
       // Died mid-flight; may or may not have posted. No auto-repost, no
