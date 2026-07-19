@@ -34,6 +34,10 @@ export interface SyncStore {
     vector: number[],
     meta: { title: string; body: string; hash: string; modifiedAt: Date },
   ): void;
+  /** All note ids currently in the index — diffed against this sync's read for stale-recipe reconciliation (q95.14). */
+  listIds(): string[];
+  /** Hard-delete the given note ids (and their vector rows) — stale-recipe reconciliation (q95.14). */
+  deleteMany(ids: string[]): void;
 }
 
 /** A cached structured-extraction record, as read from / written to the structured-field cache. */
@@ -67,6 +71,10 @@ export interface SyncStructuredStore {
   upsertStructured(noteId: string, record: SyncStructuredRecord): void;
   /** Writes the note's NoteStore hashtags, independent of the extraction record. */
   upsertTags(noteId: string, tags: string[]): void;
+  /** All note ids with a stored record (incl. tags-only rows) — for stale-recipe reconciliation (q95.14). */
+  listIds(): string[];
+  /** Hard-delete the structured records (fields + tags) for the given ids — stale-recipe reconciliation (q95.14). */
+  deleteMany(ids: string[]): void;
 }
 
 export interface SyncDeps {
@@ -99,6 +107,13 @@ export interface SyncResult {
   skipped: number;
   /** Notes whose extraction failed and were marked needs_review (isolated; sync continued). */
   extractionFailures: number;
+  /**
+   * Notes removed from the index this sync because their source note was
+   * deleted or moved out of the recipe folder (stale-recipe reconciliation,
+   * q95.14). 0 when nothing was stale OR when the empty-read guard skipped
+   * reconciliation.
+   */
+  removed: number;
 }
 
 function embeddableText(note: RawNote): string {
@@ -263,5 +278,59 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
     });
   }
 
-  return { total: notes.length, processed, skipped, extractionFailures };
+  // ---------------------------------------------------------------------------
+  // Stale-recipe reconciliation (q95.14).
+  //
+  // The per-note loop above only ever touches notes PRESENT in this sync's read,
+  // so a note DELETED from Apple Notes — or MOVED OUT of the recipe folder (the
+  // drinks-purge scenario, commit fa2714e) — is simply absent and would linger
+  // in the index forever: its vector row keeps ranking in `search_recipes`, it
+  // can be selected into a plan, and `get_recipe` still returns it. ADR-0001
+  // makes sync the single owner of index freshness, so removal is sync's job.
+  //
+  // HARD DELETE (not a tombstone): the index is fully regenerable via `pnpm
+  // sync`, and historical session `working_plan`s already store the full
+  // enriched Recipe (they never re-fetch a deleted id), so there is nothing to
+  // preserve by keeping the row. We delete from BOTH stores' rows for the id so
+  // no orphan (a vector row without structured fields, or vice versa) survives.
+  //
+  // EMPTY-READ GUARD (critical): a read of 0 notes while the store holds recipes
+  // is the folder-rename / Full-Disk-Access-revoked failure mode — NOT a mass
+  // deletion — and reconciling then would WIPE the whole index. So when nothing
+  // was read but the store is non-empty we SKIP reconciliation entirely and warn
+  // (mirrors the tag-read `null` guard above). A read of 0 into an already-empty
+  // store is a harmless no-op. This is deliberately the ONE simple guard; a
+  // proportional "dropped > X% of the corpus" guard is intentionally omitted for
+  // v1.0 (a legitimate big cleanup shouldn't need an override), and can be added
+  // later if real syncs show large partial-read drops.
+  let removed = 0;
+  const readIds = new Set(notes.map((note) => note.id));
+  const storedIds = new Set<string>([
+    ...deps.store.listIds(),
+    ...deps.structuredStore.listIds(),
+  ]);
+
+  if (notes.length === 0 && storedIds.size > 0) {
+    console.warn(
+      `sync: read 0 notes while the index holds ${storedIds.size} recipe(s); SKIPPING stale-recipe reconciliation (suspected folder rename / permission loss, not a mass delete)`,
+    );
+  } else {
+    const absentIds = [...storedIds].filter((id) => !readIds.has(id));
+    if (absentIds.length > 0) {
+      deps.store.deleteMany(absentIds);
+      deps.structuredStore.deleteMany(absentIds);
+      removed = absentIds.length;
+      console.warn(
+        `sync: reconciliation removed ${removed} stale recipe(s) absent from this sync (deleted or moved out of the recipe folder)`,
+      );
+    }
+  }
+
+  return {
+    total: notes.length,
+    processed,
+    skipped,
+    extractionFailures,
+    removed,
+  };
 }

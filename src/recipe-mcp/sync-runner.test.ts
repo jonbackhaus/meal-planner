@@ -37,6 +37,8 @@ function skippableDeps(theNote: RawNote) {
   const vectorStore = {
     getStoredHash: vi.fn(() => embeddableTextHash(theNote)),
     upsert: vi.fn(),
+    listIds: vi.fn(() => [theNote.id]),
+    deleteMany: vi.fn(),
   };
   const structuredStore = {
     getStructured: vi.fn(() => ({
@@ -47,6 +49,8 @@ function skippableDeps(theNote: RawNote) {
     })),
     upsertStructured: vi.fn(),
     upsertTags: vi.fn(),
+    listIds: vi.fn(() => [theNote.id]),
+    deleteMany: vi.fn(),
   };
   const llm = { runQuery: vi.fn() };
   return {
@@ -79,6 +83,7 @@ describe("runSync", () => {
       processed: 0,
       skipped: 1,
       extractionFailures: 0,
+      removed: 0,
     });
   });
 

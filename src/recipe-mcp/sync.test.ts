@@ -51,6 +51,12 @@ function makeFakeStore(initialHashes: Record<string, string> = {}) {
         upserted.push({ id, vector, meta });
       },
     ),
+    listIds: vi.fn(() => [...hashes.keys()]),
+    deleteMany: vi.fn((ids: string[]) => {
+      for (const id of ids) {
+        hashes.delete(id);
+      }
+    }),
     upserted,
   };
 }
@@ -85,6 +91,13 @@ function makeFakeStructuredStore(
     getStructured: vi.fn((noteId: string) => records.get(noteId) ?? null),
     upsertStructured,
     upsertTags,
+    listIds: vi.fn(() => [...new Set([...records.keys(), ...tags.keys()])]),
+    deleteMany: vi.fn((ids: string[]) => {
+      for (const id of ids) {
+        records.delete(id);
+        tags.delete(id);
+      }
+    }),
     records,
     tags,
   };
@@ -132,6 +145,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       processed: 1,
       skipped: 0,
       extractionFailures: 0,
+      removed: 0,
     });
   });
 
@@ -274,6 +288,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       processed: 0,
       skipped: 0,
       extractionFailures: 0,
+      removed: 0,
     });
   });
 });
@@ -790,6 +805,173 @@ describe("syncNotes — NoteStore tags (bd tags feature)", () => {
     // The rest of the sync still runs — embedding/extraction are unaffected.
     expect(result.total).toBe(1);
     expect(result.processed).toBe(1);
+
+    warnSpy.mockRestore();
+  });
+});
+
+describe("syncNotes — stale-recipe reconciliation (q95.14)", () => {
+  it("removes a note that was DELETED from the source (gone from both stores)", async () => {
+    const survivor = note({ id: "note-live" });
+    // Both stores hold a stale id ("note-dead") that this sync no longer reads.
+    const store = makeFakeStore({
+      "note-live": embeddableTextHash(survivor),
+      "note-dead": "some-old-hash",
+    });
+    const structuredStore = makeFakeStructuredStore({
+      "note-live": {
+        contentHash: contentHash(survivor),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+      "note-dead": {
+        contentHash: "old-body-hash",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => [survivor]),
+      embedder: makeFakeEmbedder(),
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    // The absent id is deleted from BOTH stores; the survivor is untouched.
+    expect(store.deleteMany).toHaveBeenCalledWith(["note-dead"]);
+    expect(structuredStore.deleteMany).toHaveBeenCalledWith(["note-dead"]);
+    expect(store.listIds()).toEqual(["note-live"]);
+    expect(structuredStore.listIds()).toEqual(["note-live"]);
+    expect(result.removed).toBe(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it("removes a note that was MOVED OUT of the recipe folder (absent from this read)", async () => {
+    // A moved-out note is indistinguishable from a delete at the read boundary:
+    // it simply isn't in `readNotes()` anymore (the drinks-purge scenario).
+    const stayed = note({ id: "note-food" });
+    const store = makeFakeStore({
+      "note-food": embeddableTextHash(stayed),
+      "note-drink": "old-hash",
+    });
+    const structuredStore = makeFakeStructuredStore({
+      "note-food": {
+        contentHash: contentHash(stayed),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+      // Simulate a tags-only row for the moved-out note (no extraction record).
+    });
+    structuredStore.tags.set("note-drink", ["cocktail"]);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => [stayed]),
+      embedder: makeFakeEmbedder(),
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    expect(store.deleteMany).toHaveBeenCalledWith(["note-drink"]);
+    expect(structuredStore.deleteMany).toHaveBeenCalledWith(["note-drink"]);
+    expect(structuredStore.tags.has("note-drink")).toBe(false);
+    expect(result.removed).toBe(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it("EMPTY-READ GUARD: 0 notes read while the store holds recipes does NOT wipe the index (warns instead)", async () => {
+    const seed: Record<string, string> = {};
+    const seedStructured: Record<string, FakeStructuredRecord> = {};
+    for (let i = 0; i < 200; i += 1) {
+      seed[`note-${i}`] = `hash-${i}`;
+      seedStructured[`note-${i}`] = {
+        contentHash: `body-${i}`,
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      };
+    }
+    const store = makeFakeStore(seed);
+    const structuredStore = makeFakeStructuredStore(seedStructured);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => []),
+      embedder: makeFakeEmbedder(),
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    // Reconciliation is SKIPPED entirely — nothing deleted.
+    expect(store.deleteMany).not.toHaveBeenCalled();
+    expect(structuredStore.deleteMany).not.toHaveBeenCalled();
+    expect(store.listIds()).toHaveLength(200);
+    expect(structuredStore.listIds()).toHaveLength(200);
+    expect(result.removed).toBe(0);
+    // The operator is warned about the suspicious empty read.
+    const warned = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(warned).toMatch(/reconciliation/i);
+
+    warnSpy.mockRestore();
+  });
+
+  it("does NOT delete anything when every stored id is still present in the read", async () => {
+    const a = note({ id: "note-a" });
+    const store = makeFakeStore({ "note-a": embeddableTextHash(a) });
+    const structuredStore = makeFakeStructuredStore({
+      "note-a": {
+        contentHash: contentHash(a),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => [a]),
+      embedder: makeFakeEmbedder(),
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    expect(store.deleteMany).not.toHaveBeenCalled();
+    expect(structuredStore.deleteMany).not.toHaveBeenCalled();
+    expect(result.removed).toBe(0);
+  });
+
+  it("an empty read into an EMPTY store is a harmless no-op (no delete, no warn)", async () => {
+    const store = makeFakeStore();
+    const structuredStore = makeFakeStructuredStore();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await syncNotes({
+      readNotes: vi.fn(async () => []),
+      embedder: makeFakeEmbedder(),
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+
+    expect(store.deleteMany).not.toHaveBeenCalled();
+    expect(result.removed).toBe(0);
+    const warned = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(warned).not.toMatch(/reconciliation/i);
 
     warnSpy.mockRestore();
   });

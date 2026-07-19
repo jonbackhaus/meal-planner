@@ -150,7 +150,13 @@ describe("makeBuildPlanWithSync", () => {
   const PLAN = { sentinel: "the-plan" } as unknown as EnrichedWeekPlan;
 
   function okSyncResult(): SyncResult {
-    return { total: 3, processed: 1, skipped: 2, extractionFailures: 0 };
+    return {
+      total: 3,
+      processed: 1,
+      skipped: 2,
+      extractionFailures: 0,
+      removed: 0,
+    };
   }
 
   it("syncs before planning, logs the summary, and returns the plan", async () => {
