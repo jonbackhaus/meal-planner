@@ -5,6 +5,7 @@ import {
   ExtractedFieldsSchema,
   ExtractionError,
   extractRecipeFields,
+  MAX_EXTRACTION_BODY_CHARS,
 } from "./extraction.js";
 import type { RawNote } from "./notes-reader.js";
 
@@ -161,6 +162,37 @@ describe("extractRecipeFields", () => {
     await expect(extractRecipeFields(theNote, llm)).rejects.not.toMatchObject({
       message: expect.stringContaining("SECRET_BODY_TEXT"),
     });
+  });
+
+  it("caps an oversized note body before it reaches the extraction prompt (q95.17)", async () => {
+    const llm = makeFakeLlm(JSON.stringify(validFields()));
+    // A pathological pasted-article body, well past the cap, with a unique
+    // sentinel at the very END so we can prove the tail never reaches the prompt.
+    const oversizedBody = `${"x".repeat(MAX_EXTRACTION_BODY_CHARS + 5_000)}TAIL_SENTINEL`;
+
+    await extractRecipeFields(note({ body: oversizedBody }), llm);
+
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    // The prompt carries a truncation marker and drops the oversized tail.
+    expect(prompt).toContain("truncated");
+    expect(prompt).not.toContain("TAIL_SENTINEL");
+    // Prompt length is bounded: the template + capped body + marker, never the
+    // full oversized body.
+    expect(prompt.length).toBeLessThan(MAX_EXTRACTION_BODY_CHARS + 2_000);
+  });
+
+  it("leaves a normal-sized note body untouched (no truncation marker) (q95.17)", async () => {
+    const llm = makeFakeLlm(JSON.stringify(validFields()));
+    const normalBody =
+      "Ground beef, beans, chili powder. Takes about 20-25 min.";
+
+    await extractRecipeFields(note({ body: normalBody }), llm);
+
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt).toContain(normalBody);
+    expect(prompt).not.toContain("truncated");
   });
 
   it("rethrows a CostCapExceededError UNWRAPPED (not as ExtractionError) so sync can abort the batch", async () => {

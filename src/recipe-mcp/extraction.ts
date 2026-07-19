@@ -56,6 +56,36 @@ export class ExtractionError extends Error {
 
 const MAX_REPAIR_ATTEMPTS = 1;
 
+/**
+ * Per-note cap (q95.17) on the recipe body interpolated into the extraction
+ * prompt. `notes-reader.ts` tolerates note bodies up to 64 MB, so one
+ * pathological note (a pasted article) would otherwise produce an enormous
+ * extraction call — and a larger repair call quoting the response — BEFORE the
+ * post-call cost accounting (fkg.6) can react, and hash-gating makes it recur
+ * on every edit. 16 000 characters comfortably covers any real recipe,
+ * including a long blog preamble, while bounding the worst-case call.
+ *
+ * Measured in JS string length (UTF-16 code units ≈ characters for recipe
+ * text); simplest and adequate here. This is a size guard, not a token budget —
+ * the CLAUDE.md tokenizer note (~1.0–1.35× tokens/char) means the true token
+ * ceiling is a small multiple of this, still bounded.
+ */
+export const MAX_EXTRACTION_BODY_CHARS = 16_000;
+
+/**
+ * Truncate an over-cap body to `MAX_EXTRACTION_BODY_CHARS` with a visible
+ * marker. Truncation (rather than skip-and-flag) is safe for extraction: the
+ * fields we want — `time` and `ingredients` — live near the TOP of a recipe,
+ * so a truncated body still yields a useful `{time, ingredients, veg_status}`;
+ * only a long tail (method prose, comments, a pasted article) is dropped.
+ */
+function capBody(body: string): string {
+  if (body.length <= MAX_EXTRACTION_BODY_CHARS) {
+    return body;
+  }
+  return `${body.slice(0, MAX_EXTRACTION_BODY_CHARS)}\n\n[...truncated: note body exceeded ${MAX_EXTRACTION_BODY_CHARS} characters...]`;
+}
+
 function buildExtractionPrompt(note: RawNote): string {
   return `You are extracting structured recipe data from a free-form recipe note.
 
@@ -93,7 +123,7 @@ Field rules:
 Note title: ${note.title}
 
 Note body:
-${note.body}`;
+${capBody(note.body)}`;
 }
 
 function buildRepairPrompt(
