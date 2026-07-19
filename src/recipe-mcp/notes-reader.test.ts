@@ -4,7 +4,6 @@ import {
   contentHash,
   DEFAULT_RECIPES_FOLDER,
   readNotes,
-  stripHtml,
 } from "./notes-reader.js";
 
 vi.mock("node:child_process", () => ({
@@ -115,7 +114,7 @@ describe("readNotes", () => {
         {
           id: "x-coredata://abc/ICNote/p1",
           title: "Weeknight Chili",
-          body: "<div>Ground beef, beans, chili powder.</div>",
+          body: "Ground beef, beans, chili powder.",
           modifiedAt: "2026-01-15T12:00:00.000Z",
         },
       ]),
@@ -133,19 +132,43 @@ describe("readNotes", () => {
     expect(notes[0].modifiedAt).toBeInstanceOf(Date);
   });
 
+  it("passes the plaintext body through verbatim, without stripping angle-bracket spans", async () => {
+    // `note.plaintext()` returns plain text, NOT HTML — so the body must be
+    // preserved byte-for-byte. A prior stripHtml pass (regexing out `<...>`)
+    // silently deleted everything between a literal `<` and the next `>`,
+    // corrupting real recipe text like `simmer <10 min` ... `> 2 cups flour`
+    // (bd meal-planner-q95.16). This locks in the pass-through behavior.
+    const body =
+      "simmer <10 min, keep temp < 300F\nrest, then fold in\n> 2 cups flour & a pinch of salt";
+    mockOsascriptStdout(
+      JSON.stringify([
+        {
+          id: "note-angle",
+          title: "Quick Flatbread",
+          body,
+          modifiedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ]),
+    );
+
+    const notes = await readNotes();
+
+    expect(notes[0].body).toBe(body);
+  });
+
   it("parses multiple notes", async () => {
     mockOsascriptStdout(
       JSON.stringify([
         {
           id: "note-1",
           title: "Soup",
-          body: "<div>broth</div>",
+          body: "broth",
           modifiedAt: "2026-01-01T00:00:00.000Z",
         },
         {
           id: "note-2",
           title: "Salad",
-          body: "<div>greens</div>",
+          body: "greens",
           modifiedAt: "2026-01-02T00:00:00.000Z",
         },
       ]),
@@ -159,7 +182,7 @@ describe("readNotes", () => {
 
   it("preserves special characters (quotes, unicode, embedded newlines) round-tripped through JSON", async () => {
     const trickyBody =
-      '<div>2 cups flour "type 00"</div><div>1 tsp salt — crème fraîche, jalapeño 🌶️</div>';
+      '2 cups flour "type 00"\n1 tsp salt — crème fraîche, jalapeño 🌶️';
     mockOsascriptStdout(
       JSON.stringify([
         {
@@ -194,26 +217,6 @@ describe("readNotes", () => {
     mockOsascriptFailure("execFile: osascript exited with code 1");
 
     await expect(readNotes()).rejects.toThrow(/osascript/i);
-  });
-});
-
-describe("stripHtml", () => {
-  it("removes tags and collapses to plain text lines", () => {
-    expect(stripHtml("<div>Hello</div><div>World</div>")).toBe("Hello\nWorld");
-  });
-
-  it("decodes common HTML entities", () => {
-    expect(stripHtml("<div>Salt &amp; pepper &mdash; to taste</div>")).toBe(
-      "Salt & pepper &mdash; to taste",
-    );
-  });
-
-  it("drops blank lines produced by tag removal", () => {
-    expect(stripHtml("<div><br></div><div>Text</div>")).toBe("Text");
-  });
-
-  it("returns an empty string for empty input", () => {
-    expect(stripHtml("")).toBe("");
   });
 });
 
