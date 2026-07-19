@@ -114,6 +114,19 @@ export interface SyncResult {
    * reconciliation.
    */
   removed: number;
+  /**
+   * `true` when the empty-read guard tripped: the read returned 0 notes while
+   * the index still holds recipes (q95.14). That is the denied / failed Notes
+   * read fingerprint (macOS Automation / Full Disk Access revoked, folder
+   * renamed) — NOT a mass delete — so reconciliation was skipped and the run
+   * proceeds against the existing index. This is a passive SIGNAL, not an
+   * error: `syncNotes` stays alert-free (no notifier dependency); the caller
+   * that HAS the alert composite (`makeBuildPlanWithSync`) turns it into a loud
+   * `#agent-alerts` alert (fkg.7), because a silent empty read otherwise looks
+   * indistinguishable from "no recipes". `false` on every healthy sync,
+   * including a legitimate empty read into an already-empty index.
+   */
+  suspiciousEmptyRead: boolean;
 }
 
 function embeddableText(note: RawNote): string {
@@ -304,6 +317,7 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   // v1.0 (a legitimate big cleanup shouldn't need an override), and can be added
   // later if real syncs show large partial-read drops.
   let removed = 0;
+  let suspiciousEmptyRead = false;
   const readIds = new Set(notes.map((note) => note.id));
   const storedIds = new Set<string>([
     ...deps.store.listIds(),
@@ -311,6 +325,10 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
   ]);
 
   if (notes.length === 0 && storedIds.size > 0) {
+    // Signal the caller (which owns the alert composite) to alert LOUDLY: a
+    // console.warn here is not enough — this fingerprint (denied/failed Notes
+    // read masquerading as "no recipes") must reach #agent-alerts (fkg.7).
+    suspiciousEmptyRead = true;
     console.warn(
       `sync: read 0 notes while the index holds ${storedIds.size} recipe(s); SKIPPING stale-recipe reconciliation (suspected folder rename / permission loss, not a mass delete)`,
     );
@@ -332,5 +350,6 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
     skipped,
     extractionFailures,
     removed,
+    suspiciousEmptyRead,
   };
 }

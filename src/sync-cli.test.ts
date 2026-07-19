@@ -15,6 +15,7 @@ function syncResult(): SyncResult {
     skipped: 3,
     extractionFailures: 1,
     removed: 0,
+    suspiciousEmptyRead: false,
   };
 }
 

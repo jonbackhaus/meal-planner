@@ -84,6 +84,7 @@ describe("runSync", () => {
       skipped: 1,
       extractionFailures: 0,
       removed: 0,
+      suspiciousEmptyRead: false,
     });
   });
 

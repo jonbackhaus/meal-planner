@@ -20,6 +20,9 @@ external accounts, secrets, env vars, and the launch/verify sequence.
 - **Node ≥ 22** and **pnpm** (`packageManager` pins `pnpm@11.11.0`).
 - Apple Notes on that Mac containing the recipe corpus (the Recipe MCP reads
   local Notes via `osascript`/JXA — this is why the daemon is local, not cloud).
+  This requires two macOS privacy (TCC) grants for the process that runs the
+  daemon — **Automation → Notes** and **Full Disk Access** — which launchd
+  **cannot** grant interactively. Do [§0.1](#01-macos-permissions-tcc--grant-before-first-run) **before** the first run, and re-verify after every OS update.
 - Admin access to your **Slack workspace** (to install an app).
 - An **Anthropic** account you can create an API workspace/key in.
 - Decide your secret-storage path: **1Password service account** (recommended)
@@ -30,6 +33,74 @@ pnpm install
 pnpm build          # tsc -> dist/
 pnpm test           # sanity: full suite green
 ```
+
+### 0.1 macOS permissions (TCC) — grant before first run
+
+Reading Apple Notes needs two separate macOS **TCC** (Transparency, Consent &
+Control) grants, applied to **the process that runs the daemon** — the `node`
+binary launchd executes (from `which node`; see §7), or your terminal app when
+you run `pnpm sync` / `pnpm dev` by hand:
+
+1. **Automation → Notes** — `osascript`/JXA controlling Notes.app (how
+   `readNotes` reads note bodies). System Settings → **Privacy & Security →
+   Automation** → find the daemon's app/binary → enable the **Notes** toggle.
+2. **Full Disk Access** — reading `NoteStore.sqlite` directly (how the NoteStore
+   hashtag read works, `q95.13`). System Settings → **Privacy & Security → Full
+   Disk Access** → **＋** → add the daemon's `node` binary (⌘⇧G to type the
+   absolute path) → enable its toggle.
+
+**Why this must happen before/at first run, not lazily:** the very first
+`osascript` Notes access raises a **one-time permission dialog**, and **launchd
+has no UI to answer it** — under launchd the prompt cannot be shown, so the read
+either silently returns nothing or the blocked dialog **hangs `osascript`**
+(a hang vector for the trigger watchdog, `bd6.11`; the read is also bounded by
+`notes-reader`'s `READ_TIMEOUT_MS`). Trigger and answer the prompt **once in the
+foreground first** so the grant is recorded before launchd ever runs:
+
+```bash
+# From the checkout, with config/secrets in the env (§3–§4). Answer "OK" when
+# macOS prompts to let the terminal/node control Notes, then confirm rows exist.
+pnpm sync
+```
+
+If the daemon runs under a **different** binary path than the terminal you
+grant here (launchd uses `which node`'s absolute path, not your shell), grant
+that exact binary too — TCC keys on the binary/bundle identity, so a new path
+is an ungranted path.
+
+### 0.2 Re-verify after every macOS update
+
+**A macOS upgrade can reset or drop these TCC grants**, and a **new node binary
+path** (a Homebrew/`nvm` upgrade that moves `node`) reads as a brand-new,
+ungranted process. Either turns the next weekly sync into a **silent or hanging
+no-op** with the daemon otherwise looking healthy. After any OS update (or node
+upgrade), **re-verify before trusting the next Sunday**:
+
+```bash
+pnpm sync            # should read your recipe corpus and print total>0
+```
+
+- If it **reads 0 notes while the index already holds recipes**, the daemon now
+  **alerts loudly** to `#agent-alerts` + the local log (proceed + alert,
+  `fkg.7`) instead of silently planning against a stale index — treat that alert
+  as "re-check Automation + Full Disk Access", not "the corpus is empty".
+- Re-confirm both toggles in System Settings are still enabled for the daemon's
+  current `node` binary; re-run the foreground `pnpm sync` to re-trigger the
+  prompt if a grant was dropped.
+
+### 0.3 Apple-schema-change risk  · `bd fkg.7`
+
+The Notes automation interface and the `NoteStore.sqlite` schema are **private
+Apple surfaces that can change across macOS versions** — a JXA property that
+disappears/renames, or a NoteStore table/column change, can break `readNotes`
+or the hashtag read (`q95.13`) even with permissions fully granted. This is a
+known, accepted v1.0 risk (both reads fail soft — a Notes read failure is
+proceed + alert, and a failed NoteStore tag read preserves cached tags rather
+than wiping them, `q95.13`). After a **major** macOS upgrade, treat the §0.2
+`pnpm sync` re-verify as also covering schema drift: a read that returns
+implausibly empty or malformed after an upgrade may be a schema change, not a
+permission loss — check the daemon's logs / `#agent-alerts` and, if needed, the
+`osascript` output by hand before the next weekly run.
 
 ---
 
@@ -299,7 +370,15 @@ pnpm sync            # one pass: read Apple Notes -> embed -> extract; prints to
 
 Confirm afterwards that `./data/*.sqlite` exists and has rows before trusting a
 real plan. Thereafter the weekly run keeps it fresh; a whole-sync failure during
-a weekly run is non-fatal (proceed + alert to `#agent-alerts`).
+a weekly run is non-fatal (proceed + alert to `#agent-alerts`) — including a
+**suspicious empty read** (0 notes read while the index holds recipes), which
+now alerts loudly as a likely TCC/permission loss rather than passing silently
+(`fkg.7`; grant/re-verify in [§0.1](#01-macos-permissions-tcc--grant-before-first-run)/[§0.2](#02-re-verify-after-every-macos-update)).
+
+> This first `pnpm sync` is also where the macOS **Automation → Notes** and
+> **Full Disk Access** prompts fire — if it reads nothing, do
+> [§0.1](#01-macos-permissions-tcc--grant-before-first-run) first; it is almost
+> never a planner bug.
 
 ---
 
