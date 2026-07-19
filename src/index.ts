@@ -3,6 +3,7 @@ import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
 import { meteredLlmClient } from "./cost/metered-llm-client.js";
 import { runDaemon } from "./daemon/daemon.js";
+import { makeHeartbeat } from "./daemon/heartbeat.js";
 import { withTimeout } from "./daemon/with-timeout.js";
 import { getScaffoldVersion } from "./lib/version.js";
 import { createLlmClient } from "./llm/agent-sdk-client.js";
@@ -346,6 +347,13 @@ export async function main(): Promise<void> {
       ? buildSlackPost(profile, secrets)
       : buildDryRunPost(profile);
 
+  // External dead-man switch (bd meal-planner-fkg.8, SPEC §9.4): a never-
+  // throwing best-effort heartbeat pinged from onTrigger on a genuine run
+  // (success -> base URL; caught failure -> `<url>/fail`). Disabled when
+  // MP_HEALTHCHECK_URL is unset (makeHeartbeat(undefined) -> no-ops), so the
+  // daemon behaves exactly as before until the external check is configured.
+  const heartbeat = makeHeartbeat(config.healthcheckUrl);
+
   const { onStartup, onTrigger } = composeDaemon({
     config,
     profile,
@@ -357,6 +365,7 @@ export async function main(): Promise<void> {
     nowDate: () => new Date(),
     nowIso: () => new Date().toISOString(),
     meter,
+    heartbeat,
   });
 
   const handle = await runDaemon({

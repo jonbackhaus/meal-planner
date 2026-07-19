@@ -83,6 +83,27 @@ describe("loadConfig", () => {
     expect(() => loadConfig(env)).toThrowError(/triggerTime/i);
   });
 
+  it("leaves healthcheckUrl unset when MP_HEALTHCHECK_URL is absent or empty", () => {
+    expect(loadConfig(validEnv()).healthcheckUrl).toBeUndefined();
+    expect(
+      loadConfig(validEnv({ MP_HEALTHCHECK_URL: "" })).healthcheckUrl,
+    ).toBeUndefined();
+  });
+
+  it("reads healthcheckUrl from MP_HEALTHCHECK_URL when set", () => {
+    const config = loadConfig(
+      validEnv({ MP_HEALTHCHECK_URL: "https://hc-ping.com/abc-123" }),
+    );
+
+    expect(config.healthcheckUrl).toBe("https://hc-ping.com/abc-123");
+  });
+
+  it("throws when MP_HEALTHCHECK_URL is not a valid URL", () => {
+    expect(() =>
+      loadConfig(validEnv({ MP_HEALTHCHECK_URL: "not-a-url" })),
+    ).toThrowError(/healthcheckUrl/i);
+  });
+
   it("throws when untestedRate is out of the [0,1] range", () => {
     const env = validEnv({ MP_UNTESTED_RATE: "1.5" });
 

@@ -204,6 +204,7 @@ vars have no default and fail boot loudly if missing.
 | `MP_LOG_PATH` | `./data/meal-planner.log` | durable local alert log |
 | `MP_RECIPES_FOLDER` | `Food` | food-only Apple Notes folder the sync reads from (never a smart folder that also aggregates Drinks) |
 | `MP_HOUSEHOLD` | built-in default | household prose for the planner (see note) |
+| `MP_HEALTHCHECK_URL` | unset (disabled) | external dead-man-switch ping URL (see §11) |
 
 > **`MP_HOUSEHOLD`**: the built-in default already encodes the hard constraint
 > (a vegetarian daughter — every dinner must be vegetarian, cleanly separable,
@@ -423,6 +424,45 @@ Schema versioning is `PRAGMA user_version` with a forward-only runner
 `./data/backups/session-<timestamp>.sqlite` back over the live
 `./data/meal-planner.<profile>.sqlite` (remove any stale `-wal`/`-shm`
 sidecars), then relaunch.
+
+---
+
+## 11. External dead-man switch  · `bd fkg.8`
+
+**The risk:** the daemon's own alert channel lives *inside* the process that
+might die. If launchd stops relaunching, the Mac sleeps (an OS update reverting
+`pmset`), or a secret expires at boot, the daemon can be down for **weeks** with
+no post and no alert — startup catch-up only helps if the process actually
+starts. SPEC §9.4 deliberately keeps heartbeats *out* of `#agent-alerts`; the
+fix is a watcher that lives **outside** the daemon's failure domain.
+
+The daemon supports a **healthchecks.io-style dead-man ping**: on each genuine
+weekly trigger it pings a check URL, and the external service alerts *you*
+(email/SMS) when a ping is **missed**. It is **best-effort and never blocks a
+run** (short timeout, all errors swallowed), and **disabled by default** — until
+you set `MP_HEALTHCHECK_URL` the daemon behaves exactly as before.
+
+**Setup (one-time):**
+
+1. Create a free check at [healthchecks.io](https://healthchecks.io) (or any
+   compatible service): **period = 1 week**, plus a grace window (a day or two)
+   to cover the trigger time and a slow run. Configure its notification
+   (email/SMS/etc.) on the service side.
+2. Copy the check's ping URL and set it as a secret-ish env var (the URL path is
+   effectively a token — the daemon never logs it):
+   ```bash
+   export MP_HEALTHCHECK_URL="https://hc-ping.com/<your-uuid>"
+   ```
+   Add it to the launchd plist `EnvironmentVariables` (or your env file) the
+   same way as the other `MP_*` vars, then restart the daemon.
+3. Verify: a dev + dry-run test-fire (`MP_FIRE_ON_START=1`, §5) will send one
+   success ping — confirm the check flips to "up" on the service dashboard.
+
+On a **successful** run the base URL is pinged ("host alive, trigger fired");
+on a **caught generation failure** the daemon also POSTs `<url>/fail`, so a
+failed-but-alive run surfaces externally too, independent of the internal
+`#agent-alerts` alert. A *silent* death (no ping at all) is exactly what the
+service's missed-ping alert catches.
 
 ---
 
