@@ -178,6 +178,84 @@ describe("generateForWeek", () => {
     expect(row?.thread_ts).toBeNull();
   });
 
+  it("the transition-to-`failed` write throwing (bd6.7) does not mask the ORIGINAL buildPlan/post error and still fires the alert", async () => {
+    store = makeStore();
+    const buildPlan = vi.fn(async () => {
+      throw new Error("recipe sync exploded");
+    });
+    const post = vi.fn(async () => ({ ts: "1.1" }));
+    const alert = vi.fn(async (_message: string) => {});
+    // Make ONLY the transition-to-`failed` write throw (the `generating`
+    // insert used store.insert, not store.update, so this hits only the
+    // failed-status write in the catch path).
+    const updateSpy = vi
+      .spyOn(store, "update")
+      .mockImplementation((_wk, patch) => {
+        if (patch.status === "failed") {
+          throw new Error("disk full on failed-write");
+        }
+        throw new Error("unexpected update in this test");
+      });
+
+    // The ORIGINAL error propagates, NOT the secondary failed-write error.
+    await expect(
+      generateForWeek(
+        WEEK,
+        {},
+        { store, buildPlan, post, alert, now: fakeNow() },
+      ),
+    ).rejects.toThrow("recipe sync exploded");
+
+    // The alert still fires exactly once, carrying the ORIGINAL error text.
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(alert.mock.calls[0][0]).toContain("recipe sync exploded");
+
+    updateSpy.mockRestore();
+    // The failed-status write faulted, so the row is left `generating`
+    // (startup catch-up bd6.4 resolves it) -- never masked as a crash.
+    const row = store.get(WEEK);
+    expect(row?.status).toBe("generating");
+  });
+
+  it("force re-run into an existing row expires the prior uncommitted week BEFORE the PK insert throws (current behavior; clean overwrite is bd6.6's job)", async () => {
+    // Documents the deferred bd6.7 finding: expirePriorIfUncommitted runs (and
+    // can mutate the prior week) ahead of store.insert, so a force re-run that
+    // then hits the PRIMARY KEY constraint has already expired the prior week.
+    // This is CURRENT behavior, not a target -- the clean delete/overwrite of
+    // an existing row under force is owned by bd6.6 (operator re-run).
+    store = makeStore();
+    store.insert({
+      week_key: PRIOR_WEEK,
+      status: "suggested",
+      thread_ts: "old.ts",
+      created_at: "2026-07-05T06:00:00.000Z",
+      updated_at: "2026-07-05T06:00:00.000Z",
+    });
+    store.insert({
+      week_key: WEEK,
+      status: "failed",
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const buildPlan = vi.fn(async () => plan());
+    const post = vi.fn(async () => ({ ts: "1.1" }));
+    const alert = vi.fn(async () => {});
+
+    await expect(
+      generateForWeek(
+        WEEK,
+        { force: true },
+        { store, buildPlan, post, alert, now: fakeNow() },
+      ),
+    ).rejects.toThrow();
+
+    // The prior week was expired even though the current insert then threw.
+    expect(store.get(PRIOR_WEEK)?.status).toBe("expired");
+    // buildPlan/post are still never reached -- the PK constraint fires at insert.
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+
   it("post succeeds but the suggested-update throws every time -> after bounded retries the row stays `generating`, error propagates, never left half-written", async () => {
     store = makeStore();
     const buildPlan = vi.fn(async () => plan());

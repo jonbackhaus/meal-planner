@@ -17,10 +17,28 @@ import { previousPlanWeek } from "./week-key.js";
  * and `alert` are injected callbacks the caller binds to those, once built.
  */
 
-/** The bound recipe-sync-and-select pipeline (E4) — ADR 0002's `buildPlan(wk)`. */
+/**
+ * The bound recipe-sync-and-select pipeline (E4) — ADR 0002's `buildPlan(wk)`.
+ *
+ * No-secret error contract (bd6.7): when this rejects, `generateForWeek`
+ * forwards the raw error text into the #agent-alerts alert. Implementations
+ * MUST NOT throw errors whose message carries secret-ish content (the working
+ * plan, recipe/household prose, raw LLM prompts/responses). The real E4
+ * pipeline already honors this — its `PlanSelectionError`/`PlanValidationError`
+ * are deliberately built secret-free (ids/counts/slot-types only) — so a
+ * lightweight contract here is correct and lossless, versus sanitizing away
+ * the diagnostic text the alert exists to carry.
+ */
 export type BuildPlanFn = (weekKey: string) => Promise<EnrichedWeekPlan>;
 
-/** The bound Slack render+postMessage (E5, injected — not built yet). */
+/**
+ * The bound Slack render+postMessage (E5, injected — not built yet).
+ *
+ * No-secret error contract (bd6.7): same as `BuildPlanFn` — on rejection the
+ * raw error text reaches the alert boundary, so implementations MUST NOT throw
+ * errors carrying the plan or household prose (a Slack Web API error's code/
+ * status is fine; the rendered plan body is not).
+ */
 export type PostFn = (plan: EnrichedWeekPlan) => Promise<{ ts: string }>;
 
 /** The bound #agent-alerts notifier (E6, injected — not built yet). */
@@ -145,6 +163,13 @@ export async function generateForWeek(
     // Cosmetic (ADR 0002: "correctness doesn't depend on this -- activeness
     // is computed"). A store fault while expiring the PRIOR week must not
     // abort the CURRENT week's generation.
+    //
+    // bd6.7 note: on a `force` re-run into an EXISTING current-week row, this
+    // runs (and may expire the prior week) BEFORE `store.insert` below throws
+    // the PK constraint -- so the prior week is expired even though this run
+    // then aborts. That's current behavior, deliberately not "fixed" here: the
+    // clean delete/overwrite of an existing row under `force` is bd6.6's
+    // (operator re-run) concern, not this function's.
     expirePriorIfUncommitted(week_key, deps);
   } catch (e) {
     console.warn(
@@ -185,17 +210,33 @@ export async function generateForWeek(
       // Nothing posted -- a clean failure. No Slack thread exists, so
       // there's nothing to reconcile: mark `failed` and alert a human.
       // (No secrets: the alert carries only the week_key + error message,
-      // never the working plan or household prose.) The run may still have
-      // spent tokens before the failure (e.g. buildPlan's selection call
-      // succeeded, a later repair call/post failed) -- §9.3 cares about that
-      // spend even though the run itself failed, so it's persisted here too.
-      transition(
-        deps.store,
-        week_key,
-        "failed",
-        { ...spendPatch(deps.meter) },
-        deps.now(),
-      );
+      // never the working plan or household prose -- see the no-secret
+      // contract on `BuildPlanFn`/`PostFn`.) The run may still have spent
+      // tokens before the failure (e.g. buildPlan's selection call succeeded,
+      // a later repair call/post failed) -- §9.3 cares about that spend even
+      // though the run itself failed, so it's persisted here too.
+      //
+      // CONTAIN a failing failed-write (bd6.7, same log-and-continue style as
+      // the bd6.10/bd6.12 boot-path guards): if this transition throws (disk
+      // full / SQLITE_BUSY) it must NOT mask the ORIGINAL buildPlan/post error
+      // `e` nor skip the alert below. Log the secondary write fault and press
+      // on -- the alert still fires with `e`, and `throw e` below still
+      // propagates the original error. The row is left `generating`; startup
+      // catch-up (bd6.4) resolves it, exactly as when the process had died
+      // here instead.
+      try {
+        transition(
+          deps.store,
+          week_key,
+          "failed",
+          { ...spendPatch(deps.meter) },
+          deps.now(),
+        );
+      } catch (writeErr) {
+        console.error(
+          `marking week ${week_key} failed threw; preserving the original error and still alerting: ${String(writeErr)}`,
+        );
+      }
       await deps.alert(
         `generation for week ${week_key} failed before posting: ${String(e)}`,
       );
