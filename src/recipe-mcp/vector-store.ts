@@ -163,6 +163,46 @@ export class VectorStore {
     return row?.hash;
   }
 
+  /**
+   * Every note id currently in the index (stale-recipe reconciliation,
+   * q95.14). The authoritative set sync diffs against the ids it just read, to
+   * find rows whose source note was deleted / moved out of the recipe folder.
+   */
+  listIds(): string[] {
+    const rows = this.db.prepare("SELECT id FROM notes").all() as Array<
+      Pick<NoteRow, "id">
+    >;
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * Hard-delete the given note ids from BOTH the metadata table and the vec0
+   * embedding table (stale-recipe reconciliation, q95.14). Deleting the `notes`
+   * row alone would orphan the `vec_notes` embedding (which shares the integer
+   * rowid) — it would keep matching in `search` while its metadata JOIN returns
+   * nothing. Unknown/absent ids are skipped; an empty list is a no-op. Wrapped
+   * in one transaction so the two tables never diverge on a mid-batch failure.
+   */
+  deleteMany(ids: string[]): void {
+    if (ids.length === 0) {
+      return;
+    }
+    const selectRowid = this.db.prepare("SELECT rowid FROM notes WHERE id = ?");
+    const deleteVec = this.db.prepare("DELETE FROM vec_notes WHERE rowid = ?");
+    const deleteNote = this.db.prepare("DELETE FROM notes WHERE rowid = ?");
+    const deleteTx = this.db.transaction((toDelete: string[]) => {
+      for (const id of toDelete) {
+        const row = selectRowid.get(id) as { rowid: number } | undefined;
+        if (!row) {
+          continue;
+        }
+        deleteVec.run(BigInt(row.rowid));
+        deleteNote.run(row.rowid);
+      }
+    });
+    deleteTx(ids);
+  }
+
   /** The stored id/title/body for a note id, or null if never upserted (note-metadata accessor for get_recipe). */
   getNote(id: string): StoredNote | null {
     const row = this.db

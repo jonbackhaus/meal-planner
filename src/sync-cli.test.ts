@@ -9,7 +9,13 @@ import { runSyncCli } from "./sync-cli.js";
  */
 
 function syncResult(): SyncResult {
-  return { total: 5, processed: 2, skipped: 3, extractionFailures: 1 };
+  return {
+    total: 5,
+    processed: 2,
+    skipped: 3,
+    extractionFailures: 1,
+    removed: 0,
+  };
 }
 
 describe("runSyncCli", () => {

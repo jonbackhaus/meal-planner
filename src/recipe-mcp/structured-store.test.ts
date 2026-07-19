@@ -137,4 +137,62 @@ describe("StructuredStore", () => {
   it("exports an EXTRACTOR_VERSION constant", () => {
     expect(typeof EXTRACTOR_VERSION).toBe("number");
   });
+
+  describe("listIds / deleteMany (stale-recipe reconciliation, q95.14)", () => {
+    it("listIds returns every stored note id, including tags-only rows", () => {
+      const store = new StructuredStore({ path: ":memory:" });
+      expect(store.listIds()).toEqual([]);
+
+      store.upsertStructured("note-1", {
+        contentHash: "hash-a",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: fields(),
+        needsReview: false,
+      });
+      // A tags-only row (never extracted) still owns an id that must reconcile.
+      store.upsertTags("note-2", ["side"]);
+
+      expect(store.listIds().sort()).toEqual(["note-1", "note-2"]);
+      store.close();
+    });
+
+    it("deleteMany removes the structured record so get/list no longer see it", () => {
+      const store = new StructuredStore({ path: ":memory:" });
+      store.upsertStructured("note-keep", {
+        contentHash: "hash-a",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: fields(),
+        needsReview: false,
+      });
+      store.upsertStructured("note-drop", {
+        contentHash: "hash-b",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: fields(),
+        needsReview: false,
+      });
+
+      store.deleteMany(["note-drop"]);
+
+      expect(store.listIds()).toEqual(["note-keep"]);
+      expect(store.getStructured("note-drop")).toBeNull();
+      expect(store.getStructured("note-keep")).not.toBeNull();
+      store.close();
+    });
+
+    it("deleteMany is a no-op for an empty list and for unknown ids", () => {
+      const store = new StructuredStore({ path: ":memory:" });
+      store.upsertStructured("note-1", {
+        contentHash: "hash-a",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: fields(),
+        needsReview: false,
+      });
+
+      store.deleteMany([]);
+      store.deleteMany(["never-existed"]);
+
+      expect(store.listIds()).toEqual(["note-1"]);
+      store.close();
+    });
+  });
 });

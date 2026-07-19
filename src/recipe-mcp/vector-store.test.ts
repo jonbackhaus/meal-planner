@@ -175,6 +175,91 @@ describe("VectorStore", () => {
     });
   });
 
+  describe("listIds / deleteMany (stale-recipe reconciliation, q95.14)", () => {
+    it("listIds returns every stored note id (empty when none)", () => {
+      store = makeStore();
+      expect(store.listIds()).toEqual([]);
+
+      store.upsert("note-a", [1, 0, 0], {
+        title: "A",
+        body: "body",
+        hash: "hash-a",
+        modifiedAt: new Date(),
+      });
+      store.upsert("note-b", [0, 1, 0], {
+        title: "B",
+        body: "body",
+        hash: "hash-b",
+        modifiedAt: new Date(),
+      });
+
+      expect(store.listIds().sort()).toEqual(["note-a", "note-b"]);
+    });
+
+    it("deleteMany removes the note AND its vector row so it no longer ranks in search", () => {
+      store = makeStore();
+      store.upsert("note-keep", [1, 0, 0], {
+        title: "Keep",
+        body: "body",
+        hash: "hash-keep",
+        modifiedAt: new Date(),
+      });
+      store.upsert("note-drop", [0.9, 0.1, 0], {
+        title: "Drop",
+        body: "body",
+        hash: "hash-drop",
+        modifiedAt: new Date(),
+      });
+
+      store.deleteMany(["note-drop"]);
+
+      // Gone from the id set, hash lookup, note lookup, AND vector search.
+      expect(store.listIds()).toEqual(["note-keep"]);
+      expect(store.getStoredHash("note-drop")).toBeUndefined();
+      expect(store.getNote("note-drop")).toBeNull();
+      const results = store.search([1, 0, 0], { limit: 10 });
+      expect(results.map((r) => r.id)).toEqual(["note-keep"]);
+    });
+
+    it("deleteMany is a no-op for an empty list and for unknown ids", () => {
+      store = makeStore();
+      store.upsert("note-a", [1, 0, 0], {
+        title: "A",
+        body: "body",
+        hash: "hash-a",
+        modifiedAt: new Date(),
+      });
+
+      store.deleteMany([]);
+      store.deleteMany(["never-existed"]);
+
+      expect(store.listIds()).toEqual(["note-a"]);
+    });
+
+    it("a rowid freed by deleteMany is not reused to corrupt a surviving vector", () => {
+      // Regression guard: deleting a note must remove its vec0 row too, else a
+      // later insert reusing the rowid would collide with a stale embedding.
+      store = makeStore();
+      store.upsert("note-a", [1, 0, 0], {
+        title: "A",
+        body: "body",
+        hash: "hash-a",
+        modifiedAt: new Date(),
+      });
+      store.deleteMany(["note-a"]);
+      store.upsert("note-b", [0, 1, 0], {
+        title: "B",
+        body: "body",
+        hash: "hash-b",
+        modifiedAt: new Date(),
+      });
+
+      const results = store.search([0, 1, 0], { limit: 10 });
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("note-b");
+    });
+  });
+
   it("creates schema on open and survives being reopened against the same file path", () => {
     const path = `${process.env.TMPDIR ?? "/tmp"}/recipe-index-test-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
     const first = new VectorStore({ path, dimensions: 3 });

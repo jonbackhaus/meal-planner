@@ -172,6 +172,41 @@ export class StructuredStore {
       .run(noteId, JSON.stringify(tags));
   }
 
+  /**
+   * Every note id with a stored record (stale-recipe reconciliation, q95.14),
+   * including tags-only rows (which own an id even with no extraction yet). The
+   * structured cache and the vector store each hold per-note rows, so both are
+   * reconciled by sync so no orphan (a tags/fields row without a vector, or
+   * vice versa) lingers.
+   */
+  listIds(): string[] {
+    const rows = this.db
+      .prepare("SELECT note_id FROM structured_fields")
+      .all() as Array<{ note_id: string }>;
+    return rows.map((r) => r.note_id);
+  }
+
+  /**
+   * Hard-delete the structured records (fields + tags) for the given note ids
+   * (stale-recipe reconciliation, q95.14). Unknown/absent ids are skipped; an
+   * empty list is a no-op. One transaction so a mid-batch failure can't leave a
+   * partially-reconciled cache.
+   */
+  deleteMany(ids: string[]): void {
+    if (ids.length === 0) {
+      return;
+    }
+    const del = this.db.prepare(
+      "DELETE FROM structured_fields WHERE note_id = ?",
+    );
+    const deleteTx = this.db.transaction((toDelete: string[]) => {
+      for (const id of toDelete) {
+        del.run(id);
+      }
+    });
+    deleteTx(ids);
+  }
+
   close(): void {
     this.db.close();
   }

@@ -219,7 +219,7 @@ export function makeBuildPlanWithSync(
     try {
       const r = await doSync();
       logger.log(
-        `[sync] total=${r.total} processed=${r.processed} skipped=${r.skipped} extractionFailures=${r.extractionFailures}`,
+        `[sync] total=${r.total} processed=${r.processed} skipped=${r.skipped} extractionFailures=${r.extractionFailures} removed=${r.removed}`,
       );
     } catch (e) {
       const message = `recipe sync failed before generating week ${weekKey}: ${String(e)}`;
