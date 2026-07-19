@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Recipe } from "../recipe-mcp/schema.js";
-import { EnrichmentError, enrichPlan } from "./enrich.js";
+import {
+  EnrichedWeekPlanSchema,
+  EnrichmentError,
+  enrichPlan,
+} from "./enrich.js";
 import type { SelectedMeal, WeekPlan } from "./select.js";
 
 function recipe(id: string, overrides: Partial<Recipe> = {}): Recipe {
@@ -135,5 +139,40 @@ describe("enrichPlan", () => {
     const enriched = await enrichPlan(weekPlan, { getRecipe });
 
     expect(enriched.summary).toBe("a fine week of meals");
+  });
+});
+
+describe("EnrichedWeekPlanSchema (canonical, bd6.8)", () => {
+  it("parses a real enrichPlan output", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan = plan(
+      [
+        meal({ recipe_id: "wn-veg" }),
+        meal({
+          recipe_id: "wn-meat",
+          slot_type: "relaxed",
+          veg: { kind: "second_dish", recipe_id: "wn-side", title: "Side" },
+        }),
+      ],
+      "a fine week of meals",
+    );
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    const result = EnrichedWeekPlanSchema.safeParse(enriched);
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a plan whose meal is missing its enriched recipe", () => {
+    const result = EnrichedWeekPlanSchema.safeParse({
+      week_key: "2026-W29",
+      meals: [meal({ recipe_id: "wn-veg" })], // no `recipe` attached
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a plan missing its meals array", () => {
+    const result = EnrichedWeekPlanSchema.safeParse({ week_key: "2026-W29" });
+    expect(result.success).toBe(false);
   });
 });

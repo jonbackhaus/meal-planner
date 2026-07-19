@@ -1,5 +1,6 @@
-import type { Recipe } from "../recipe-mcp/schema.js";
-import type { SelectedMeal, WeekPlan } from "./select.js";
+import { z } from "zod";
+import { type Recipe, RecipeSchema } from "../recipe-mcp/schema.js";
+import { SelectedMealSchema, type WeekPlan } from "./select.js";
 
 /**
  * Final planner pipeline step: `get_recipe` enrich (ADR 0003 pipeline step 4,
@@ -15,20 +16,33 @@ import type { SelectedMeal, WeekPlan } from "./select.js";
  */
 
 /**
+ * The CANONICAL schema for what `enrichPlan` produces, and the single source
+ * of truth for the `EnrichedMeal`/`EnrichedWeekPlan` shape (bd6.8). Composed
+ * from the two schemas the planner already owns — `SelectedMealSchema`
+ * (planner/select.ts, the pre-enrichment shape) extended with the
+ * `recipe`/`secondDishRecipe` fields `enrichPlan` attaches (`RecipeSchema`,
+ * recipe-mcp/schema.ts) — so it can't drift from the real produced shape. The
+ * lenient READ variant used on crash-recovery resume (orchestrator/resume.ts,
+ * bd6.13) IMPORTS this and layers its own read-leniency on top; this schema
+ * itself stays a faithful description of the produced value (strict `day:
+ * null`, no passthrough).
+ *
  * A `SelectedMeal` with its full `Recipe` attached, plus (for a
  * `veg.kind:"second_dish"` meal) the second dish's own `Recipe`.
  */
-export type EnrichedMeal = SelectedMeal & {
-  recipe: Recipe;
-  secondDishRecipe?: Recipe;
-};
+export const EnrichedMealSchema = SelectedMealSchema.extend({
+  recipe: RecipeSchema,
+  secondDishRecipe: RecipeSchema.optional(),
+});
+export type EnrichedMeal = z.infer<typeof EnrichedMealSchema>;
 
 /** `WeekPlan` with every meal enriched to an `EnrichedMeal`. */
-export interface EnrichedWeekPlan {
-  week_key: string;
-  meals: EnrichedMeal[];
-  summary?: string;
-}
+export const EnrichedWeekPlanSchema = z.object({
+  week_key: z.string(),
+  meals: z.array(EnrichedMealSchema),
+  summary: z.string().optional(),
+});
+export type EnrichedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema>;
 
 export interface EnrichPlanDeps {
   /** A bound `getRecipe(id)` callback — `getRecipe` with its own store deps already applied. */
