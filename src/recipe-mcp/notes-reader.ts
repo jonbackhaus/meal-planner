@@ -91,40 +91,12 @@ function execFile(
   });
 }
 
-// Very small HTML-to-text pass: Notes.app note bodies are HTML source. We
-// don't need (or want) a full HTML parser dependency here — the structured
-// extraction pass (q95.3) works off this plain-ish text, not markup — so
-// this strips tags and decodes a small, common set of entities.
-const HTML_TAG_PATTERN = /<[^>]*>/g;
-const HTML_ENTITIES: Record<string, string> = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'",
-  "&apos;": "'",
-  "&nbsp;": " ",
-};
-
-export function stripHtml(html: string): string {
-  const withoutTags = html.replace(HTML_TAG_PATTERN, "\n");
-  const decoded = withoutTags.replace(
-    /&amp;|&lt;|&gt;|&quot;|&#39;|&apos;|&nbsp;/g,
-    (entity) => HTML_ENTITIES[entity] ?? entity,
-  );
-  return decoded
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .join("\n")
-    .trim();
-}
-
 /**
  * The JXA source executed by `osascript -l JavaScript`. Receives the folder
  * name as `argv[0]` and prints a JSON array of `{id, title, body,
- * modifiedAt}` to stdout. `body` is the raw HTML note body; callers of
- * `readNotes` strip it to plain text via `stripHtml`.
+ * modifiedAt}` to stdout. `body` is the note's plain-text content (read via
+ * `note.plaintext()` below), already free of markup — callers of `readNotes`
+ * use it as-is.
  *
  * Performance + robustness (bd meal-planner-q95.9). Two problems with the naive
  * `notes.map(n => ({ id: n.id(), body: n.body(), ... }))`:
@@ -141,7 +113,7 @@ export function stripHtml(html: string): string {
  *      (AppleEvent -1741). Fixed by reading `note.plaintext()` instead: the
  *      text-only view (no markup, no images), ~1.8 KB/note, which is exactly
  *      what the downstream extraction/embedding wants anyway (the old code
- *      immediately stripped the HTML to text via `stripHtml`).
+ *      then immediately stripped that HTML down to text).
  *
  * Folder lookup iterates accounts and matches on the TRIMMED folder name, so a
  * stray trailing space in a Notes folder name (a common cause of a silent empty
@@ -238,7 +210,7 @@ export async function readNotes(
   return rawNotes.map((note) => ({
     id: note.id,
     title: note.title,
-    body: stripHtml(note.body),
+    body: note.body,
     modifiedAt: new Date(note.modifiedAt),
   }));
 }
