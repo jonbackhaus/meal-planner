@@ -40,6 +40,53 @@ describe("CostMeter", () => {
     );
   });
 
+  it("prices cache-write and cache-read input at their rate tiers, not the flat input rate (bd fkg.5)", () => {
+    // 1,000,000 fresh input @ $2/MTok            = $2.00
+    // 1,000,000 cache-write @ 1.25×$2/MTok       = $2.50
+    // 1,000,000 cache-read  @ 0.10×$2/MTok       = $0.20
+    //   500,000 output      @ $10/MTok           = $5.00
+    //                                       total = $9.70
+    const meter = new CostMeter(SONNET_5_RATE);
+    meter.record({
+      inputTokens: 1_000_000,
+      cacheWriteTokens: 1_000_000,
+      cacheReadTokens: 1_000_000,
+      outputTokens: 500_000,
+    });
+
+    const totals = meter.totals();
+    // Reported input tokens = ALL input categories summed (total processed).
+    expect(totals.inputTokens).toBe(3_000_000);
+    expect(totals.outputTokens).toBe(500_000);
+    expect(totals.costUsd).toBeCloseTo(9.7, 10);
+    // Explicitly LOWER than the pre-fkg.5 flat over-estimate (all 3M input
+    // billed at the fresh rate → $6 in + $5 out = $11), i.e. more accurate but
+    // never undercounting fresh input or output.
+    expect(totals.costUsd).toBeLessThan(
+      costUsd(3_000_000, 500_000, SONNET_5_RATE),
+    );
+  });
+
+  it("matches the old flat cost when there is no cache activity (no regression)", () => {
+    const meter = new CostMeter(SONNET_5_RATE);
+    meter.record({ inputTokens: 250_000, outputTokens: 100_000 });
+
+    expect(meter.totals().costUsd).toBeCloseTo(
+      costUsd(250_000, 100_000, SONNET_5_RATE),
+      10,
+    );
+  });
+
+  it("treats missing cache fields as zero (backward-friendly producers)", () => {
+    const meter = new CostMeter(SONNET_5_RATE);
+    // No cacheWriteTokens/cacheReadTokens: same as all-fresh input.
+    meter.record({ inputTokens: 500_000, outputTokens: 0 });
+
+    const totals = meter.totals();
+    expect(totals.inputTokens).toBe(500_000);
+    expect(totals.costUsd).toBeCloseTo(costUsd(500_000, 0, SONNET_5_RATE), 10);
+  });
+
   it("reset() zeroes the accumulators", () => {
     const meter = new CostMeter(SONNET_5_RATE);
     meter.record({ inputTokens: 100_000, outputTokens: 50_000 });

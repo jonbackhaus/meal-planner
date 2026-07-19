@@ -25,10 +25,38 @@ export type RunQueryInput = {
   mcpServers?: StdioMcpServerSpec[];
 };
 
-/** Token usage totals for one `runQuery` call, aggregated across every underlying SDK turn. */
+/**
+ * Token usage totals for one `runQuery` call, aggregated across every
+ * underlying SDK turn, with the input broken out by Anthropic billing tier
+ * (bd meal-planner-fkg.5) so `CostMeter` can price cache reads/writes at their
+ * real rates instead of a flat over-estimate.
+ *
+ * IMPORTANT — `inputTokens` is FRESH (uncached) input ONLY. It does NOT
+ * include the cache-write / cache-read categories (those are `cacheWriteTokens`
+ * / `cacheReadTokens`). This differs from the pre-fkg.5 meaning, where
+ * `inputTokens` was the SUM of all three input categories. Every reader that
+ * wants "total input tokens processed" must add all three (see
+ * `CostTotals.inputTokens`, which does).
+ *
+ * The two cache fields are OPTIONAL and default to 0 wherever a producer does
+ * not set them (e.g. the assistant-turn fallback path, or older callers) — a
+ * missing field is treated as "no cache activity", which prices that input at
+ * the full fresh rate (the conservative direction for a spend guard).
+ */
 export type LlmUsage = {
+  /** Fresh (uncached) input tokens, billed at the base input rate. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * `cache_creation_input_tokens` — input written to the prompt cache, billed
+   * at ~1.25× the base input rate. Optional; treated as 0 when absent.
+   */
+  cacheWriteTokens?: number;
+  /**
+   * `cache_read_input_tokens` — input served from the prompt cache, billed at
+   * ~0.1× the base input rate. Optional; treated as 0 when absent.
+   */
+  cacheReadTokens?: number;
 };
 
 /** Result of one agentic run: the final text plus aggregated usage. */
