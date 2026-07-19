@@ -7,7 +7,7 @@ import {
   composePools,
   type PoolCompositionConfig,
 } from "./pools.js";
-import { selectValidatedPlan } from "./validate.js";
+import { assertPoolsSufficient, selectValidatedPlan } from "./validate.js";
 
 /**
  * The planner's public entry point (ADR 0002 `buildPlan(wk)`) — the single
@@ -92,6 +92,14 @@ export async function buildPlan(
     constrained: cfg.cookNights.constrained,
     relaxed: cfg.cookNights.relaxed,
   };
+
+  // Pool-sufficiency pre-check (bd meal-planner-8zs.12): fail deterministically
+  // BEFORE any (paid) LLM call when the composed pools can't satisfy the slot
+  // counts — an empty/thin index, a tag wipe, or an over-selective filter combo
+  // would otherwise burn the selection AND repair calls and then throw a
+  // misleading PlanValidationError. `InsufficientPoolError` propagates to
+  // `generateForWeek`'s failed+alert path with an actionable, secret-free message.
+  assertPoolsSufficient(pools, slots);
 
   const input = buildPlannerInput({
     weekKey,
