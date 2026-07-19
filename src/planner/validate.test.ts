@@ -9,8 +9,10 @@ import {
   type WeekPlan,
 } from "./select.js";
 import {
+  assertPoolsSufficient,
   buildRepairPrompt,
   buildShapeRepairPrompt,
+  InsufficientPoolError,
   PlanValidationError,
   selectValidatedPlan,
   type ValidatePlanConfig,
@@ -102,6 +104,84 @@ function validPlan(): WeekPlan {
     meals: [meal(), relaxedMeal()],
   };
 }
+
+describe("assertPoolsSufficient", () => {
+  it("passes when both pools cover their own slot count and the distinct union covers all slots", () => {
+    const sufficient: Pools = {
+      weeknight: [candidate("wn-a"), candidate("wn-b")],
+      weekend: [candidate("we-a"), candidate("we-b")],
+    };
+    expect(() =>
+      assertPoolsSufficient(sufficient, { constrained: 2, relaxed: 2 }),
+    ).not.toThrow();
+  });
+
+  it("throws InsufficientPoolError when the weeknight pool is smaller than the constrained slot count", () => {
+    const shortWeeknight: Pools = {
+      weeknight: [candidate("wn-a")], // 1 < 2 constrained
+      weekend: [candidate("we-a"), candidate("we-b")],
+    };
+    expect(() =>
+      assertPoolsSufficient(shortWeeknight, { constrained: 2, relaxed: 1 }),
+    ).toThrow(InsufficientPoolError);
+  });
+
+  it("throws InsufficientPoolError when the weekend pool is smaller than the relaxed slot count", () => {
+    const shortWeekend: Pools = {
+      weeknight: [candidate("wn-a"), candidate("wn-b")],
+      weekend: [candidate("we-a")], // 1 < 2 relaxed
+    };
+    expect(() =>
+      assertPoolsSufficient(shortWeekend, { constrained: 1, relaxed: 2 }),
+    ).toThrow(InsufficientPoolError);
+  });
+
+  it("throws when per-pool counts pass but the distinct union across both pools is short (same recipe in both)", () => {
+    // Both pools hold ONLY the same single id: each pool covers its own 1-slot
+    // count, but the plan needs 2 DISTINCT recipes (no recipe used twice) and
+    // only 1 exists.
+    const overlapping: Pools = {
+      weeknight: [candidate("shared")],
+      weekend: [candidate("shared")],
+    };
+    expect(() =>
+      assertPoolsSufficient(overlapping, { constrained: 1, relaxed: 1 }),
+    ).toThrow(InsufficientPoolError);
+  });
+
+  it("counts a recipe present in BOTH pools once toward the distinct union", () => {
+    // union = {a, b, c} = 3 distinct >= 3 total slots, and each pool covers its
+    // own count (weeknight {a,b}>=2, weekend {b,c}>=1), so this is feasible.
+    const shared: Pools = {
+      weeknight: [candidate("a"), candidate("b")],
+      weekend: [candidate("b"), candidate("c")],
+    };
+    expect(() =>
+      assertPoolsSufficient(shared, { constrained: 2, relaxed: 1 }),
+    ).not.toThrow();
+  });
+
+  it("names the actual pool sizes and required counts, secret-free (counts only)", () => {
+    const shortWeeknight: Pools = {
+      weeknight: [candidate("wn-a")],
+      weekend: [candidate("we-a"), candidate("we-b")],
+    };
+    try {
+      assertPoolsSufficient(shortWeeknight, { constrained: 2, relaxed: 1 });
+      throw new Error("expected InsufficientPoolError");
+    } catch (e) {
+      expect(e).toBeInstanceOf(InsufficientPoolError);
+      const err = e as InsufficientPoolError;
+      // Counts are carried on the error and named in the message.
+      expect(err.weeknightPoolSize).toBe(1);
+      expect(err.constrainedSlots).toBe(2);
+      expect(err.message).toContain("1");
+      expect(err.message).toContain("2");
+      // Secret-free: no recipe titles/bodies leak (candidate titles are "Recipe <id>").
+      expect(err.message).not.toContain("Recipe wn-a");
+    }
+  });
+});
 
 describe("validateWeekPlan", () => {
   it("returns zero issues for a fully valid plan", () => {

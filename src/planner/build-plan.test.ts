@@ -4,6 +4,7 @@ import type { Recipe, RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { SearchFilters } from "../recipe-mcp/search.js";
 import { buildPlan, DEFAULT_SEEDS } from "./build-plan.js";
 import type { SelectedMeal, WeekPlan } from "./select.js";
+import { InsufficientPoolError } from "./validate.js";
 
 function candidate(
   id: string,
@@ -206,5 +207,110 @@ describe("buildPlan", () => {
         deps: { search, llm, getRecipe },
       }),
     ).rejects.toThrow(/ghost-id/);
+  });
+});
+
+// ── Pool-sufficiency pre-check (bd meal-planner-8zs.12) ──
+// A search that returns FIXED weeknight/weekend candidate arrays regardless of
+// seed, so a test can starve a pool deterministically. untestedRate:0 keeps
+// injectUntested a no-op; vegetarian candidates + vegFloorK:1 keep the veg-floor
+// top-up from ballooning the pool.
+function searchReturning(
+  weeknight: RecipeCandidate[],
+  weekend: RecipeCandidate[],
+) {
+  return vi.fn(async (_query: string, filters?: SearchFilters) => {
+    const isWeeknight = filters?.active_max !== undefined;
+    return isWeeknight ? weeknight : weekend;
+  });
+}
+
+describe("buildPlan pool-sufficiency pre-check", () => {
+  it("throws InsufficientPoolError WITHOUT calling the LLM when the weeknight pool is short", async () => {
+    // 2 constrained slots but only 1 weeknight candidate.
+    const search = searchReturning(
+      [candidate("wn-a")],
+      [candidate("we-a"), candidate("we-b")],
+    );
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await expect(
+      buildPlan({
+        weekKey: "2026-W29",
+        cfg: { ...baseCfg, cookNights: { constrained: 2, relaxed: 1 } },
+        household: "Vegetarian daughter every night.",
+        deps: { search, llm, getRecipe },
+      }),
+    ).rejects.toThrow(InsufficientPoolError);
+
+    expect(llm.runQuery).not.toHaveBeenCalled();
+    expect(getRecipe).not.toHaveBeenCalled();
+  });
+
+  it("throws InsufficientPoolError WITHOUT calling the LLM when the weekend pool is short", async () => {
+    // 2 relaxed slots but only 1 weekend candidate.
+    const search = searchReturning(
+      [candidate("wn-a"), candidate("wn-b")],
+      [candidate("we-a")],
+    );
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await expect(
+      buildPlan({
+        weekKey: "2026-W29",
+        cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 2 } },
+        household: "Vegetarian daughter every night.",
+        deps: { search, llm, getRecipe },
+      }),
+    ).rejects.toThrow(InsufficientPoolError);
+
+    expect(llm.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("throws InsufficientPoolError WITHOUT calling the LLM when the distinct union across both pools is short", async () => {
+    // Each pool covers its own 1-slot count, but both hold ONLY the same id, so
+    // the 2 no-duplicate slots can't be filled by 1 distinct recipe.
+    const search = searchReturning(
+      [candidate("shared")],
+      [candidate("shared")],
+    );
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await expect(
+      buildPlan({
+        weekKey: "2026-W29",
+        cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 1 } },
+        household: "Vegetarian daughter every night.",
+        deps: { search, llm, getRecipe },
+      }),
+    ).rejects.toThrow(InsufficientPoolError);
+
+    expect(llm.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to the selection call when pools are exactly sufficient", async () => {
+    const search = searchReturning([candidate("wn-a")], [candidate("we-a")]);
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-a", slot_type: "constrained" }),
+        meal({ recipe_id: "we-a", slot_type: "relaxed" }),
+      ],
+    };
+    const llm = fakeLlm(JSON.stringify(plan));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-W29",
+      cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 1 } },
+      household: "Vegetarian daughter every night.",
+      deps: { search, llm, getRecipe },
+    });
+
+    expect(llm.runQuery).toHaveBeenCalledTimes(1);
+    expect(result.meals).toHaveLength(2);
   });
 });

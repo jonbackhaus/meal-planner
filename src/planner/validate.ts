@@ -276,6 +276,105 @@ export class PlanValidationError extends Error {
 }
 
 /**
+ * Thrown BEFORE the selection call when the composed pools cannot possibly
+ * satisfy the exact slot counts — an empty/thin index, a tag wipe, or an
+ * over-selective filter combo (bd meal-planner-8zs.12). Without this pre-check
+ * `buildPlan` would still issue the selection call AND its repair call (two
+ * guaranteed-doomed PAID LLM calls) and then surface a misleading
+ * `PlanValidationError` ("expected N constrained, found 0") instead of naming
+ * the real problem. Carries the actual pool sizes vs. required counts so the
+ * #agent-alerts message (via `generateForWeek`'s failure path) is actionable.
+ * Secret-free by construction: counts only — never a recipe title/body/id or
+ * household prose — so it's always safe to log/alert.
+ */
+export class InsufficientPoolError extends Error {
+  readonly weeknightPoolSize: number;
+  readonly weekendPoolSize: number;
+  readonly distinctPoolSize: number;
+  readonly constrainedSlots: number;
+  readonly relaxedSlots: number;
+
+  constructor(sizes: {
+    weeknightPoolSize: number;
+    weekendPoolSize: number;
+    distinctPoolSize: number;
+    constrainedSlots: number;
+    relaxedSlots: number;
+  }) {
+    const totalSlots = sizes.constrainedSlots + sizes.relaxedSlots;
+    super(
+      "insufficient candidate pool for selection: " +
+        `weeknight pool has ${sizes.weeknightPoolSize} candidate(s) for ` +
+        `${sizes.constrainedSlots} constrained slot(s); ` +
+        `weekend pool has ${sizes.weekendPoolSize} candidate(s) for ` +
+        `${sizes.relaxedSlots} relaxed slot(s); ` +
+        `${sizes.distinctPoolSize} distinct recipe(s) across both pools for ` +
+        `${totalSlots} total slot(s) (each recipe may be used at most once)`,
+    );
+    this.name = "InsufficientPoolError";
+    this.weeknightPoolSize = sizes.weeknightPoolSize;
+    this.weekendPoolSize = sizes.weekendPoolSize;
+    this.distinctPoolSize = sizes.distinctPoolSize;
+    this.constrainedSlots = sizes.constrainedSlots;
+    this.relaxedSlots = sizes.relaxedSlots;
+  }
+}
+
+/**
+ * Deterministic pool-sufficiency pre-check (bd meal-planner-8zs.12), run in
+ * `buildPlan` AFTER `composePools` but BEFORE any LLM call, so a doomed run
+ * spends zero paid tokens. Generalizes the empty-index case `index.ts` already
+ * acknowledges: an empty index yields empty pools, which this rejects with a
+ * clear `InsufficientPoolError` (routed to the same failed+alert path) rather
+ * than a misleading post-selection `PlanValidationError`.
+ *
+ * A valid `WeekPlan` needs `constrained` DISTINCT recipes drawn from the
+ * weeknight pool (constrained meals validate against `pools.weeknight`),
+ * `relaxed` DISTINCT recipes from the weekend pool, and — because
+ * `checkNoDuplicates` forbids any recipe appearing twice across the week —
+ * `constrained + relaxed` DISTINCT recipes in total. A recipe CAN appear in
+ * both pools (the weekend pool drops `active_max`, but a fast recipe is
+ * returned by both searches), so a per-pool count alone can double-count it;
+ * the total requirement must be measured against the UNION of distinct ids
+ * across both pools.
+ *
+ * Three checks (necessary AND sufficient — this is a two-group system of
+ * distinct representatives, so by Hall's theorem feasibility reduces exactly to
+ * these three cases: constrained-only slots -> weeknight set, relaxed-only ->
+ * weekend set, any mix -> the union):
+ *   1. distinct weeknight ids >= `constrained`
+ *   2. distinct weekend ids  >= `relaxed`
+ *   3. distinct union of ids >= `constrained + relaxed`
+ *
+ * (Optional `second_dish` veg sides consume additional distinct ids, but they
+ * are out of scope for this coarse slot-feasibility gate — veg availability is
+ * handled by the veg-floor composition — so this counts main slots only.)
+ */
+export function assertPoolsSufficient(
+  pools: Pools,
+  slots: { constrained: number; relaxed: number },
+): void {
+  const weeknightIds = new Set(pools.weeknight.map((c) => c.id));
+  const weekendIds = new Set(pools.weekend.map((c) => c.id));
+  const distinctIds = new Set([...weeknightIds, ...weekendIds]);
+  const totalSlots = slots.constrained + slots.relaxed;
+
+  if (
+    weeknightIds.size < slots.constrained ||
+    weekendIds.size < slots.relaxed ||
+    distinctIds.size < totalSlots
+  ) {
+    throw new InsufficientPoolError({
+      weeknightPoolSize: weeknightIds.size,
+      weekendPoolSize: weekendIds.size,
+      distinctPoolSize: distinctIds.size,
+      constrainedSlots: slots.constrained,
+      relaxedSlots: slots.relaxed,
+    });
+  }
+}
+
+/**
  * Builds the ONE repair prompt sent back to the LLM after an invalid
  * selection. Re-renders the same selection prompt (`buildSelectionPrompt`) —
  * the CANDIDATES section is what lets the model actually fix hallucinated

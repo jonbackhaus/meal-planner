@@ -283,9 +283,12 @@ export interface BuildPlanWithSyncDeps {
  * not authorized, embedder model download fails, etc.) is logged and posted to
  * `#agent-alerts`, but generation CONTINUES against the existing (possibly
  * stale) index — a slightly stale plan beats skipping the week. If the index is
- * empty, `composePools` yields empty pools and `generateForWeek`'s own failure
- * path marks the week `failed` and alerts, so an empty-index run still fails
- * loudly. Per-note extraction failures are already isolated inside `syncNotes`
+ * empty (or too thin to fill the slots), `composePools` yields insufficient
+ * pools and `buildPlan`'s pool-sufficiency pre-check (bd meal-planner-8zs.12)
+ * throws `InsufficientPoolError` BEFORE any LLM call; `generateForWeek`'s own
+ * failure path then marks the week `failed` and alerts, so an empty-index run
+ * still fails loudly (and cheaply). Per-note extraction failures are already
+ * isolated inside `syncNotes`
  * (ADR 0001) and don't reach here. The `alert` call is additionally guarded so
  * a broken alerter can never sink an otherwise-healthy generation.
  */
