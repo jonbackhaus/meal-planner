@@ -46,3 +46,30 @@ export type LlmResult = {
 export interface LlmClient {
   runQuery(input: RunQueryInput): Promise<LlmResult>;
 }
+
+/**
+ * Thrown by an `LlmClient.runQuery` that fails AFTER the model has already
+ * billed for (part of) the call — a rate-limit / overloaded / server error
+ * that lands once the prompt is ingested and some turns have streamed (bd
+ * meal-planner-fkg.9). It carries the usage accumulated *before* the throw so
+ * a decorator (see `meteredLlmClient`) can still record that partial spend
+ * against the cost meter/cap — otherwise a persistently-failing corpus burns
+ * real input tokens the meter never sees.
+ *
+ * `usage` may be all-zero when the failure occurred before any billing (e.g.
+ * the SDK stream threw on its very first step); recording zero is a no-op and
+ * always safe. Lives here — beside `LlmUsage` and the `LlmClient` contract it
+ * is part of — because it IS part of that contract (what `runQuery` may throw).
+ * The original failure is preserved as `cause`; the message is carried through
+ * verbatim (never a secret — the SDK error values are a closed enum of type
+ * names).
+ */
+export class LlmCallError extends Error {
+  readonly usage: LlmUsage;
+
+  constructor(message: string, usage: LlmUsage, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "LlmCallError";
+    this.usage = usage;
+  }
+}
