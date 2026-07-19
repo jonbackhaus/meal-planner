@@ -8,6 +8,7 @@ import { getScaffoldVersion } from "./lib/version.js";
 import { createLlmClient } from "./llm/agent-sdk-client.js";
 import { makeAlert } from "./ops/alerter.js";
 import { appendLog } from "./ops/local-log.js";
+import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
 import { composeDaemon } from "./orchestrator/compose.js";
 import { resumeQuietly } from "./orchestrator/resume.js";
 import { SessionStore } from "./orchestrator/session-store.js";
@@ -326,6 +327,16 @@ export async function main(): Promise<void> {
       ),
     buildPlan: rawBuildPlan,
     alert,
+  });
+
+  // Back up the session DB BEFORE constructing SessionStore (whose
+  // constructor runs the migration runner). Rolling boot copy is best-effort;
+  // a mandatory pre-migration copy is taken only when a real migration is
+  // pending (bd6.13, boot-backup.ts). Uses the same injected-clock pattern as
+  // nowIso below.
+  await backupSessionDbAtBoot({
+    sessionDbPath: profile.sqlitePath,
+    nowIso: () => new Date().toISOString(),
   });
 
   const store = new SessionStore({ path: profile.sqlitePath });

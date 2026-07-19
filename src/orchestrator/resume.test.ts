@@ -167,6 +167,85 @@ describe("resumeQuietly", () => {
     }
   });
 
+  it("lenient read (bd6.13): a working_plan with an UNKNOWN extra field and a NULL day still parses (no throw), preserving the extra field", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12") as Record<
+      string,
+      unknown
+    > & { meals: Array<Record<string, unknown>> };
+    // A future schema grows the plan: an unknown top-level field and an
+    // unknown per-meal field. An old daemon must still parse it rather than
+    // lose the live week's plan.
+    const forwardCompatible = {
+      ...plan,
+      calendar_context: { holiday: false }, // unknown top-level field (v2.0-ish)
+      meals: [
+        { ...plan.meals[0], day: null, todoist_task_id: "abc" }, // unknown per-meal field (v3.0-ish)
+        plan.meals[1],
+      ],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      working_plan: forwardCompatible,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    const active = resumeQuietly(row);
+
+    expect(active.working_plan).not.toBeNull();
+    // Extra fields are tolerated AND preserved (passthrough), not dropped.
+    expect(active.working_plan).toMatchObject({
+      calendar_context: { holiday: false },
+    });
+    expect(active.working_plan?.meals[0]).toMatchObject({
+      todoist_task_id: "abc",
+    });
+  });
+
+  it("lenient read (bd6.13): a meal with a STRING day (v2.0 day assignment) parses without throwing", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12") as {
+      meals: Array<Record<string, unknown>>;
+    };
+    const withDay = {
+      ...plan,
+      meals: [{ ...plan.meals[0], day: "Monday" }, plan.meals[1]],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      working_plan: withDay,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    expect(() => resumeQuietly(row)).not.toThrow();
+    expect(resumeQuietly(row).working_plan?.meals[0].day).toBe("Monday");
+  });
+
+  it("lenient read stays STRICT about the core: a plan missing `meals` still throws ResumeError", () => {
+    store = makeStore();
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      // No `meals` array — a genuinely malformed plan, not merely an extra
+      // field. Leniency must not swallow this.
+      working_plan: { week_key: "2026-07-12", summary: "no meals here" },
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    expect(() => resumeQuietly(row)).toThrow(ResumeError);
+  });
+
   it("a malformed working_plan (meal missing recipe): throws ResumeError", () => {
     store = makeStore();
     const plan = makeValidWorkingPlan("2026-07-12");

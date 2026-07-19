@@ -1,4 +1,5 @@
 import { rmSync } from "node:fs";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionStore } from "./session-store.js";
 
@@ -45,6 +46,24 @@ describe("SessionStore", () => {
       expect(row?.status).toBe("generating");
     } finally {
       second?.close();
+      for (const suffix of ["", "-wal", "-shm"]) {
+        rmSync(`${path}${suffix}`, { force: true });
+      }
+    }
+  });
+
+  it("stamps the baseline schema version (user_version = 1) on a fresh DB via runMigrations in the constructor (bd6.13)", () => {
+    const path = `${process.env.TMPDIR ?? "/tmp"}/session-store-migrate-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+    const s = new SessionStore({ path });
+    s.close();
+
+    // Reopen with a raw connection to read the header user_version the
+    // constructor's migration runner stamped.
+    const raw = new Database(path);
+    try {
+      expect(raw.pragma("user_version", { simple: true })).toBe(1);
+    } finally {
+      raw.close();
       for (const suffix of ["", "-wal", "-shm"]) {
         rmSync(`${path}${suffix}`, { force: true });
       }

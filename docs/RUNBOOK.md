@@ -387,6 +387,45 @@ in prod, confirming the post, then relaunching without it.
 
 ---
 
+## 10. Session-DB backups  · `bd bd6.13`
+
+The **session DB** (`./data/meal-planner.{prod,dev}.sqlite`) is the permanent
+historical record and the v3.0 `thread_ts → week_key` reverse map — rows are
+**retained, never cleaned up** (ADR 0002). Losing it is the SPEC's "deaf bot"
+failure, so the daemon backs it up automatically. Backups use better-sqlite3's
+online **`.backup()`** (a WAL-consistent snapshot) — **not** a filesystem `cp`,
+which can copy a torn DB mid-write. Copies land in **`./data/backups/`** (git-
+ignored) as `session-<timestamp>.sqlite`.
+
+Two triggers:
+
+- **Rolling boot copy** — taken at every daemon boot, **before** the schema
+  migration runner touches the DB. **Best-effort:** a backup failure is logged
+  and boot continues (a backup problem must never keep the daemon down).
+  Retention: the **last 8** boot copies are kept; older ones are pruned.
+- **Pre-migration copy** — a mandatory snapshot (`…-premigration.sqlite`, kept
+  indefinitely, never pruned) taken right before a real schema migration
+  applies. If it fails, boot **aborts before migrating** rather than run a
+  destructive change with no snapshot. v1.0 ships **zero** real migrations (the
+  only schema step is the non-destructive baseline `user_version = 1` stamp), so
+  this branch is dormant until the first additive migration (v2.0 `day`); the
+  rolling boot copy already covers the baseline stamp.
+
+Schema versioning is `PRAGMA user_version` with a forward-only runner
+(`src/orchestrator/migrations.ts`); the current schema is **baseline v1**.
+
+> **The recipe index is NOT auto-backed-up here** — it is fully regenerable
+> with **`pnpm sync`** (re-reads Apple Notes → re-embeds → re-extracts), so it
+> needs only the ad-hoc `.bak` it already has. Only the session DB holds
+> irreplaceable state.
+
+**Restore** (rare — e.g. disk corruption): stop the daemon, copy the chosen
+`./data/backups/session-<timestamp>.sqlite` back over the live
+`./data/meal-planner.<profile>.sqlite` (remove any stale `-wal`/`-shm`
+sidecars), then relaunch.
+
+---
+
 ## Reference — where things live
 
 | Concern | File |
@@ -398,6 +437,7 @@ in prod, confirming the post, then relaunching without it.
 | Daemon lifecycle + sleep check | `src/daemon/daemon.ts`, `src/daemon/system-check.ts` |
 | Weekly scheduler | `src/daemon/scheduler.ts` |
 | State machine / catch-up / re-run | `src/orchestrator/{generate,startup,resume,rerun}.ts` |
+| Session-DB backup + schema migrations | `src/orchestrator/{backup,boot-backup,migrations}.ts` |
 | Planner pipeline | `src/planner/build-plan.ts` |
 | Recipe sync + wiring | `src/recipe-mcp/{sync,sync-runner}.ts`, `src/sync-cli.ts` |
 | Slack post + alerts | `src/slack/{slack-poster,slack-alerter,render}.ts` |
