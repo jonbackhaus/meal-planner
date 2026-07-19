@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ResumeError } from "./resume.js";
 import type { Session, SessionStatus } from "./session-store.js";
 import { SessionStore } from "./session-store.js";
 import { onStartup } from "./startup.js";
@@ -167,6 +168,33 @@ describe("onStartup", () => {
       expect(deps.alert).not.toHaveBeenCalled();
       // Status is untouched.
       expect(store.get(WEEK)?.status).toBe(status);
+    });
+
+    it("resumeQuietly throws (corrupt working_plan): boot CONTINUES, alerts, does not rethrow, does not mutate the row", async () => {
+      store = makeStore();
+      insertRow(store, "suggested", { thread_ts: "1.1" });
+      const now = new Date("2026-07-13T17:00:00.000Z");
+      const deps = makeDeps(store, now);
+      // A row whose durable working_plan no longer parses (e.g. schema
+      // evolution) -> resumeQuietly throws a (sanitized) ResumeError. Boot
+      // must NOT crash-loop on it: alert + continue without an in-memory plan.
+      const resumeError = new ResumeError(WEEK, "meals: Required");
+      deps.resumeQuietly.mockImplementationOnce(() => {
+        throw resumeError;
+      });
+
+      // Must resolve, never reject -- otherwise the throw propagates to
+      // main() -> process.exit(1) -> launchd KeepAlive crash-boot loop.
+      await expect(onStartup(deps)).resolves.toBeUndefined();
+
+      // The (already-sanitized) ResumeError message is surfaced to a human.
+      expect(deps.alert).toHaveBeenCalledTimes(1);
+      const [message] = deps.alert.mock.calls[0];
+      expect(message).toContain(resumeError.message);
+      // Alert-only discipline: the row is left exactly as found (a human /
+      // late-reply mapping still needs it); no regenerate.
+      expect(deps.generateForWeek).not.toHaveBeenCalled();
+      expect(store.get(WEEK)?.status).toBe("suggested");
     });
   });
 
