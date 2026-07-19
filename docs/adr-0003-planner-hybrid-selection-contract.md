@@ -176,6 +176,6 @@ function buildPlan(wk): WeekPlan {
 ## Open items (non-blocking for v1.0)
 
 - **`vegFloorK`, `untestedRate`, total-time penalty weighting** — concrete values tuned during the plan-quality validation pass.
-- **Seed-query strategy** — single generic seed vs. category-seeded multi-query for pool diversity; pick if v1.0 pools look homogeneous.
+- **Seed-query strategy** — **RATIFIED: category-seeded multi-query shipped** (beads l7x / kd5, commit e10eb31; `DEFAULT_SEEDS` in `src/planner/build-plan.ts`). The single generic seed under-recalled (weeknight pool fell to 3, 0 rated-veg despite 206 rated / 49 rated-veg in the 764-recipe corpus). Retrieval is now **quality-aware + multi-seed**: a set of **6 category seeds** (one vegetarian + a protein/cuisine spread), retrieved per-seed and merged; veg-floor and untested-injection iterate the seed set. Measured result: pool size 19, rated 16, veg 6, rated-veg 3. `buildPlan`/`BuildPlanConfig` now take `seeds: string[]`. kd5's params (`vegFloorK`, `untestedRate`) validated as-is once retrieval became quality-aware.
 - **Post-`get_recipe` separability confirmation pass** — formalize when it lands (leaning v4.0, where it changes the grocery list); until then, provisional + human-reviewed (design §5.3).
 - **Repair-prompt content** — how much of the violation detail to feed back; keep minimal to bound tokens.

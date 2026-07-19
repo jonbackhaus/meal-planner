@@ -25,7 +25,9 @@ The times and (most) ingredients already exist in the notes as free text — the
 
 ### D1 — A structured-field layer, populated at ingest, not per plan-run
 
-A single **LLM-based extraction pass** normalizes each note into structured `{time, ingredients, veg_status, tags, quality}` and caches it beside the vector. It runs **at sync time, gated on a content hash** (plus an extractor version — see below), so only changed notes are re-extracted. It is **not** on the per-plan-run hot path (negligible cost, zero per-run latency) and does **not** hook Apple Notes change events (Notes has none clean).
+A single **LLM-based extraction pass** normalizes each note's **body** into the structured fields that live only there — `{time, ingredients, veg_status}` — and caches them beside the vector. It runs **at sync time, gated on a content hash** (plus an extractor version — see below), so only changed notes are re-extracted. It is **not** on the per-plan-run hot path (negligible cost, zero per-run latency) and does **not** hook Apple Notes change events (Notes has none clean).
+
+> **Ratified (beads q95.11 / q95.12, commits 583142c / 587c383):** **hashtags are the authoritative source** for `effort` / `season` / `quality` / `course` (e.g. `#side`) / `veg`, read from NoteStore. The extraction pass was **slimmed** accordingly (`EXTRACTOR_VERSION` 1 → 2) to produce **only** the body-derived fields: the `{prep, active, total}` times, the frozen ingredient block, and a `veg_status` **fallback** (a `#vegetarian`/`#vegan` tag positively overrides it; absence of a tag never implies meat). Quality/season/effort/course come from tags, not the LLM.
 
 ### D2 — Two-tier tool interface
 
@@ -185,6 +187,6 @@ The cache is keyed by `note.id` and gated on **both** the content hash **and** a
 ## Open items (non-blocking for v1.0)
 
 - **`package_size`** capture ("1 can (14 oz)", "2 (400 g) tins") — structure it or leave to `raw` for v4.0 to parse. Default to `raw` if undecided at build time (design §5.1 / §10.6).
-- **`confidence` threshold** for the `active_max` fail-closed rule — pick a concrete value during the extraction-quality validation pass.
+- **`confidence` threshold** for the `active_max` fail-closed rule — **RATIFIED at `0.5`** (bead b7n, commit 6b1d73d; `CONFIDENCE_THRESHOLD` in `src/recipe-mcp/search.ts`). The q95.6 corpus validation (764/764 extracted, 0 `needs_review`) showed `time.confidence` tracks how explicitly a note stated its time; unreliable estimates cluster at conf ≤ 0.2, so 0.5 sits just above the danger cluster at a natural distribution break (keeps 547 weeknight-eligible recipes).
 - **`veg_separable` field** — add later only if planner separability inference proves unreliable (design §5.3).
 - **`exclude_ids` / recency** — the `exclude_ids` filter is defined now but only exercised in v2.0 dedup.

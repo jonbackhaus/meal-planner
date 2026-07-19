@@ -17,7 +17,7 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 
 **See [CLAUDE.md](CLAUDE.md) — it is the canonical source** for project status, the target stack and build/test commands, the architecture overview, and the implementation invariants. AGENTS.md and CLAUDE.md are independent files; this section intentionally points to CLAUDE.md instead of duplicating it, so keep project/architecture edits in CLAUDE.md and they apply here by reference.
 
-Design source of truth lives in `docs/`: `SPEC.md` (authoritative v1.0 design) plus `adr-0001` (Recipe MCP interface), `adr-0002` (orchestrator state machine / idempotency), and `adr-0003` (planner selection contract). This is a greenfield project — design-complete, not yet scaffolded.
+Design source of truth lives in `docs/`: `SPEC.md` (authoritative v1.0 design) plus `adr-0001` (Recipe MCP interface), `adr-0002` (orchestrator state machine / idempotency), and `adr-0003` (planner selection contract). The v1.0 runtime is **code-complete on `main`** (full `src/` tree, pnpm + Vitest + Biome toolchain, ~491 tests passing, PRs #1–#19 merged); the design docs remain authoritative for intent and invariants. See CLAUDE.md for status and build/test commands.
 
 ## Quick Reference
 

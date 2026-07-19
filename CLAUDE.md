@@ -62,7 +62,11 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Project Status
 
-**Greenfield — design-complete, not yet scaffolded.** There is no code, `package.json`, or test setup in the repo yet; the source of truth is the design docs in `docs/`:
+**v1.0 runtime code-complete on `main`.** The full `src/` tree, toolchain (pnpm
++ Vitest + Biome), and test suite (~491 tests passing) are in place; the v1.0
+daemon is built and PRs #1–#19 are merged. Remaining work is ops go-live (see
+`docs/RUNBOOK.md`) and the v2.0+ phases. The design docs in `docs/` remain the
+authoritative source for intent and invariants:
 
 - `docs/SPEC.md` — the authoritative design document (v1.0). Read this first. Section numbers (§) are referenced throughout the ADRs.
 - `docs/adr-0001-recipe-mcp-structured-field-interface.md` — Recipe MCP two-tier tool interface + ingest-time extraction + frozen ingredient schema.
@@ -73,9 +77,23 @@ When implementing, **the ADRs override the SPEC** where they refine it, and both
 
 ## Build & Test
 
-No toolchain exists yet. The **target stack** (per SPEC §3.2) is **Node/TypeScript**, driving Claude via the **Claude Agent SDK** (chosen over the raw Messages API for native stdio MCP support), with **Slack Bolt**, **SQLite**, and local **MCP servers over stdio**. The daemon is managed by `launchd` (boot-launch + `KeepAlive` only; the weekly trigger is an in-process scheduler, not a launchd calendar job).
+The **stack** (per SPEC §3.2) is **Node/TypeScript** (Node ≥ 22, pnpm), driving Claude via the **Claude Agent SDK** (chosen over the raw Messages API for native stdio MCP support), with the **Slack Web API**, **SQLite** (`better-sqlite3` + `sqlite-vec`), and local **MCP servers over stdio**. The daemon is managed by `launchd` (boot-launch + `KeepAlive` only; the weekly trigger is an in-process scheduler, not a launchd calendar job).
 
-Once `package.json` exists, record the real `install` / `build` / `test` / `lint` / single-test commands here.
+Commands (from `package.json`):
+
+```bash
+pnpm install                 # deps (CI: pnpm install --frozen-lockfile)
+pnpm build                   # tsc -p tsconfig.json → dist/
+pnpm typecheck               # tsc --noEmit (source)
+pnpm typecheck:test          # tsc -p tsconfig.test.json (tests)
+pnpm test                    # vitest run (full suite)
+pnpm vitest run <path>       # single test file
+pnpm vitest run -t "<name>"  # single test by name
+pnpm lint                    # biome check .
+pnpm format                  # biome format --write .
+pnpm dev                     # tsx watch src/index.ts (dev daemon)
+pnpm sync                    # tsx src/sync-cli.ts (recipe sync CLI)
+```
 
 Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context config (not hardcoded). Gotchas — manual thinking `budget_tokens` is rejected (use `effort`); non-default `temperature`/`top_p`/`top_k` are rejected; the new tokenizer runs ~1.0–1.35× higher token counts (size cost caps accordingly).
 
