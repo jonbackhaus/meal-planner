@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { summarizeZodError } from "../lib/zod-errors.js";
-import { SelectedMealSchema } from "../planner/select.js";
-import { RecipeSchema } from "../recipe-mcp/schema.js";
+import {
+  EnrichedMealSchema,
+  EnrichedWeekPlanSchema,
+} from "../planner/enrich.js";
 import type { Session, SessionStatus } from "./session-store.js";
 
 /**
@@ -39,43 +41,32 @@ export interface ActiveSession {
 }
 
 /**
- * `enrich.ts` types `EnrichedWeekPlan`/`EnrichedMeal` as plain TS interfaces
- * — it has no exported zod schema of its own, because `enrichPlan` only
- * ATTACHES a `Recipe` to an already-validated `WeekPlan` (8zs.4 already did
- * the LLM-output validation); there is nothing left for it to re-validate.
- * So there is no ready-made `EnrichedWeekPlanSchema` to import.
+ * The lenient READ variant of the canonical enrich schema (bd6.8 + bd6.13).
+ * `enrich.ts` owns the CANONICAL field structure — `EnrichedMealSchema` /
+ * `EnrichedWeekPlanSchema`, the single source of truth for what `enrichPlan`
+ * produces — and this module DERIVES its read shape on top rather than
+ * re-describing it (which would drift). The derivation layers exactly the
+ * two read-leniencies bd6.13 introduced:
  *
- * Rather than hand-roll a duck-typing check that could silently drift from
- * the planner's real shape, this composes ONE schema from the two the
- * planner already exports as source of truth: `SelectedMealSchema`
- * (planner/select.ts, the pre-enrichment shape) extended with the
- * `recipe`/`secondDishRecipe` fields `enrichPlan` attaches (`RecipeSchema`,
- * recipe-mcp/schema.ts). This stays anchored to the planner's real schemas —
- * if either changes shape, this validation changes with it — while still
- * being local to this module (enrich.ts itself is out of scope for bd6.5).
+ *  1. `day: z.string().nullable().optional()` — tolerate the v2.0 nullable
+ *     `day` (a weekday string) as well as v1.0's literal `null` or an absent
+ *     field. v1.0 STORAGE still writes `day: null` (planner/select.ts) —
+ *     only the read is widened here.
+ *  2. `.passthrough()` (not `.strict()`) on both the meal and the plan so a
+ *     blob grown by a FUTURE schema — extra top-level or per-meal fields
+ *     (v2.0 calendar context, v3.0 Todoist ids) — still parses and is
+ *     PRESERVED, instead of the live week's plan being lost.
+ *
+ * The CORE stays required (it comes straight from the canonical schema): a
+ * plan missing `meals`, or a meal missing its enriched `recipe`, still fails.
  */
-const EnrichedMealSchema = SelectedMealSchema.extend({
-  // Lenient READ (bd6.13): tolerate the v2.0 nullable `day` (a weekday string)
-  // as well as v1.0's literal `null` or an absent field, so an old blob and a
-  // new blob both parse. v1.0 STORAGE still writes `day: null` (planner/
-  // select.ts) — only the read is widened here.
+const ResumedMealSchema = EnrichedMealSchema.extend({
   day: z.string().nullable().optional(),
-  recipe: RecipeSchema,
-  secondDishRecipe: RecipeSchema.optional(),
 }).passthrough();
 
-const EnrichedWeekPlanSchema = z
-  .object({
-    week_key: z.string(),
-    meals: z.array(EnrichedMealSchema),
-    summary: z.string().optional(),
-  })
-  // Lenient READ (bd6.13): `.passthrough()` (not `.strict()`) so a plan grown
-  // by a future schema — extra top-level or per-meal fields (v2.0 calendar
-  // context, v3.0 Todoist ids) — still parses and is preserved, instead of the
-  // live week's plan being lost. The CORE stays required: a plan missing
-  // `meals`, or a meal missing its enriched `recipe`, still fails.
-  .passthrough();
+const ResumedWeekPlanSchema = EnrichedWeekPlanSchema.extend({
+  meals: z.array(ResumedMealSchema),
+}).passthrough();
 
 /**
  * The lenient READ shape of `working_plan` (bd6.13). Intentionally WIDER than
@@ -84,7 +75,7 @@ const EnrichedWeekPlanSchema = z
  * resume rather than being dropped. Used in place of `EnrichedWeekPlan` for
  * the resume-parse return / `ActiveSession.working_plan`.
  */
-export type ResumedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema>;
+export type ResumedWeekPlan = z.infer<typeof ResumedWeekPlanSchema>;
 
 /**
  * Thrown when a row's `working_plan` is present but doesn't parse into a
@@ -142,7 +133,7 @@ function parseWorkingPlan(
     }
   }
 
-  const result = EnrichedWeekPlanSchema.safeParse(candidate);
+  const result = ResumedWeekPlanSchema.safeParse(candidate);
   if (!result.success) {
     throw new ResumeError(weekKey, summarizeZodError(result.error));
   }
