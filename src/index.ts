@@ -221,6 +221,26 @@ export function makeBuildPlanWithSync(
       logger.log(
         `[sync] total=${r.total} processed=${r.processed} skipped=${r.skipped} extractionFailures=${r.extractionFailures} removed=${r.removed}`,
       );
+      // A NON-throwing suspicious read (0 notes while the index holds recipes,
+      // q95.14) is the denied/failed Notes-read fingerprint — macOS Automation
+      // or Full Disk Access revoked (a fresh machine, a new binary path, or an
+      // OS upgrade resetting TCC), or the recipe folder renamed. It is only a
+      // console.warn inside syncNotes, which is invisible on the daemon; surface
+      // it LOUDLY to #agent-alerts + the local log (fkg.7). We still PROCEED to
+      // plan against the existing index (proceed + alert, matching the whole-
+      // sync-failure policy below and q95.14's deliberate non-destructive skip).
+      // Message is secret-free (counts + reason only, never a note body/title).
+      if (r.suspiciousEmptyRead) {
+        const message = `recipe sync read 0 notes from Apple Notes while the recipe index is non-empty before generating week ${weekKey}: suspected DENIED or failed Notes read (macOS Automation / Full Disk Access revoked, or the recipe folder was renamed) — NOT a mass delete. Skipped stale-recipe reconciliation and proceeding against the existing index. Re-verify TCC permissions for the daemon's node binary (see docs/RUNBOOK.md).`;
+        logger.warn(message);
+        try {
+          await alert(message);
+        } catch (alertErr) {
+          logger.warn(
+            `alert during suspicious-empty-read handling also failed for week ${weekKey}: ${String(alertErr)}`,
+          );
+        }
+      }
     } catch (e) {
       const message = `recipe sync failed before generating week ${weekKey}: ${String(e)}`;
       logger.warn(message);

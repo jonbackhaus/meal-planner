@@ -146,6 +146,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       skipped: 0,
       extractionFailures: 0,
       removed: 0,
+      suspiciousEmptyRead: false,
     });
   });
 
@@ -289,6 +290,7 @@ describe("syncNotes — embedding (unchanged behavior)", () => {
       skipped: 0,
       extractionFailures: 0,
       removed: 0,
+      suspiciousEmptyRead: false,
     });
   });
 });
@@ -921,6 +923,8 @@ describe("syncNotes — stale-recipe reconciliation (q95.14)", () => {
     expect(store.listIds()).toHaveLength(200);
     expect(structuredStore.listIds()).toHaveLength(200);
     expect(result.removed).toBe(0);
+    // Signals the caller to alert loudly (fkg.7), not just warn.
+    expect(result.suspiciousEmptyRead).toBe(true);
     // The operator is warned about the suspicious empty read.
     const warned = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(warned).toMatch(/reconciliation/i);
@@ -970,6 +974,8 @@ describe("syncNotes — stale-recipe reconciliation (q95.14)", () => {
 
     expect(store.deleteMany).not.toHaveBeenCalled();
     expect(result.removed).toBe(0);
+    // An empty read into an empty index is NOT suspicious — no alert signal.
+    expect(result.suspiciousEmptyRead).toBe(false);
     const warned = warnSpy.mock.calls.map((c) => c.join(" ")).join("\n");
     expect(warned).not.toMatch(/reconciliation/i);
 

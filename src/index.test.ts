@@ -156,6 +156,18 @@ describe("makeBuildPlanWithSync", () => {
       skipped: 2,
       extractionFailures: 0,
       removed: 0,
+      suspiciousEmptyRead: false,
+    };
+  }
+
+  function suspiciousEmptyReadResult(): SyncResult {
+    return {
+      total: 0,
+      processed: 0,
+      skipped: 0,
+      extractionFailures: 0,
+      removed: 0,
+      suspiciousEmptyRead: true,
     };
   }
 
@@ -202,6 +214,52 @@ describe("makeBuildPlanWithSync", () => {
     );
     expect(alert).toHaveBeenCalledWith(expect.stringContaining("2026-07-12"));
     expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it("alerts loudly (once) on a suspicious empty read, and still proceeds to plan", async () => {
+    const runSync = vi.fn(async () => suspiciousEmptyReadResult());
+    const buildPlan = vi.fn(async (_wk: string) => PLAN);
+    const alert = vi.fn(async (_message: string) => {});
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+    const result = await fn("2026-07-19");
+
+    // Proceeds to plan (proceed + alert policy; q95.14 deliberately continues).
+    expect(result).toBe(PLAN);
+    expect(buildPlan).toHaveBeenCalledWith("2026-07-19");
+    // Alerts LOUDLY via the composite exactly once — not warn-only (fkg.7).
+    expect(alert).toHaveBeenCalledTimes(1);
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining("0 notes"));
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining("2026-07-19"));
+    // Secret-free: no note bodies/titles, just counts + reason.
+    const msg = alert.mock.calls[0]?.[0] ?? "";
+    expect(msg).toMatch(/permission|Full Disk Access|Automation/i);
+  });
+
+  it("does not alert on a normal non-empty sync (no suspicious empty read)", async () => {
+    const runSync = vi.fn(async () => okSyncResult());
+    const buildPlan = vi.fn(async (_wk: string) => PLAN);
+    const alert = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+    await fn("2026-07-19");
+
+    expect(alert).not.toHaveBeenCalled();
+  });
+
+  it("does not reject the plan when the suspicious-empty-read alert itself throws", async () => {
+    const runSync = vi.fn(async () => suspiciousEmptyReadResult());
+    const buildPlan = vi.fn(async (_wk: string) => PLAN);
+    const alert = vi.fn(async () => {
+      throw new Error("alert transport down");
+    });
+    const logger = { log: vi.fn(), warn: vi.fn() };
+
+    const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+
+    await expect(fn("2026-07-19")).resolves.toBe(PLAN);
   });
 
   it("does not leak the sync error into a rejected plan when alert itself throws", async () => {
