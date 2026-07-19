@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Embedder } from "../recipe-mcp/embedder.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
-import type { SearchFilters } from "../recipe-mcp/search.js";
+import { type SearchFilters, searchRecipes } from "../recipe-mcp/search.js";
+import { StructuredStore } from "../recipe-mcp/structured-store.js";
+import { VectorStore } from "../recipe-mcp/vector-store.js";
 import { composePools, type PoolCompositionConfig } from "./pools.js";
 
 function candidate(
@@ -364,6 +367,65 @@ describe("composePools", () => {
     expect(aCount).toBe(8);
     expect(bCount).toBe(8);
     expect(pools.weeknight).toHaveLength(16);
+  });
+
+  // ── Fail-closed integration: real searchRecipes wired into composePools ──
+  // (bd meal-planner-q95.15). Proves the acceptance criterion end-to-end: a
+  // needs_review / fields:null record carrying rating tags never reaches EITHER
+  // pool, so it can never be selected and later null-out enrich.
+  it("never admits a fields:null record with rating tags into any pool (q95.15)", async () => {
+    const vectorStore = new VectorStore({ path: ":memory:", dimensions: 3 });
+    const structuredStore = new StructuredStore({ path: ":memory:" });
+    const embedder: Embedder = { embed: vi.fn(async () => [1, 0, 0]) };
+
+    // A genuine, well-extracted rated dinner that SHOULD be poolable.
+    vectorStore.upsert("good-dinner", [1, 0, 0], {
+      title: "Good Dinner",
+      body: "body",
+      hash: "hash-good",
+      modifiedAt: new Date(),
+    });
+    structuredStore.upsertStructured("good-dinner", {
+      contentHash: "hash-good",
+      extractorVersion: 1,
+      fields: {
+        time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
+        ingredients: [],
+        veg_status: "vegetarian",
+      },
+      needsReview: false,
+    });
+    structuredStore.upsertTags("good-dinner", ["4-stars", "dinner"]);
+
+    // A needs_review record: extraction FAILED (fields null) but it carries
+    // #4-stars #dinner tags that would otherwise pass quality/course gates.
+    vectorStore.upsert("failed-4stars", [1, 0, 0], {
+      title: "Failed 4-star Dinner",
+      body: "body",
+      hash: "hash-failed",
+      modifiedAt: new Date(),
+    });
+    structuredStore.upsertStructured("failed-4stars", {
+      contentHash: "hash-failed",
+      extractorVersion: 1,
+      fields: null,
+      needsReview: true,
+    });
+    structuredStore.upsertTags("failed-4stars", ["4-stars", "dinner"]);
+
+    const search = (query: string, filters?: SearchFilters) =>
+      searchRecipes(query, filters, { embedder, vectorStore, structuredStore });
+
+    const pools = await composePools(["dinner"], baseCfg, { search });
+
+    const allIds = [...pools.weeknight, ...pools.weekend].map((c) => c.id);
+    expect(allIds).not.toContain("failed-4stars");
+    // Sanity: the well-extracted rated dinner IS admitted, so the exclusion is
+    // targeting failed extraction — not silently emptying every pool.
+    expect(allIds).toContain("good-dinner");
+
+    vectorStore.close();
+    structuredStore.close();
   });
 
   it("veg-floor iterates seeds until the floor is met when the base lacks veg (l7x)", async () => {

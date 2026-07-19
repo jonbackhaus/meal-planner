@@ -644,6 +644,33 @@ describe("searchRecipes — NoteStore tags (bd tags feature)", () => {
     expect(results.map((r) => r.id)).toEqual(["chili"]);
   });
 
+  it("drops a failed-extraction (fields:null) candidate from a FILTERED search even when rating tags would otherwise pass it (bd meal-planner-q95.15)", async () => {
+    // The weekend-pool filter shape: main_dinner_only + quality:"rated", NO
+    // active_max. A #4-stars #dinner recipe whose extraction FAILED (fields
+    // null: unknown active-time + veg_status) would pass quality/course purely
+    // via tags — then getRecipe returns null and fails the run after both LLM
+    // calls. Fail closed: it must not surface into a selection-feeding search.
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "failed-4stars",
+      [1, 0, 0],
+      "Failed extraction, 4 stars",
+      null,
+    );
+    structuredStore.upsertTags("failed-4stars", ["4-stars", "dinner"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "dinner",
+      { main_dinner_only: true, quality: "rated" },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    expect(results).toEqual([]);
+  });
+
   it("overlays tag quality/veg and surfaces is_side/tags on the candidate", async () => {
     const { vectorStore, structuredStore } = makeStores();
     upsertRecipe(
