@@ -37,12 +37,16 @@ export interface GetRecipeDeps {
  *    `fields: null`).
  *
  * The not-ready case is treated as "not found" rather than synthesized with
- * empty/default fields: the orchestrator only calls `get_recipe` for
- * recipes it already selected FROM `searchRecipes` results, which by
- * definition had a successful structured extraction (an unextracted
- * candidate can only surface from an UNFILTERED search — see
- * `search.ts`'s `assembleCandidate` — and even then should not be
- * presentable as a complete recipe with a real ingredient list).
+ * empty/default fields. The planner selects only from FILTERED `searchRecipes`
+ * results, which now fail closed on `fields === null` (bd meal-planner-q95.15,
+ * `search.ts`'s `passesFilters`) — so a selected candidate SHOULD have had a
+ * successful extraction. This null return is therefore the defensive backstop
+ * for the residual races: an un-extracted candidate that only surfaced from an
+ * UNFILTERED search (see `assembleCandidate`), or a record whose extraction was
+ * cleared/deleted between search and enrich. An un-extracted candidate must not
+ * be presented as a complete recipe with a real ingredient list regardless, and
+ * `enrich.ts` turns this null into a loud `EnrichmentError` rather than dropping
+ * the meal silently.
  *
  * The assembled object is validated against `RecipeSchema` before being
  * returned (belt-and-suspenders): a malformed assembly throws rather than

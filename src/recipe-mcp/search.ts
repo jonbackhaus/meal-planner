@@ -116,13 +116,16 @@ export async function searchRecipes(
  * Deterministic filter predicates over a candidate's cached structured
  * fields (never over the vector-search score itself).
  *
- * A candidate with NO structured record yet (`fields === null`: unextracted,
- * or a needs_review record with no successful extraction) fails every
- * *provided* filter — including the non-active_max ones, since e.g.
- * `fields?.veg_status` on a null record can never equal a requested
- * `veg_status`. Per ADR 0001's missing-data default, that only excludes it
- * from a FILTERED (weeknight) query; an unfiltered (weekend) query has no
- * predicates to fail, so it passes through untouched.
+ * FAIL CLOSED on a failed/absent extraction (bd meal-planner-q95.15): a
+ * candidate with `fields === null` (never extracted, or a `needs_review`
+ * record with no successful extraction) is dropped from ANY *provided*-filter
+ * query. Its hard-constraint attributes — active-time and veg_status — are
+ * UNKNOWN, so it is not a valid planner candidate no matter what its TAGS say:
+ * without this guard a `#4-stars #dinner` recipe whose extraction failed passes
+ * the tag-driven quality/course/season gates, gets selected, and then blows up
+ * `get_recipe` (returns null -> `EnrichmentError`) after both LLM calls are
+ * already paid. An UNFILTERED (undefined-`filters`) query has no predicates and
+ * still surfaces un-extracted recipes untouched (handled by the early return).
  */
 function passesFilters(
   fields: ExtractedFields | null,
@@ -131,6 +134,14 @@ function passesFilters(
 ): boolean {
   if (!filters) {
     return true;
+  }
+
+  // A failed/absent extraction can't satisfy the hard constraints (active-time,
+  // veg_status are unknown), so it is never a valid FILTERED-query candidate —
+  // tag-only signal (quality/course/season) must not smuggle it into a
+  // selection-feeding pool. See the fail-closed note above.
+  if (!fields) {
+    return false;
   }
 
   // Course gate is tag-driven (a side dish with a failed/absent extraction is
