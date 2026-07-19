@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LlmClient, LlmResult, RunQueryInput } from "../llm/llm-client.js";
+import {
+  LlmCallError,
+  type LlmClient,
+  type LlmResult,
+  type RunQueryInput,
+} from "../llm/llm-client.js";
 import { CostCapExceededError } from "./cost-cap-exceeded-error.js";
 import { CostMeter } from "./cost-meter.js";
 import { meteredLlmClient } from "./metered-llm-client.js";
@@ -211,6 +216,123 @@ describe("meteredLlmClient", () => {
       await expect(metered.runQuery({ prompt: "hi" })).rejects.toThrow(
         "cost cap exceeded: $2.50 spent > $2.00 cap",
       );
+    });
+  });
+
+  describe("failed-call spend metering (bd meal-planner-fkg.9)", () => {
+    it("records the usage carried on a thrown LlmCallError, then rethrows it", async () => {
+      const meter = new CostMeter(RATE);
+      const failure = new LlmCallError("rate_limit after ingestion", {
+        inputTokens: 1000,
+        outputTokens: 200,
+      });
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => {
+          throw failure;
+        }),
+      };
+      const metered = meteredLlmClient(inner, meter);
+
+      // The ORIGINAL error propagates unchanged (not swallowed, not replaced).
+      await expect(metered.runQuery({ prompt: "hi" })).rejects.toBe(failure);
+
+      // ...but the partial spend it carried IS now on the meter.
+      expect(meter.totals().inputTokens).toBe(1000);
+      expect(meter.totals().outputTokens).toBe(200);
+    });
+
+    it("records the failed usage exactly once (no double-count)", async () => {
+      const meter = new CostMeter(RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => {
+          throw new LlmCallError("boom", {
+            inputTokens: 500,
+            outputTokens: 100,
+          });
+        }),
+      };
+      const metered = meteredLlmClient(inner, meter);
+
+      await expect(metered.runQuery({ prompt: "hi" })).rejects.toThrow("boom");
+
+      expect(meter.totals()).toEqual({
+        inputTokens: 500,
+        outputTokens: 100,
+        costUsd: 500 * (2 / 1_000_000) + 100 * (10 / 1_000_000),
+      });
+    });
+
+    it("leaves the meter untouched when a thrown error carries no usage", async () => {
+      const meter = new CostMeter(RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => {
+          throw new Error("plain failure, no usage");
+        }),
+      };
+      const metered = meteredLlmClient(inner, meter);
+
+      await expect(metered.runQuery({ prompt: "hi" })).rejects.toThrow(
+        "plain failure, no usage",
+      );
+      expect(meter.totals()).toEqual({
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      });
+    });
+
+    it("a failed call's recorded spend trips the pre-call gate on the NEXT call (consistent with fkg.6)", async () => {
+      // $1/MTok in, $0/MTok out. A failed call bills $3 (over the $2 cap); it
+      // rethrows its own LlmCallError (not a CostCapExceededError — the failure
+      // path doesn't run the post-call gate). The NEXT call is then refused by
+      // the pre-call gate WITHOUT reaching inner, since the failed-call spend
+      // pushed cumulative over cap.
+      const CAP_RATE = { inputPerMTok: 1, outputPerMTok: 0 };
+      const meter = new CostMeter(CAP_RATE);
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => {
+          throw new LlmCallError("overloaded", {
+            inputTokens: 3_000_000,
+            outputTokens: 0,
+          });
+        }),
+      };
+      const metered = meteredLlmClient(inner, meter, { capUsd: 2 });
+
+      // First call fails; its $3 spend is recorded, its own error rethrown.
+      await expect(metered.runQuery({ prompt: "first" })).rejects.toThrow(
+        LlmCallError,
+      );
+      expect(inner.runQuery).toHaveBeenCalledTimes(1);
+      expect(meter.totals().costUsd).toBeCloseTo(3, 10);
+
+      // Second call: pre-call gate short-circuits before inner runs.
+      await expect(metered.runQuery({ prompt: "second" })).rejects.toThrow(
+        CostCapExceededError,
+      );
+      expect(inner.runQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it("a CostCapExceededError from the pre-call gate is NOT double-recorded (carries no usage)", async () => {
+      const CAP_RATE = { inputPerMTok: 1, outputPerMTok: 0 };
+      const meter = new CostMeter(CAP_RATE);
+      // Prime the meter over the cap so the pre-call gate fires immediately.
+      meter.record({ inputTokens: 3_000_000, outputTokens: 0 });
+      const inner: LlmClient = {
+        runQuery: vi.fn(async () => ({
+          text: "ok",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        })),
+      };
+      const metered = meteredLlmClient(inner, meter, { capUsd: 2 });
+
+      await expect(metered.runQuery({ prompt: "hi" })).rejects.toThrow(
+        CostCapExceededError,
+      );
+      // Unchanged: the pre-call CostCapExceededError isn't an LlmCallError, so
+      // the catch adds nothing; inner never ran.
+      expect(meter.totals().inputTokens).toBe(3_000_000);
+      expect(inner.runQuery).not.toHaveBeenCalled();
     });
   });
 });

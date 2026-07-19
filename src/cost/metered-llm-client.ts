@@ -1,4 +1,9 @@
-import type { LlmClient, LlmResult, RunQueryInput } from "../llm/llm-client.js";
+import {
+  LlmCallError,
+  type LlmClient,
+  type LlmResult,
+  type RunQueryInput,
+} from "../llm/llm-client.js";
 import { CostCapExceededError } from "./cost-cap-exceeded-error.js";
 import type { CostMeter } from "./cost-meter.js";
 
@@ -19,10 +24,16 @@ export interface MeteredLlmClientOptions {
  * is set -- ENFORCES that per-run budget (fkg.2): the real ceiling, since
  * Anthropic offers spend ALERTS but not an enforced per-key cutoff.
  *
- * Records ONLY on success -- if `inner.runQuery` throws, no usage is
- * recorded (tokens for a failed call aren't reported here; see
- * `generateForWeek`'s wiring for how a run's already-recorded partial spend
- * still persists on a later failure).
+ * Records on success AND on a failure that already billed (bd
+ * meal-planner-fkg.9): if `inner.runQuery` throws an `LlmCallError`, the
+ * partial `usage` it carries (input/output billed before the throw) is
+ * recorded BEFORE the error is rethrown, so a rate-limit / overloaded failure
+ * that lands after prompt ingestion still counts against the meter/cap instead
+ * of being invisible spend. A throw that carries no usage (a plain `Error`, or
+ * the pre-call `CostCapExceededError` itself) records nothing and propagates
+ * unchanged. The failed usage is recorded exactly once: the success `record`
+ * below is only reached when `inner.runQuery` returned, so the two paths are
+ * mutually exclusive -- never a double-count.
  *
  * TWO cap gates, both required (bd meal-planner-fkg.6):
  *  - PRE-call: if the run is ALREADY over cap, throw BEFORE `inner.runQuery`
@@ -57,7 +68,21 @@ export function meteredLlmClient(
           throw new CostCapExceededError(costUsd, capUsd);
         }
       }
-      const result = await inner.runQuery(input);
+      let result: LlmResult;
+      try {
+        result = await inner.runQuery(input);
+      } catch (error) {
+        // fkg.9: a failure that already billed carries its partial usage on an
+        // `LlmCallError`. Record it (exactly once -- the success `record` below
+        // is unreachable on this path) then rethrow the ORIGINAL error, so the
+        // failed-call spend counts against the cap. Any other throw (plain
+        // Error, or a pre-call CostCapExceededError) carries no usage and just
+        // propagates.
+        if (error instanceof LlmCallError) {
+          meter.record(error.usage);
+        }
+        throw error;
+      }
       meter.record(result.usage);
       // POST-call gate: this call itself may have pushed the run over.
       if (capUsd != null) {

@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config/config.js";
 import { createLlmClient } from "./agent-sdk-client.js";
+import { LlmCallError } from "./llm-client.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
@@ -334,5 +335,147 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
     const message = (caught as Error).message;
     expect(message).toMatch(/upstream timeout/);
     expect(message).toMatch(/connection reset/);
+  });
+
+  describe("failed-call usage metering (bd meal-planner-fkg.9)", () => {
+    /** A `Query` that yields some messages, then throws mid-stream. */
+    function fakeQueryThatThrows(messages: unknown[], error: unknown) {
+      async function* generator() {
+        for (const message of messages) {
+          yield message;
+        }
+        throw error;
+      }
+      return generator() as unknown as ReturnType<typeof query>;
+    }
+
+    it("throws an LlmCallError carrying the usage billed before a mid-stream failure", async () => {
+      // Two assistant turns bill (input 100+50, output 20+30) BEFORE the SDK
+      // stream throws (rate_limit after the prompt was fully ingested). That
+      // spend is real and must ride out on the error.
+      queryMock.mockReturnValue(
+        fakeQueryThatThrows(
+          [
+            {
+              type: "assistant",
+              message: {
+                content: [{ type: "text", text: "thinking..." }],
+                usage: { input_tokens: 100, output_tokens: 20 },
+              },
+            },
+            {
+              type: "assistant",
+              message: {
+                content: [{ type: "text", text: "still going" }],
+                usage: { input_tokens: 50, output_tokens: 30 },
+              },
+            },
+          ],
+          new Error("stream rate_limit"),
+        ),
+      );
+
+      const client = createLlmClient(baseConfig());
+
+      let caught: unknown;
+      try {
+        await client.runQuery({ prompt: "hello" });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LlmCallError);
+      const err = caught as LlmCallError;
+      expect(err.usage).toEqual({ inputTokens: 150, outputTokens: 50 });
+      // The original failure is preserved and its message carried through.
+      expect(err.message).toMatch(/rate_limit/);
+      expect(err.cause).toBeInstanceOf(Error);
+    });
+
+    it("counts the errored turn's own usage on a per-turn error (billed after prompt ingestion)", async () => {
+      // A first-turn rate_limit still ingested the prompt and billed for it;
+      // that input must be captured (usage would otherwise be zero and the
+      // whole failed call would be invisible to the cost cap).
+      queryMock.mockReturnValue(
+        fakeQueryResult([
+          {
+            type: "assistant",
+            error: "rate_limit",
+            message: {
+              content: [{ type: "text", text: "" }],
+              usage: { input_tokens: 21_000, output_tokens: 1 },
+            },
+          },
+        ]),
+      );
+
+      const client = createLlmClient(baseConfig());
+
+      let caught: unknown;
+      try {
+        await client.runQuery({ prompt: "hello" });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LlmCallError);
+      const err = caught as LlmCallError;
+      expect(err.usage).toEqual({ inputTokens: 21_000, outputTokens: 1 });
+      expect(err.message).toMatch(/rate_limit/);
+    });
+
+    it("carries zero usage when the stream fails before any billing", async () => {
+      queryMock.mockReturnValue(
+        fakeQueryThatThrows([], new Error("connection refused")),
+      );
+
+      const client = createLlmClient(baseConfig());
+
+      let caught: unknown;
+      try {
+        await client.runQuery({ prompt: "hello" });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LlmCallError);
+      expect((caught as LlmCallError).usage).toEqual({
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+    });
+
+    it("wraps a non-success result failure as an LlmCallError too, carrying usage from prior turns", async () => {
+      queryMock.mockReturnValue(
+        fakeQueryResult([
+          {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "partial" }],
+              usage: { input_tokens: 500, output_tokens: 10 },
+            },
+          },
+          {
+            type: "result",
+            subtype: "error_during_execution",
+            errors: ["boom"],
+          },
+        ]),
+      );
+
+      const client = createLlmClient(baseConfig());
+
+      let caught: unknown;
+      try {
+        await client.runQuery({ prompt: "hello" });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LlmCallError);
+      const err = caught as LlmCallError;
+      expect(err.usage).toEqual({ inputTokens: 500, outputTokens: 10 });
+      expect(err.message).toMatch(/boom/);
+    });
   });
 });
