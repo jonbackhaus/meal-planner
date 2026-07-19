@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { z } from "zod";
 import type { Config } from "./config.js";
 
@@ -109,9 +110,13 @@ export function resolveProfile(
 
   const devSqlitePath = env.MP_SQLITE_PATH_DEV || defaultSqlitePath("dev");
   const prodSqlitePath = env.MP_SQLITE_PATH_PROD || defaultSqlitePath("prod");
-  if (devSqlitePath === prodSqlitePath) {
+  // Compare ABSOLUTE resolved paths, not the raw strings: "data/mp.sqlite" and
+  // "./data/mp.sqlite" are different strings but the SAME file on disk, and a
+  // dev `forceRegenerate` run pointed at that shared file would overwrite prod
+  // rows — the exact collision SPEC §7's path separation exists to prevent.
+  if (resolve(devSqlitePath) === resolve(prodSqlitePath)) {
     errors.push(
-      `sqlitePath: dev and prod must resolve to different SQLite paths (both resolved to "${devSqlitePath}")`,
+      `sqlitePath: dev and prod must resolve to different SQLite paths (both resolved to "${resolve(devSqlitePath)}")`,
     );
   }
   const sqlitePath = profile === "dev" ? devSqlitePath : prodSqlitePath;
