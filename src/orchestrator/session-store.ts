@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
+import { runMigrations } from "./migrations.js";
 
 /**
  * Durable per-week session storage (ADR 0002 "Session schema"). This module
@@ -121,6 +122,12 @@ export class SessionStore {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.initSchema();
+    // Baseline create (initSchema above) -> stamp v1 -> apply any pending
+    // forward-only migrations (bd6.13). Runs BEFORE any state-machine access.
+    // The v1.0 migration list is empty, so this only stamps the baseline
+    // `user_version`. Destructive migrations (v2.0+) are additionally gated by
+    // a mandatory pre-migration backup taken at boot (see boot-backup.ts).
+    runMigrations(this.db);
   }
 
   private initSchema(): void {

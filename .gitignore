@@ -16,6 +16,10 @@ dist/
 
 # Runtime data (SQLite session + recipe index)
 data/
+# Session-DB backups (bd6.13) + ad-hoc .bak copies (redundant under data/ above,
+# listed explicitly so backups are never committed even if data/ is narrowed).
+data/backups/
+*.bak
 
 # Local secret/env files (never commit real tokens); .env.example is safe
 .env

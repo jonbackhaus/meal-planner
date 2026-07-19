@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { summarizeZodError } from "../lib/zod-errors.js";
-import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import { SelectedMealSchema } from "../planner/select.js";
 import { RecipeSchema } from "../recipe-mcp/schema.js";
 import type { Session, SessionStatus } from "./session-store.js";
@@ -27,16 +26,16 @@ import type { Session, SessionStatus } from "./session-store.js";
 /**
  * The in-memory shape the daemon holds for the currently-active week.
  * Mirrors the subset of `Session` a live listener/renderer needs, with
- * `working_plan` narrowed from the store's opaque `unknown` into the
- * planner's typed `EnrichedWeekPlan` (or `null` when there is none yet, e.g.
- * a row that never got past `generating` before this function's caller was
+ * `working_plan` narrowed from the store's opaque `unknown` into the LENIENT
+ * read shape {@link ResumedWeekPlan} (or `null` when there is none yet, e.g. a
+ * row that never got past `generating` before this function's caller was
  * routed elsewhere).
  */
 export interface ActiveSession {
   week_key: string;
   status: SessionStatus;
   thread_ts: string | null;
-  working_plan: EnrichedWeekPlan | null;
+  working_plan: ResumedWeekPlan | null;
 }
 
 /**
@@ -56,9 +55,14 @@ export interface ActiveSession {
  * being local to this module (enrich.ts itself is out of scope for bd6.5).
  */
 const EnrichedMealSchema = SelectedMealSchema.extend({
+  // Lenient READ (bd6.13): tolerate the v2.0 nullable `day` (a weekday string)
+  // as well as v1.0's literal `null` or an absent field, so an old blob and a
+  // new blob both parse. v1.0 STORAGE still writes `day: null` (planner/
+  // select.ts) — only the read is widened here.
+  day: z.string().nullable().optional(),
   recipe: RecipeSchema,
   secondDishRecipe: RecipeSchema.optional(),
-});
+}).passthrough();
 
 const EnrichedWeekPlanSchema = z
   .object({
@@ -66,7 +70,21 @@ const EnrichedWeekPlanSchema = z
     meals: z.array(EnrichedMealSchema),
     summary: z.string().optional(),
   })
-  .strict();
+  // Lenient READ (bd6.13): `.passthrough()` (not `.strict()`) so a plan grown
+  // by a future schema — extra top-level or per-meal fields (v2.0 calendar
+  // context, v3.0 Todoist ids) — still parses and is preserved, instead of the
+  // live week's plan being lost. The CORE stays required: a plan missing
+  // `meals`, or a meal missing its enriched `recipe`, still fails.
+  .passthrough();
+
+/**
+ * The lenient READ shape of `working_plan` (bd6.13). Intentionally WIDER than
+ * the planner's `EnrichedWeekPlan` (extra/optional fields tolerated, `day`
+ * nullable) so a plan written by a current OR future schema both parse on
+ * resume rather than being dropped. Used in place of `EnrichedWeekPlan` for
+ * the resume-parse return / `ActiveSession.working_plan`.
+ */
+export type ResumedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema>;
 
 /**
  * Thrown when a row's `working_plan` is present but doesn't parse into a
@@ -90,7 +108,7 @@ export class ResumeError extends Error {
 }
 
 /**
- * Parses/validates `row.working_plan` into a typed `EnrichedWeekPlan | null`.
+ * Parses/validates `row.working_plan` into a typed `ResumedWeekPlan | null`.
  *
  * `SessionStore.get` (session-store.ts) already `JSON.parse`s the stored TEXT
  * column before returning a `Session`, so the common case is an already-
@@ -102,7 +120,7 @@ export class ResumeError extends Error {
 function parseWorkingPlan(
   weekKey: string,
   raw: Session["working_plan"],
-): EnrichedWeekPlan | null {
+): ResumedWeekPlan | null {
   if (raw === null || raw === undefined) {
     return null;
   }
