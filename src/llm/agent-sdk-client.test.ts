@@ -105,14 +105,12 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
     expect(options?.mcpServers).toBeDefined();
   });
 
-  it("uses the result message's authoritative, cache-inclusive usage totals when present (bd q95.10)", async () => {
+  it("maps the result message's three input categories into the tiered usage breakdown (bd fkg.5)", async () => {
     // The streaming `assistant` turns under-report (esp. output_tokens); the
     // final `result` message carries the true cumulative usage the cost meter
-    // and cost cap depend on. Input must include the cache token categories:
-    // the SDK prompt-caches by default, so `input_tokens` alone reports only
-    // the non-cached remainder (~2) while the real prompt sits in
-    // `cache_creation_input_tokens`. Counting all input categories keeps the
-    // cost cap conservative (never silently undercounts spend).
+    // and cost cap depend on. Post-fkg.5 the three SDK input categories are
+    // carried SEPARATELY (fresh / cache-write / cache-read) rather than summed
+    // into `inputTokens`, so `CostMeter` can price the cache tiers accurately.
     queryMock.mockReturnValue(
       fakeQueryResult([
         {
@@ -140,8 +138,36 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
     const result = await client.runQuery({ prompt: "hi" });
 
     expect(result.text).toBe("final");
-    // input = 2 + 1600 + 30
-    expect(result.usage).toEqual({ inputTokens: 1632, outputTokens: 240 });
+    // Fresh input stays fresh; cache categories ride their own fields.
+    expect(result.usage).toEqual({
+      inputTokens: 2,
+      cacheWriteTokens: 1600,
+      cacheReadTokens: 30,
+      outputTokens: 240,
+    });
+  });
+
+  it("defaults cache fields to 0 when the result usage omits them", async () => {
+    queryMock.mockReturnValue(
+      fakeQueryResult([
+        {
+          type: "result",
+          subtype: "success",
+          result: "final",
+          usage: { input_tokens: 100, output_tokens: 40 },
+        },
+      ]),
+    );
+
+    const client = createLlmClient(baseConfig());
+    const result = await client.runQuery({ prompt: "hi" });
+
+    expect(result.usage).toEqual({
+      inputTokens: 100,
+      cacheWriteTokens: 0,
+      cacheReadTokens: 0,
+      outputTokens: 40,
+    });
   });
 
   it("aggregates usage across multiple turns and returns the final result text", async () => {
@@ -422,6 +448,48 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
       const err = caught as LlmCallError;
       expect(err.usage).toEqual({ inputTokens: 21_000, outputTokens: 1 });
       expect(err.message).toMatch(/rate_limit/);
+    });
+
+    it("carries the tiered cache breakdown on the LlmCallError when a success result was seen before a later throw (bd fkg.5)", async () => {
+      // The authoritative result usage (with cache categories) was captured,
+      // then the stream threw afterward. The error must ride out with the SAME
+      // tiered breakdown the success path would have returned — not a flattened
+      // fallback — so the metered client prices the cache tiers on failure too.
+      queryMock.mockReturnValue(
+        fakeQueryThatThrows(
+          [
+            {
+              type: "result",
+              subtype: "success",
+              result: "final",
+              usage: {
+                input_tokens: 2,
+                cache_creation_input_tokens: 1600,
+                cache_read_input_tokens: 30,
+                output_tokens: 240,
+              },
+            },
+          ],
+          new Error("stream overloaded"),
+        ),
+      );
+
+      const client = createLlmClient(baseConfig());
+
+      let caught: unknown;
+      try {
+        await client.runQuery({ prompt: "hello" });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(LlmCallError);
+      expect((caught as LlmCallError).usage).toEqual({
+        inputTokens: 2,
+        cacheWriteTokens: 1600,
+        cacheReadTokens: 30,
+        outputTokens: 240,
+      });
     });
 
     it("carries zero usage when the stream fails before any billing", async () => {
