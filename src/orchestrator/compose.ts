@@ -1,6 +1,7 @@
 import type { Config } from "../config/config.js";
 import type { ProfileSettings } from "../config/profile.js";
 import type { CostMeter } from "../cost/cost-meter.js";
+import type { Heartbeat } from "../daemon/heartbeat.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
 import {
   type AlertFn,
@@ -56,6 +57,17 @@ export interface ComposeDaemonDeps {
    * counters stay 0).
    */
   meter?: CostMeter;
+  /**
+   * External dead-man switch (bd meal-planner-fkg.8, SPEC §9.4). When present,
+   * `onTrigger` pings `heartbeat.success()` after a genuine generation success
+   * (the run resolved without throwing -- `"generated"` OR `"skipped"`, since
+   * both prove the host is alive and the trigger fired) and `heartbeat.fail()`
+   * on a caught generation failure. Best-effort and ADDITIVE: a Heartbeat never
+   * throws (see `makeHeartbeat`), so it can neither break nor alter the existing
+   * generate/alert flow. Optional: omitting it (the default) makes `onTrigger`
+   * behave exactly as before -- no ping is ever made.
+   */
+  heartbeat?: Heartbeat;
 }
 
 export interface ComposedDaemon {
@@ -92,6 +104,7 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
     nowDate,
     nowIso,
     meter,
+    heartbeat,
   } = deps;
 
   const genDeps: GenerateForWeekDeps = {
@@ -107,9 +120,22 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
     generateForWeek(weekKey, opts, genDeps);
 
   async function onTrigger(): Promise<void> {
-    await boundGenerate(currentPlanWeek(nowDate(), config), {
-      force: profile.forceRegenerate,
-    });
+    try {
+      await boundGenerate(currentPlanWeek(nowDate(), config), {
+        force: profile.forceRegenerate,
+      });
+    } catch (e) {
+      // Caught generation failure. Ping the external dead-man `<url>/fail`
+      // sub-path for defense-in-depth visibility, then preserve the existing
+      // behavior of letting the error propagate (generateForWeek already fired
+      // the internal alert before rethrowing). The heartbeat never throws, so
+      // this cannot mask or alter the original error.
+      await heartbeat?.fail();
+      throw e;
+    }
+    // Genuine success: the run resolved without throwing (`"generated"` OR
+    // `"skipped"` -- both mean the host is alive and the trigger fired).
+    await heartbeat?.success();
   }
 
   async function onStartup(): Promise<void> {

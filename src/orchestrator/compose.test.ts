@@ -227,6 +227,124 @@ describe("composeDaemon", () => {
       expect(row?.cost_usd).toBe(0);
     });
 
+    it("pings heartbeat.success (not fail) after a good run (bd meal-planner-fkg.8)", async () => {
+      store = makeStore();
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: false });
+      const buildPlan = vi.fn(async () => makePlan(WEEK));
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+      const heartbeat = {
+        success: vi.fn(async () => {}),
+        fail: vi.fn(async () => {}),
+      };
+
+      const { onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+        heartbeat,
+      });
+
+      await onTrigger();
+
+      expect(heartbeat.success).toHaveBeenCalledTimes(1);
+      expect(heartbeat.fail).not.toHaveBeenCalled();
+    });
+
+    it("pings heartbeat.success even when the run is skipped (host alive, trigger fired)", async () => {
+      store = makeStore();
+      store.insert({
+        week_key: WEEK,
+        status: "suggested",
+        thread_ts: "old.ts",
+        created_at: "2026-07-05T06:00:00.000Z",
+        updated_at: "2026-07-05T06:00:00.000Z",
+      });
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: false });
+      const buildPlan = vi.fn(async () => makePlan(WEEK));
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+      const heartbeat = {
+        success: vi.fn(async () => {}),
+        fail: vi.fn(async () => {}),
+      };
+
+      const { onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+        heartbeat,
+      });
+
+      await onTrigger();
+
+      expect(post).not.toHaveBeenCalled();
+      expect(heartbeat.success).toHaveBeenCalledTimes(1);
+      expect(heartbeat.fail).not.toHaveBeenCalled();
+    });
+
+    it("pings heartbeat.fail (not success) and rethrows when generation throws", async () => {
+      store = makeStore();
+      // Pre-existing row + force bypasses the gate but the insert then hits the
+      // PK constraint -> generateForWeek throws (same scenario as the force
+      // passthrough test above).
+      store.insert({
+        week_key: WEEK,
+        status: "failed",
+        created_at: "2026-07-05T06:00:00.000Z",
+        updated_at: "2026-07-05T06:00:00.000Z",
+      });
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: true });
+      const buildPlan = vi.fn(async () => makePlan(WEEK));
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+      const heartbeat = {
+        success: vi.fn(async () => {}),
+        fail: vi.fn(async () => {}),
+      };
+
+      const { onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+        heartbeat,
+      });
+
+      await expect(onTrigger()).rejects.toThrow();
+      expect(heartbeat.fail).toHaveBeenCalledTimes(1);
+      expect(heartbeat.success).not.toHaveBeenCalled();
+    });
+
     it("without force, an existing row for the current week is skipped (post never called)", async () => {
       store = makeStore();
       store.insert({
