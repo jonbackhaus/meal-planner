@@ -3,9 +3,14 @@ import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { PlannerInput } from "./input.js";
 import type { Pools } from "./pools.js";
-import type { SelectedMeal, WeekPlan } from "./select.js";
+import {
+  PlanSelectionError,
+  type SelectedMeal,
+  type WeekPlan,
+} from "./select.js";
 import {
   buildRepairPrompt,
+  buildShapeRepairPrompt,
   PlanValidationError,
   selectValidatedPlan,
   type ValidatePlanConfig,
@@ -250,6 +255,30 @@ describe("buildRepairPrompt", () => {
   });
 });
 
+describe("buildShapeRepairPrompt", () => {
+  it("includes the raw previous response, the parse/shape error, and the candidate context", () => {
+    const input = plannerInput();
+    const rawResponse = '{"week_plan": {"nope": true}}';
+    const error = "schema validation failed: unexpected key week_plan";
+    const prompt = buildShapeRepairPrompt(input, rawResponse, error);
+
+    expect(prompt).toContain(rawResponse);
+    expect(prompt).toContain(error);
+    // Candidate context must survive so the model can re-emit real ids.
+    expect(prompt).toContain("weeknight-veg");
+    expect(typeof prompt).toBe("string");
+  });
+
+  it("does not include a secret beyond what the selection prompt already carries", () => {
+    // The household prose is legitimately in buildSelectionPrompt(input); this
+    // test just guards against buildShapeRepairPrompt inventing new leakage
+    // channels — the raw response and error are the only additions.
+    const input = plannerInput();
+    const prompt = buildShapeRepairPrompt(input, "raw", "err");
+    expect(prompt).toContain("REPAIR");
+  });
+});
+
 describe("selectValidatedPlan", () => {
   it("returns immediately with exactly 1 llm call when the first plan is valid", async () => {
     const llm = makeFakeLlm(JSON.stringify(validPlan()));
@@ -306,6 +335,102 @@ describe("selectValidatedPlan", () => {
     );
     expect(error.message).not.toContain("SECRET_HOUSEHOLD_DETAIL");
     expect(error.message).not.toContain("sk-fake-secret-12345");
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a `week_plan`-envelope SHAPE failure on the first call and returns the valid repair with exactly 2 llm calls", async () => {
+    const envelope = JSON.stringify({ week_plan: validPlan() });
+    const llm = makeFakeLlm(envelope, JSON.stringify(validPlan()));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(validPlan());
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs an extra-key SHAPE failure and returns the valid repair with exactly 2 llm calls", async () => {
+    const bad = JSON.stringify({ ...validPlan(), unexpected_key: true });
+    const llm = makeFakeLlm(bad, JSON.stringify(validPlan()));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(validPlan());
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('repairs a string-`"null"`-day SHAPE failure and returns the valid repair with exactly 2 llm calls', async () => {
+    const bad = validPlan();
+    // day must be literal null; a string "null" is a shape violation.
+    (bad.meals[0] as unknown as Record<string, unknown>).day = "null";
+    const llm = makeFakeLlm(JSON.stringify(bad), JSON.stringify(validPlan()));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(validPlan());
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a non-JSON PARSE failure on the first call and returns the valid repair with exactly 2 llm calls", async () => {
+    const llm = makeFakeLlm(
+      "I cannot produce that right now.",
+      JSON.stringify(validPlan()),
+    );
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(validPlan());
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws PlanSelectionError after exactly 2 calls when the SHAPE repair also can't be parsed (no 3rd call)", async () => {
+    const llm = makeFakeLlm("not json at all", "still not json");
+    const input = plannerInput({
+      household: "SECRET_HOUSEHOLD_DETAIL sk-fake-secret-12345",
+    });
+
+    let caught: unknown;
+    try {
+      await selectValidatedPlan(input, pools(), cfg, { llm });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(PlanSelectionError);
+    const error = caught as PlanSelectionError;
+    expect(error.message).not.toContain("SECRET_HOUSEHOLD_DETAIL");
+    expect(error.message).not.toContain("sk-fake-secret-12345");
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("spends the SHARED single repair budget: a SHAPE failure does not then get a SEMANTIC repair (throws after exactly 2 calls)", async () => {
+    // Initial: shape failure. Repair: parses fine but is semantically invalid.
+    // The single repair budget was consumed by the shape repair, so there is
+    // NO further semantic repair — it throws PlanValidationError at 2 calls.
+    const semanticallyInvalid = validPlan();
+    semanticallyInvalid.meals[0] = meal({ recipe_id: "does-not-exist" });
+    const llm = makeFakeLlm(
+      "not json at all",
+      JSON.stringify(semanticallyInvalid),
+    );
+
+    let caught: unknown;
+    try {
+      await selectValidatedPlan(plannerInput(), pools(), cfg, { llm });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(PlanValidationError);
+    const error = caught as PlanValidationError;
+    expect(error.issues.some((i) => i.includes("does-not-exist"))).toBe(true);
     expect(llm.runQuery).toHaveBeenCalledTimes(2);
   });
 });

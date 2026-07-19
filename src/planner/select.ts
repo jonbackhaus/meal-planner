@@ -97,27 +97,38 @@ export interface LlmSelectDeps {
 }
 
 /**
- * Runs ONE selection-shaped LLM call from an already-rendered `prompt`:
- * calls `deps.llm.runQuery` exactly once, extracts a JSON object from the
- * response text (tolerating prose/fences around it — see
- * `extractJsonObject`), and shape-validates it against `WeekPlanSchema`.
+ * Runs ONE selection-shaped LLM call from an already-rendered `prompt` and
+ * returns the raw response text. Split from `llmSelectFromPrompt` so a caller
+ * that needs to build a SHAPE-repair prompt (8zs.10, `selectValidatedPlan` in
+ * `validate.ts`) can hold onto the raw malformed text — which `PlanSelectionError`
+ * deliberately does NOT carry — and quote it back to the model, mirroring
+ * `recipe-mcp/extraction.ts`'s repair pattern. Any `runQuery` failure (e.g.
+ * `LlmCallError`) propagates unwrapped.
+ */
+export async function runSelectionQuery(
+  prompt: string,
+  deps: LlmSelectDeps,
+): Promise<string> {
+  const result = await deps.llm.runQuery({ prompt });
+  return result.text;
+}
+
+/**
+ * Pure parse/shape-validate step (no LLM call): extracts a JSON object from
+ * an LLM `text` response (tolerating prose/fences around it — see
+ * `extractJsonObject`) and shape-validates it against `WeekPlanSchema`.
  * Throws `PlanSelectionError` on a JSON-parse failure or a schema-shape
  * failure.
  *
- * Factored out of `llmSelect` so the bounded repair retry (8zs.4,
- * `selectValidatedPlan` in `validate.ts`) can run its ONE repair prompt
- * through the exact same parse/validate pipeline, without duplicating it or
- * widening `llmSelect`'s single-call-from-`PlannerInput` contract.
+ * Split from the LLM call (`runSelectionQuery`) so the bounded repair retry
+ * (8zs.10, `selectValidatedPlan`) can re-run this identical pipeline on a
+ * repair response while keeping the raw text in hand for the repair prompt —
+ * without duplicating the parse/validate logic.
  */
-export async function llmSelectFromPrompt(
-  prompt: string,
-  deps: LlmSelectDeps,
-): Promise<WeekPlan> {
-  const result = await deps.llm.runQuery({ prompt });
-
+export function parseSelectionResponse(text: string): WeekPlan {
   let candidate: unknown;
   try {
-    candidate = extractJsonObject(result.text);
+    candidate = extractJsonObject(text);
   } catch (error) {
     throw new PlanSelectionError(
       `could not parse JSON from LLM response: ${(error as Error).message}`,
@@ -132,6 +143,25 @@ export async function llmSelectFromPrompt(
   }
 
   return parsed.data;
+}
+
+/**
+ * Runs ONE selection-shaped LLM call from an already-rendered `prompt`:
+ * calls `deps.llm.runQuery` exactly once (via `runSelectionQuery`), extracts a
+ * JSON object from the response text, and shape-validates it against
+ * `WeekPlanSchema`. Throws `PlanSelectionError` on a JSON-parse failure or a
+ * schema-shape failure.
+ *
+ * Factored out of `llmSelect` so the bounded repair retry (8zs.4,
+ * `selectValidatedPlan` in `validate.ts`) can run its ONE semantic-repair
+ * prompt through the exact same parse/validate pipeline, without duplicating it
+ * or widening `llmSelect`'s single-call-from-`PlannerInput` contract.
+ */
+export async function llmSelectFromPrompt(
+  prompt: string,
+  deps: LlmSelectDeps,
+): Promise<WeekPlan> {
+  return parseSelectionResponse(await runSelectionQuery(prompt, deps));
 }
 
 /**
