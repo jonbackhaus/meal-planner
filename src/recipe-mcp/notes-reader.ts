@@ -183,6 +183,34 @@ function parseNotesJson(stdout: string): RawNoteJson[] {
 }
 
 /**
+ * Normalizes a note body's whitespace WITHOUT stripping any content.
+ *
+ * Web-pasted recipe notes arrive from JXA plaintext carrying raw tabs and
+ * blank-line noise, which pollutes embeddings and downstream extraction. An
+ * earlier `stripHtml` pass used to clean this up as a side effect, but it was
+ * removed in bd meal-planner-q95.16 because its `/<[^>]*>/g` regex DELETED real
+ * recipe text between a literal `<` and the next `>` (e.g. `simmer <10 min`,
+ * `temp < 300F`). That fix must stand.
+ *
+ * This restores ONLY the whitespace cleanup that was lost with it:
+ *   - trim leading/trailing whitespace from each line,
+ *   - drop lines that are empty after trimming (collapsing runs of blanks),
+ *   - rejoin with `\n`.
+ *
+ * It deliberately does NOT strip or alter `<...>` spans (angle-bracket content
+ * passes through unchanged), does NOT decode HTML entities (JXA plaintext has
+ * none), does NOT collapse intra-line whitespace runs, and does NOT remove
+ * U+FFFC characters — all out of scope.
+ */
+export function normalizeNoteBody(body: string): string {
+  return body
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join("\n");
+}
+
+/**
  * Reads recipe notes from Apple Notes (scoped to a single folder) via
  * `osascript -l JavaScript`. Returns typed, plain-text-bodied `RawNote[]`.
  */
@@ -210,7 +238,7 @@ export async function readNotes(
   return rawNotes.map((note) => ({
     id: note.id,
     title: note.title,
-    body: note.body,
+    body: normalizeNoteBody(note.body),
     modifiedAt: new Date(note.modifiedAt),
   }));
 }

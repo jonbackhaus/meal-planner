@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   contentHash,
   DEFAULT_RECIPES_FOLDER,
+  normalizeNoteBody,
   readNotes,
 } from "./notes-reader.js";
 
@@ -132,14 +133,17 @@ describe("readNotes", () => {
     expect(notes[0].modifiedAt).toBeInstanceOf(Date);
   });
 
-  it("passes the plaintext body through verbatim, without stripping angle-bracket spans", async () => {
-    // `note.plaintext()` returns plain text, NOT HTML — so the body must be
-    // preserved byte-for-byte. A prior stripHtml pass (regexing out `<...>`)
-    // silently deleted everything between a literal `<` and the next `>`,
-    // corrupting real recipe text like `simmer <10 min` ... `> 2 cups flour`
-    // (bd meal-planner-q95.16). This locks in the pass-through behavior.
+  it("preserves angle-bracket recipe text (never strips `<...>` spans), only normalizing whitespace", async () => {
+    // `note.plaintext()` returns plain text, NOT HTML. A prior stripHtml pass
+    // (regexing out `<...>`) silently DELETED everything between a literal `<`
+    // and the next `>`, corrupting real recipe text like `simmer <10 min` ...
+    // `> 2 cups flour` (bd meal-planner-q95.16). The #20 guard is that this
+    // angle-bracket content MUST survive. bd meal-planner-5ww re-added the safe
+    // WHITESPACE cleanup that stripHtml also used to do (trim lines, drop
+    // blanks) — so the body is no longer byte-for-byte verbatim, but every
+    // `<...>` character is still present, untouched.
     const body =
-      "simmer <10 min, keep temp < 300F\nrest, then fold in\n> 2 cups flour & a pinch of salt";
+      "  simmer <10 min, keep temp < 300F  \n\nrest, then fold in\n\t> 2 cups flour & a pinch of salt  ";
     mockOsascriptStdout(
       JSON.stringify([
         {
@@ -153,7 +157,13 @@ describe("readNotes", () => {
 
     const notes = await readNotes();
 
-    expect(notes[0].body).toBe(body);
+    // The `<...>` recipe text survives verbatim (the #20 invariant)...
+    expect(notes[0].body).toContain("simmer <10 min, keep temp < 300F");
+    expect(notes[0].body).toContain("> 2 cups flour & a pinch of salt");
+    // ...while surrounding whitespace is normalized (the 5ww addition).
+    expect(notes[0].body).toBe(
+      "simmer <10 min, keep temp < 300F\nrest, then fold in\n> 2 cups flour & a pinch of salt",
+    );
   });
 
   it("parses multiple notes", async () => {
@@ -217,6 +227,47 @@ describe("readNotes", () => {
     mockOsascriptFailure("execFile: osascript exited with code 1");
 
     await expect(readNotes()).rejects.toThrow(/osascript/i);
+  });
+});
+
+describe("normalizeNoteBody", () => {
+  it("trims leading/trailing whitespace from each line", () => {
+    expect(normalizeNoteBody("  ground beef  \n\t1 tsp salt \t")).toBe(
+      "ground beef\n1 tsp salt",
+    );
+  });
+
+  it("drops blank/whitespace-only lines", () => {
+    expect(normalizeNoteBody("broth\n   \ngreens")).toBe("broth\ngreens");
+  });
+
+  it("collapses runs of blank lines", () => {
+    expect(normalizeNoteBody("step one\n\n\n\nstep two")).toBe(
+      "step one\nstep two",
+    );
+  });
+
+  it("leaves already-clean text unchanged", () => {
+    const clean = "ground beef\nbeans\nchili powder";
+    expect(normalizeNoteBody(clean)).toBe(clean);
+  });
+
+  it("preserves angle-bracket recipe text, normalizing only surrounding whitespace", () => {
+    // The #20 invariant (bd meal-planner-q95.16): NEVER strip `<...>` spans.
+    expect(
+      normalizeNoteBody("  simmer <10 min  \n\n\n  > 2 cups flour  "),
+    ).toBe("simmer <10 min\n> 2 cups flour");
+  });
+
+  it("does not decode HTML entities or collapse intra-line whitespace", () => {
+    // JXA plaintext has no entities to decode; intra-line runs are out of scope.
+    expect(normalizeNoteBody("  salt &amp; pepper   to  taste  ")).toBe(
+      "salt &amp; pepper   to  taste",
+    );
+  });
+
+  it("returns an empty string for all-blank input", () => {
+    expect(normalizeNoteBody("\n  \n\t\n")).toBe("");
   });
 });
 
