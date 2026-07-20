@@ -80,6 +80,23 @@ describe("buildPlannerInput", () => {
     expect(input.untested_present).toBe(false);
   });
 
+  it("carries maxPairedSides through as max_paired_sides when provided, and omits it when not (8zs.8)", () => {
+    const pools = {
+      weeknight: [candidate("wn-1")],
+      weekend: [candidate("we-1")],
+    };
+
+    const withCeiling = buildPlannerInput({
+      ...baseArgs,
+      pools,
+      maxPairedSides: 2,
+    });
+    expect(withCeiling.max_paired_sides).toBe(2);
+
+    const withoutCeiling = buildPlannerInput({ ...baseArgs, pools });
+    expect(withoutCeiling.max_paired_sides).toBeUndefined();
+  });
+
   it("carries current_season through when provided, and omits it when not", () => {
     const pools = {
       weeknight: [candidate("wn-1")],
@@ -251,6 +268,68 @@ describe("buildSelectionPrompt", () => {
     expect(withoutSeason.toLowerCase()).not.toMatch(
       /current.season|respect.*season/,
     );
+  });
+
+  it("renders a Sides candidate sub-section, an optional-side RULES clause, and the side output field when pools.sides is non-empty (8zs.8)", () => {
+    const prompt = buildSelectionPrompt(
+      makeInput({
+        pools: {
+          weeknight: [candidate("wn-1", { veg_status: "vegetarian" })],
+          weekend: [candidate("we-1", { veg_status: "vegetarian" })],
+          sides: [
+            candidate("side-1", {
+              title: "Garlic Green Beans",
+              veg_status: "vegetarian",
+              is_side: true,
+            }),
+          ],
+        },
+        max_paired_sides: 2,
+      }),
+    );
+
+    // Candidate sub-section with the side id/title.
+    expect(prompt).toContain("Sides");
+    expect(prompt).toContain("side-1");
+    expect(prompt).toContain("Garlic Green Beans");
+    // RULES: optional, at most the ceiling, vegetarian, from the Sides pool.
+    expect(prompt.toLowerCase()).toMatch(/optional/);
+    expect(prompt).toContain("2");
+    expect(prompt.toLowerCase()).toMatch(/vegetarian/);
+    // OUTPUT shape names the `side` field.
+    expect(prompt).toContain('"side"');
+  });
+
+  it("omits all side wording when pools.sides is empty/absent (token-lean)", () => {
+    const prompt = buildSelectionPrompt(
+      makeInput({
+        pools: {
+          weeknight: [candidate("wn-1", { veg_status: "vegetarian" })],
+          weekend: [candidate("we-1", { veg_status: "vegetarian" })],
+          sides: [],
+        },
+      }),
+    );
+
+    expect(prompt).not.toContain('"side"');
+    expect(prompt).not.toMatch(/Sides pool/);
+  });
+
+  it("uses the max_paired_sides ceiling in the side rule when provided (8zs.8)", () => {
+    const prompt = buildSelectionPrompt(
+      makeInput({
+        pools: {
+          weeknight: [candidate("wn-1", { veg_status: "vegetarian" })],
+          weekend: [candidate("we-1", { veg_status: "vegetarian" })],
+          sides: [
+            candidate("side-1", { veg_status: "vegetarian", is_side: true }),
+          ],
+        },
+        max_paired_sides: 3,
+      }),
+    );
+
+    expect(prompt).toMatch(/NEVER more than 3|more than 3/);
   });
 
   it("instructs a single JSON object as output with no outer envelope", () => {

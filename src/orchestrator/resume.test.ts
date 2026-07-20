@@ -101,6 +101,43 @@ describe("resumeQuietly", () => {
     });
   });
 
+  it("a working_plan carrying an optional paired side + sideRecipe round-trips through resume (8zs.8)", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12") as {
+      meals: Array<Record<string, unknown>>;
+    };
+    // Attach a side to the first meal, mirroring enrichPlan's output shape.
+    const withSide = {
+      ...plan,
+      meals: [
+        {
+          ...plan.meals[0],
+          side: { recipe_id: "cornbread", title: "Cornbread" },
+          sideRecipe: makeRecipe("cornbread"),
+        },
+        plan.meals[1],
+      ],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1234.5678",
+      working_plan: withSide,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    const active = resumeQuietly(row);
+
+    expect(active.working_plan).not.toBeNull();
+    expect(active.working_plan?.meals[0]).toMatchObject({
+      side: { recipe_id: "cornbread", title: "Cornbread" },
+      sideRecipe: { id: "cornbread" },
+    });
+  });
+
   it("a committed row with no working_plan: working_plan is null, no throw", () => {
     store = makeStore();
     store.insert({

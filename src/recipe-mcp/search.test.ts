@@ -671,6 +671,89 @@ describe("searchRecipes — NoteStore tags (bd tags feature)", () => {
     expect(results).toEqual([]);
   });
 
+  it("sides_only keeps ONLY #side candidates, dropping standalone dinners (bd meal-planner-8zs.8)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "cornbread",
+      [1, 0, 0],
+      "Cornbread",
+      defaultFields({ veg_status: "vegetarian" }),
+    );
+    structuredStore.upsertTags("cornbread", ["side", "vegetarian"]);
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "chili",
+      [0.9, 0.1, 0],
+      "Chili",
+      defaultFields({ veg_status: "contains_meat" }),
+    );
+    structuredStore.upsertTags("chili", ["dinner"]);
+
+    const results = await searchRecipes(
+      "side",
+      { sides_only: true },
+      { embedder: makeFakeEmbedder([1, 0, 0]), vectorStore, structuredStore },
+    );
+
+    expect(results.map((r) => r.id)).toEqual(["cornbread"]);
+  });
+
+  it("sides_only is mutually exclusive with main_dinner_only: passing both yields nothing", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "cornbread",
+      [1, 0, 0],
+      "Cornbread",
+      defaultFields({ veg_status: "vegetarian" }),
+    );
+    structuredStore.upsertTags("cornbread", ["side"]);
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "chili",
+      [0.9, 0.1, 0],
+      "Chili",
+      defaultFields(),
+    );
+    structuredStore.upsertTags("chili", ["dinner"]);
+
+    const results = await searchRecipes(
+      "x",
+      { sides_only: true, main_dinner_only: true },
+      { embedder: makeFakeEmbedder([1, 0, 0]), vectorStore, structuredStore },
+    );
+
+    // A #side fails main_dinner_only; a #dinner fails sides_only -> empty.
+    expect(results).toEqual([]);
+  });
+
+  it("sides_only stays fail-closed on a failed extraction (fields:null) even for a #side (bd meal-planner-q95.15)", async () => {
+    const { vectorStore, structuredStore } = makeStores();
+    upsertRecipe(
+      vectorStore,
+      structuredStore,
+      "failed-side",
+      [1, 0, 0],
+      "Failed side extraction",
+      null,
+    );
+    structuredStore.upsertTags("failed-side", ["side", "vegetarian"]);
+    const embedder = makeFakeEmbedder([1, 0, 0]);
+
+    const results = await searchRecipes(
+      "side",
+      { sides_only: true },
+      { embedder, vectorStore, structuredStore },
+    );
+
+    expect(results).toEqual([]);
+  });
+
   it("overlays tag quality/veg and surfaces is_side/tags on the candidate", async () => {
     const { vectorStore, structuredStore } = makeStores();
     upsertRecipe(

@@ -159,6 +159,60 @@ describe("renderPlan", () => {
     expect(output).toContain("Fallback Side Title");
   });
 
+  it("renders a '+ side:' line preferring the enriched sideRecipe title (8zs.8)", () => {
+    const output = renderPlan(
+      plan([
+        meal({
+          side: { recipe_id: "side-1", title: "Fallback Side Title" },
+          sideRecipe: recipe("side-1", { title: "Garlic Green Beans" }),
+        }),
+      ]),
+    );
+
+    expect(output).toMatch(/\+ side:/);
+    expect(output).toContain("Garlic Green Beans");
+  });
+
+  it("falls back to side.title for the '+ side:' line when sideRecipe is absent", () => {
+    const output = renderPlan(
+      plan([
+        meal({
+          side: { recipe_id: "side-1", title: "Fallback Side Title" },
+        }),
+      ]),
+    );
+
+    expect(output).toContain("+ side: Fallback Side Title");
+  });
+
+  it("omits the side line entirely when the meal has no side", () => {
+    const output = renderPlan(plan([meal()]));
+
+    expect(output).not.toMatch(/\+ side:/);
+  });
+
+  it("renders BOTH a veg second_dish and a distinct paired side on one meal (8zs.8)", () => {
+    const output = renderPlan(
+      plan([
+        meal({
+          veg: {
+            kind: "second_dish",
+            recipe_id: "veg-main",
+            title: "Veg Main",
+          },
+          secondDishRecipe: recipe("veg-main", { title: "Lentil Bake" }),
+          side: { recipe_id: "side-1", title: "Side" },
+          sideRecipe: recipe("side-1", { title: "Garlic Green Beans" }),
+        }),
+      ]),
+    );
+
+    expect(output).toMatch(/second dish/i);
+    expect(output).toContain("Lentil Bake");
+    expect(output).toMatch(/\+ side:/);
+    expect(output).toContain("Garlic Green Beans");
+  });
+
   it("surfaces flags as tags", () => {
     const output = renderPlan(
       plan([meal({ flags: ["do-ahead", "untested"] })]),

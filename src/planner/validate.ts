@@ -1,7 +1,7 @@
 import type { LlmClient } from "../llm/llm-client.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import { buildSelectionPrompt, type PlannerInput } from "./input.js";
-import type { Pools } from "./pools.js";
+import { DEFAULT_MAX_PAIRED_SIDES, type Pools } from "./pools.js";
 import {
   llmSelectFromPrompt,
   PlanSelectionError,
@@ -33,6 +33,11 @@ export type ValidationIssue = string;
 /** The slice of config `validateWeekPlan` needs: the exact expected slot counts. */
 export interface ValidatePlanConfig {
   slots: { constrained: number; relaxed: number };
+  /**
+   * Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8).
+   * Optional; defaults to `DEFAULT_MAX_PAIRED_SIDES` when omitted.
+   */
+  maxPairedSides?: number;
 }
 
 function findInPool(
@@ -169,7 +174,9 @@ function checkMealsIndividually(
 
 /**
  * No-duplicates check: a recipe id may appear at most once across ALL
- * `recipe_id` + `second_dish.recipe_id` values in the week.
+ * `recipe_id` + `second_dish.recipe_id` + `side.recipe_id` values in the week
+ * (a paired side can't duplicate a main, a second_dish, or another side —
+ * bd meal-planner-8zs.8).
  */
 function checkNoDuplicates(meals: SelectedMeal[]): ValidationIssue[] {
   const occurrences = new Map<string, string[]>();
@@ -185,6 +192,9 @@ function checkNoDuplicates(meals: SelectedMeal[]): ValidationIssue[] {
     record(meal.recipe_id, label);
     if (meal.veg.kind === "second_dish") {
       record(meal.veg.recipe_id, `${label} second_dish`);
+    }
+    if (meal.side) {
+      record(meal.side.recipe_id, `${label} side`);
     }
   });
 
@@ -230,12 +240,62 @@ function checkUntestedCount(
 }
 
 /**
+ * Optional-side checks (bd meal-planner-8zs.8), all secret-free (ids/counts
+ * only): for every meal carrying a `side`,
+ *  (i)  `side.recipe_id` must be a real candidate in the SIDES pool (guards a
+ *       hallucinated or main-pool id), and
+ *  (ii) that side candidate must be `veg_status: "vegetarian"` (ratified: a
+ *       paired side MUST be veg-satisfiable so the daughter can eat it too);
+ * plus (iii) a week-wide cap — total paired sides may not exceed
+ * `maxPairedSides` (default `DEFAULT_MAX_PAIRED_SIDES`). Uniqueness of a side
+ * id against mains/other sides is enforced separately by `checkNoDuplicates`.
+ */
+function checkSides(
+  meals: SelectedMeal[],
+  pools: Pools,
+  cfg: ValidatePlanConfig,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const sidePool = pools.sides ?? [];
+  let pairedCount = 0;
+
+  meals.forEach((meal, index) => {
+    if (!meal.side) {
+      return;
+    }
+    pairedCount += 1;
+    const label = mealLabel(meal, index);
+    const sideCandidate = findInPool(sidePool, meal.side.recipe_id);
+    if (!sideCandidate) {
+      issues.push(
+        `${label}: side.recipe_id="${meal.side.recipe_id}" is not a real candidate ` +
+          "in the sides pool",
+      );
+    } else if (sideCandidate.veg_status !== "vegetarian") {
+      issues.push(
+        `${label}: side.recipe_id="${meal.side.recipe_id}" has veg_status ` +
+          `"${sideCandidate.veg_status}", not "vegetarian" (a paired side must be vegetarian)`,
+      );
+    }
+  });
+
+  const maxPairedSides = cfg.maxPairedSides ?? DEFAULT_MAX_PAIRED_SIDES;
+  if (pairedCount > maxPairedSides) {
+    issues.push(
+      `${pairedCount} paired side(s) this week exceeds the maximum of ${maxPairedSides}`,
+    );
+  }
+  return issues;
+}
+
+/**
  * Deterministic post-selection validation (ADR 0003 "What validate()
  * checks"): counts, pool membership (guards hallucinated ids), veg
- * consistency, no-dupes, and flag sanity. Returns an empty array when `plan`
- * is fully valid; otherwise a list of specific, human-readable
- * `ValidationIssue`s, each naming the offending meal/id — this list is fed
- * straight into the repair prompt, so specificity here is load-bearing.
+ * consistency, no-dupes, flag sanity, and optional-side rules (8zs.8).
+ * Returns an empty array when `plan` is fully valid; otherwise a list of
+ * specific, human-readable `ValidationIssue`s, each naming the offending
+ * meal/id — this list is fed straight into the repair prompt, so specificity
+ * here is load-bearing.
  *
  * Pure and synchronous: makes no LLM call and never retries — that's
  * `selectValidatedPlan`'s job.
@@ -250,6 +310,7 @@ export function validateWeekPlan(
     ...checkMealsIndividually(plan.meals, pools),
     ...checkNoDuplicates(plan.meals),
     ...checkUntestedCount(plan.meals, pools),
+    ...checkSides(plan.meals, pools, cfg),
   ];
 }
 

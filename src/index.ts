@@ -425,6 +425,8 @@ export async function main(): Promise<void> {
         fanoutMultiplier: config.fanoutMultiplier,
         vegFloorK: config.vegFloorK,
         untestedRate: config.untestedRate,
+        // Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8).
+        maxPairedSides: config.maxPairedSides,
         // v1.0 tag-based seasonality (bd meal-planner-8zs.9): derive the
         // current season from the wall clock in the configured zone. Read once
         // per real generation (buildPlanFor only runs past the idempotency
