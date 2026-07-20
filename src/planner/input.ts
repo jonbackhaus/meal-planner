@@ -1,5 +1,5 @@
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
-import type { Pools } from "./pools.js";
+import { DEFAULT_MAX_PAIRED_SIDES, type Pools } from "./pools.js";
 
 /**
  * Assembles the typed selection-call input and renders the PROMPT the
@@ -44,6 +44,12 @@ export interface PlannerInput {
   current_season?: string;
   /** Did retrieval (composePools) inject any `quality: "untested"` candidate this week? */
   untested_present: boolean;
+  /**
+   * Hard ceiling on paired sides this week (bd meal-planner-8zs.8), surfaced in
+   * the RULES clause. Optional so partial `PlannerInput` literals stay valid;
+   * defaults to `DEFAULT_MAX_PAIRED_SIDES` when omitted.
+   */
+  max_paired_sides?: number;
 }
 
 export interface BuildPlannerInputArgs {
@@ -53,6 +59,8 @@ export interface BuildPlannerInputArgs {
   /** Caller-supplied household prose — see `PlannerInput.household` doc above. */
   household: string;
   currentSeason?: string;
+  /** Hard ceiling on paired sides this week (bd meal-planner-8zs.8); defaults to `DEFAULT_MAX_PAIRED_SIDES`. */
+  maxPairedSides?: number;
 }
 
 /**
@@ -62,7 +70,8 @@ export interface BuildPlannerInputArgs {
  * `quality === "untested"` candidate.
  */
 export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
-  const { weekKey, slots, pools, household, currentSeason } = args;
+  const { weekKey, slots, pools, household, currentSeason, maxPairedSides } =
+    args;
 
   const untestedPresent = [...pools.weeknight, ...pools.weekend].some(
     (candidate) => candidate.quality === "untested",
@@ -75,6 +84,9 @@ export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
     household,
     ...(currentSeason !== undefined ? { current_season: currentSeason } : {}),
     untested_present: untestedPresent,
+    ...(maxPairedSides !== undefined
+      ? { max_paired_sides: maxPairedSides }
+      : {}),
   };
 }
 
@@ -147,10 +159,18 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       "slot-to-day scheduling happens later, outside this selection.",
   );
 
+  const sidePool = input.pools.sides ?? [];
+  const hasSides = sidePool.length > 0;
+
+  const candidateBlocks = [
+    renderPool("Weeknight", input.pools.weeknight),
+    renderPool("Weekend", input.pools.weekend),
+  ];
+  if (hasSides) {
+    candidateBlocks.push(renderPool("Sides", sidePool));
+  }
   sections.push(
-    "CANDIDATES\n" +
-      `${renderPool("Weeknight", input.pools.weeknight)}\n\n` +
-      `${renderPool("Weekend", input.pools.weekend)}\n\n` +
+    `CANDIDATES\n${candidateBlocks.join("\n\n")}\n\n` +
       "Reference candidates ONLY by their `id` field above; do not invent ids.",
   );
 
@@ -182,11 +202,30 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       '- You MAY include at most one "try this?" untested candidate (quality "untested") this week.',
     );
   }
+  if (hasSides) {
+    const maxSides = input.max_paired_sides ?? DEFAULT_MAX_PAIRED_SIDES;
+    ruleLines.push(
+      "- You MAY OPTIONALLY attach ONE side dish to a main via its `side` field, " +
+        "chosen ONLY from the Sides pool above (each main gets at most one side). " +
+        "This is optional: usually attach 0-1 sides across the WHOLE week, and " +
+        `NEVER more than ${maxSides}. A paired side MUST be vegetarian so the ` +
+        "vegetarian daughter can eat it too. A `side` is a shared accompaniment " +
+        "for everyone — distinct from a veg `second_dish` (her substitute main); " +
+        "a meal may have both.",
+    );
+  }
   ruleLines.push(
     "- Flag any selected meal that is a do-ahead (can be prepped in advance).",
   );
 
   sections.push(`RULES\n${ruleLines.join("\n")}`);
+
+  const sideShapeLine = hasSides
+    ? '      "side": { "recipe_id": "<a Sides-pool id>", "title": "<its title>" },   (OPTIONAL — omit entirely when no side)\n'
+    : "";
+  const optionalKeysNote = hasSides
+    ? 'except "summary" and the OPTIONAL "side"'
+    : 'except "summary"';
 
   sections.push(
     "OUTPUT\n" +
@@ -204,6 +243,7 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       '            | { "kind": "separable", "note": "<how she is served meat-free>" }\n' +
       '            | { "kind": "second_dish", "recipe_id": "<a vegetarian id from a pool>", "title": "<its title>" },\n' +
       '      "flags": ["<tag>"],\n' +
+      sideShapeLine +
       '      "rationale": "<one sentence: why this meal>"\n' +
       "    }\n" +
       "  ],\n" +
@@ -211,8 +251,8 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       "}\n" +
       `Emit exactly ${input.slots.constrained} meals with slot_type "constrained" and ` +
       `${input.slots.relaxed} with slot_type "relaxed" — one object per selected meal. Do NOT ` +
-      'wrap the object in any outer key (no "week_plan" envelope). Every key shown is required ' +
-      'except "summary"; "flags" is [] when none apply; "day" is always null.',
+      `wrap the object in any outer key (no "week_plan" envelope). Every key shown is required ` +
+      `${optionalKeysNote}; "flags" is [] when none apply; "day" is always null.`,
   );
 
   return sections.join("\n\n");

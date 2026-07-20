@@ -17,6 +17,7 @@ function baseConfig(profile: "dev" | "prod"): Config {
     fanoutMultiplier: 4,
     vegFloorK: 2,
     untestedRate: 0.15,
+    maxPairedSides: 2,
     generationDollarCap: 2,
     triggerTimeoutMs: 2_700_000,
   };

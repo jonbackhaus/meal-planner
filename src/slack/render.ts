@@ -65,6 +65,22 @@ function renderVegCoverage(meal: EnrichedMeal): string {
   }
 }
 
+/**
+ * Renders the optional paired side line (bd meal-planner-8zs.8), or `undefined`
+ * when the meal has no side. A `side` is a shared accompaniment for everyone —
+ * DISTINCT from `veg.second_dish` (the daughter's substitute main, rendered by
+ * `renderVegCoverage`) — so both can appear on one meal. Prefers the enriched
+ * `sideRecipe.title` (authoritative, freshly fetched), falling back to
+ * `side.title` (captured at selection time) when `sideRecipe` is absent.
+ */
+function renderSide(meal: EnrichedMeal): string | undefined {
+  if (!meal.side) {
+    return undefined;
+  }
+  const title = meal.sideRecipe?.title ?? meal.side.title;
+  return `    + side: ${collapseNewlines(title)}`;
+}
+
 /** Renders `flags` as small inline-code tags, e.g. `` `do-ahead` `untested` ``. */
 function renderFlags(flags: readonly string[]): string {
   if (flags.length === 0) {
@@ -86,18 +102,20 @@ function renderSourceHint(meal: EnrichedMeal): string {
   return `    (source note: ${meal.recipe.source_note_id})`;
 }
 
-/** Renders one meal as a bullet block: title + coverage + flags, rationale, source hint. */
+/** Renders one meal as a bullet block: title + coverage + flags, optional side, rationale, source hint. */
 function renderMeal(meal: EnrichedMeal): string {
   const title = collapseNewlines(meal.title);
   const coverage = renderVegCoverage(meal);
   const flags = renderFlags(meal.flags);
   const rationale = collapseNewlines(meal.rationale);
 
-  return [
-    `• *${title}* — ${coverage}${flags}`,
-    `    _${rationale}_`,
-    renderSourceHint(meal),
-  ].join("\n");
+  const lines = [`• *${title}* — ${coverage}${flags}`];
+  const side = renderSide(meal);
+  if (side !== undefined) {
+    lines.push(side);
+  }
+  lines.push(`    _${rationale}_`, renderSourceHint(meal));
+  return lines.join("\n");
 }
 
 /** Renders one `*Heading*` section with its meals, in their given array order, or `undefined` if empty. */

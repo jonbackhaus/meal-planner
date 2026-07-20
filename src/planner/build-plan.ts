@@ -107,12 +107,13 @@ export async function buildPlan(
     pools,
     household,
     currentSeason: cfg.season,
+    maxPairedSides: cfg.maxPairedSides,
   });
 
   const plan = await selectValidatedPlan(
     input,
     pools,
-    { slots },
+    { slots, maxPairedSides: cfg.maxPairedSides },
     { llm: deps.llm },
   );
 

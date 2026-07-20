@@ -21,6 +21,15 @@ import type { SearchFilters } from "../recipe-mcp/search.js";
 export interface Pools {
   weeknight: RecipeCandidate[];
   weekend: RecipeCandidate[];
+  /**
+   * Optional side-dish pool (bd meal-planner-8zs.8): vegetarian `#side`
+   * candidates a main may OPTIONALLY be paired with. `composePools` always
+   * populates it (possibly empty); it is optional on the type only so existing
+   * `Pools` literals (tests, forward-compat readers) stay valid — a missing or
+   * empty side pool simply means no side gets attached and never blocks
+   * planning (it is NOT part of `assertPoolsSufficient`, which gates MAIN slots).
+   */
+  sides?: RecipeCandidate[];
 }
 
 /**
@@ -38,6 +47,14 @@ export type PoolCompositionConfig = Pick<
   | "untestedRate"
 > & {
   season?: string;
+  /**
+   * Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8). Also
+   * sizes the side pool. Modeled as an optional extra (like `season`) so
+   * partial config literals stay valid; when omitted it defaults to
+   * `DEFAULT_MAX_PAIRED_SIDES`. The real runtime value is threaded from
+   * `Config.maxPairedSides` (env `MP_MAX_PAIRED_SIDES`).
+   */
+  maxPairedSides?: number;
 };
 
 export interface ComposePoolsDeps {
@@ -63,6 +80,20 @@ export interface ComposePoolsDeps {
 const UNTESTED_OVERFETCH_MULTIPLIER = 3;
 
 /**
+ * Default hard ceiling on paired side dishes per week (bd meal-planner-8zs.8),
+ * used when `PoolCompositionConfig.maxPairedSides` / `ValidatePlanConfig`'s is
+ * omitted. Mirrors `Config.maxPairedSides`'s runtime default of 2.
+ */
+export const DEFAULT_MAX_PAIRED_SIDES = 2;
+
+/**
+ * v1.0 side-pool query seed (bd meal-planner-8zs.8). Sides are an OPTIONAL
+ * accompaniment, so — unlike the multi-seed main pools — the side pool is
+ * built from ONE bounded `search` call with a single intent-bearing query.
+ */
+const SIDE_SEED_QUERY = "vegetable side dish, salad, or bread";
+
+/**
  * Composes the weeknight + weekend candidate pools per ADR 0001/0003, using
  * quality-aware retrieval (bd meal-planner-8zs.6):
  *
@@ -82,6 +113,10 @@ const UNTESTED_OVERFETCH_MULTIPLIER = 3;
  *
  * All merges dedupe by `id`, preserving existing-pool order first, then
  * newly-added candidates in the order they were returned.
+ *
+ * Also composes an OPTIONAL side-dish pool (`Pools.sides`, bd
+ * meal-planner-8zs.8) — see `composeSidePool` — with one bounded, veg-only
+ * `sides_only` search. It may be empty and never gates planning.
  */
 export async function composePools(
   seeds: string[],
@@ -109,8 +144,37 @@ export async function composePools(
   // path, so the (small) latency cost of not parallelizing is a non-issue.
   const weeknight = await composePool(seeds, weeknightFilters, cfg, search);
   const weekend = await composePool(seeds, weekendFilters, cfg, search);
+  const sides = await composeSidePool(cfg, search);
 
-  return { weeknight, weekend };
+  return { weeknight, weekend, sides };
+}
+
+/**
+ * Composes the OPTIONAL side-dish pool (bd meal-planner-8zs.8) with ONE bounded
+ * `search` call — no per-seed fan-out, no veg-floor/untested stages. Filters:
+ * `sides_only` (the positive `#side` selector) + `veg_status: "vegetarian"`
+ * (ratified: a paired side MUST be veg-satisfiable so the vegetarian daughter
+ * can eat it too), season-scoped like the main pools. The pool is deliberately
+ * allowed to come back EMPTY (sides are optional — no candidates simply means
+ * no side gets attached) and is deduped by id for consistency with the other
+ * pools. A `maxPairedSides` of 0 disables sides entirely (no search issued).
+ */
+async function composeSidePool(
+  cfg: PoolCompositionConfig,
+  search: ComposePoolsDeps["search"],
+): Promise<RecipeCandidate[]> {
+  const maxPairedSides = cfg.maxPairedSides ?? DEFAULT_MAX_PAIRED_SIDES;
+  if (maxPairedSides <= 0) {
+    return [];
+  }
+  const sideFilters: SearchFilters = {
+    sides_only: true,
+    veg_status: "vegetarian",
+    ...(cfg.season !== undefined ? { season: cfg.season } : {}),
+    limit: maxPairedSides * cfg.fanoutMultiplier,
+  };
+  const hits = await search(SIDE_SEED_QUERY, sideFilters);
+  return mergeDeduped([], hits);
 }
 
 async function composePool(

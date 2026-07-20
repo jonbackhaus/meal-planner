@@ -28,9 +28,25 @@ describe("loadConfig", () => {
       fanoutMultiplier: 4,
       vegFloorK: 2,
       untestedRate: 0.15,
+      maxPairedSides: 2,
       generationDollarCap: 2,
       triggerTimeoutMs: 2_700_000,
     });
+  });
+
+  it("reads maxPairedSides from MP_MAX_PAIRED_SIDES when set", () => {
+    const config = loadConfig(validEnv({ MP_MAX_PAIRED_SIDES: "1" }));
+
+    expect(config.maxPairedSides).toBe(1);
+  });
+
+  it("throws when maxPairedSides is negative or not an integer", () => {
+    expect(() =>
+      loadConfig(validEnv({ MP_MAX_PAIRED_SIDES: "-1" })),
+    ).toThrowError(/maxPairedSides/i);
+    expect(() =>
+      loadConfig(validEnv({ MP_MAX_PAIRED_SIDES: "1.5" })),
+    ).toThrowError(/maxPairedSides/i);
   });
 
   it("applies a MP_TRIGGER_TIMEOUT_MS override", () => {

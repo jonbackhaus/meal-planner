@@ -37,6 +37,14 @@ export interface SearchFilters {
   effort?: string[];
   /** HARD course gate: drop candidates that aren't standalone dinners (#side/#dessert/#breakfast/#appetizer). */
   main_dinner_only?: boolean;
+  /**
+   * Positive course selector (bd meal-planner-8zs.8): keep ONLY tag-flagged
+   * side dishes (`tm.is_side`), for the side-with-main pairing pool. The mirror
+   * image of `main_dinner_only` (which EXCLUDES sides) — the two are MUTUALLY
+   * EXCLUSIVE, so passing both yields an empty result (a candidate cannot be
+   * both a standalone dinner and a side).
+   */
+  sides_only?: boolean;
   /** v2.0 recency dedup — wired now, passed through to the vector store. */
   exclude_ids?: string[];
   /** How many candidates to return. Default: DEFAULT_LIMIT. */
@@ -147,6 +155,15 @@ function passesFilters(
   // Course gate is tag-driven (a side dish with a failed/absent extraction is
   // still excluded — its is_side is known from tags, not the body).
   if (filters.main_dinner_only && !tm.main_dinner_eligible) {
+    return false;
+  }
+
+  // Positive side selector (bd meal-planner-8zs.8), the mirror of
+  // main_dinner_only: keep ONLY tag-flagged sides. Tag-driven like the course
+  // gate; a side whose extraction failed was already dropped by the fail-closed
+  // !fields guard above, so any side reaching here has a known veg_status for
+  // the "paired side must be vegetarian" check downstream.
+  if (filters.sides_only && !tm.is_side) {
     return false;
   }
 

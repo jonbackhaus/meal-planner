@@ -14,6 +14,7 @@ import { z } from "zod";
  * - MP_FANOUT_MULTIPLIER          -> fanoutMultiplier
  * - MP_VEG_FLOOR_K                -> vegFloorK
  * - MP_UNTESTED_RATE              -> untestedRate
+ * - MP_MAX_PAIRED_SIDES          -> maxPairedSides
  * - MP_GENERATION_DOLLAR_CAP      -> generationDollarCap
  * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
  * - MP_HEALTHCHECK_URL            -> healthcheckUrl (OPTIONAL; unset/empty = disabled)
@@ -116,6 +117,15 @@ const configSchema = z
       .min(0, "untestedRate must be between 0 and 1")
       .max(1, "untestedRate must be between 0 and 1")
       .default(0.15),
+    // Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8). The
+    // selection prompt steers toward 0-1 typically; validation enforces this as
+    // a HARD cap. 0 disables side pairing entirely. Default 2 (mirrors
+    // DEFAULT_MAX_PAIRED_SIDES in planner/pools.ts).
+    maxPairedSides: z
+      .number()
+      .int("maxPairedSides must be a non-negative integer")
+      .nonnegative("maxPairedSides must be a non-negative integer")
+      .default(2),
     generationDollarCap: z
       .number()
       .positive("generationDollarCap must be a positive number")
@@ -209,6 +219,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     fanoutMultiplier: optionalNumber(env.MP_FANOUT_MULTIPLIER),
     vegFloorK: optionalNumber(env.MP_VEG_FLOOR_K),
     untestedRate: optionalNumber(env.MP_UNTESTED_RATE),
+    maxPairedSides: optionalNumber(env.MP_MAX_PAIRED_SIDES),
     generationDollarCap: optionalNumber(env.MP_GENERATION_DOLLAR_CAP),
     triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
     healthcheckUrl: optionalString(env.MP_HEALTHCHECK_URL),

@@ -36,6 +36,8 @@ interface Fixtures {
   weekendBase: RecipeCandidate[];
   weekendVegTopUp?: RecipeCandidate[];
   weekendUntestedOverfetch?: RecipeCandidate[];
+  /** The side-dish pool (bd meal-planner-8zs.8), keyed by the `sides_only` filter. */
+  sides?: RecipeCandidate[];
 }
 
 /**
@@ -51,6 +53,12 @@ function makeFakeSearch(fixtures: Fixtures) {
   return vi.fn(async (_query: string, filters?: SearchFilters) => {
     const isWeeknight = filters?.active_max !== undefined;
 
+    // Side pool (bd meal-planner-8zs.8): the positive #side selector. Checked
+    // FIRST since it also carries veg_status:"vegetarian" (would otherwise fall
+    // into the veg-floor branch below).
+    if (filters?.sides_only) {
+      return fixtures.sides ?? [];
+    }
     if (filters?.quality === "untested") {
       return (
         (isWeeknight
@@ -321,6 +329,98 @@ describe("composePools", () => {
       expect(typeof c.id).toBe("string");
       expect(typeof c.title).toBe("string");
     }
+  });
+
+  // ── Optional side pool (bd meal-planner-8zs.8) ──
+  it("populates Pools.sides via a sides_only, vegetarian search", async () => {
+    const search = makeFakeSearch({
+      weeknightBase: [
+        candidate("wn-1", { veg_status: "vegetarian" }),
+        candidate("wn-2", { veg_status: "vegetarian" }),
+      ],
+      weekendBase: [
+        candidate("we-1", { veg_status: "vegetarian" }),
+        candidate("we-2", { veg_status: "vegetarian" }),
+      ],
+      sides: [
+        candidate("side-1", { veg_status: "vegetarian", is_side: true }),
+        candidate("side-2", { veg_status: "vegetarian", is_side: true }),
+      ],
+    });
+
+    const pools = await composePools(["family dinner"], baseCfg, { search });
+
+    expect(pools.sides?.map((c) => c.id)).toEqual(["side-1", "side-2"]);
+    // The side search is issued with the positive selector + veg gate, sized by
+    // maxPairedSides (default 2) * fanout (4) = 8, season-free here.
+    const sideCall = search.mock.calls.find(
+      ([, filters]) => filters?.sides_only,
+    );
+    expect(sideCall?.[1]).toMatchObject({
+      sides_only: true,
+      veg_status: "vegetarian",
+      limit: 8,
+    });
+    expect(sideCall?.[1]).not.toHaveProperty("active_max");
+    expect(sideCall?.[1]).not.toHaveProperty("main_dinner_only");
+  });
+
+  it("does not break planning when the side pool comes back empty (sides are optional)", async () => {
+    const search = makeFakeSearch({
+      weeknightBase: [
+        candidate("wn-1", { veg_status: "vegetarian" }),
+        candidate("wn-2", { veg_status: "vegetarian" }),
+      ],
+      weekendBase: [
+        candidate("we-1", { veg_status: "vegetarian" }),
+        candidate("we-2", { veg_status: "vegetarian" }),
+      ],
+      // no `sides` fixture -> empty side pool.
+    });
+
+    const pools = await composePools(["family dinner"], baseCfg, { search });
+
+    expect(pools.sides).toEqual([]);
+    expect(pools.weeknight.map((c) => c.id)).toEqual(["wn-1", "wn-2"]);
+    expect(pools.weekend.map((c) => c.id)).toEqual(["we-1", "we-2"]);
+  });
+
+  it("issues NO side search and returns an empty side pool when maxPairedSides is 0", async () => {
+    const search = makeFakeSearch({
+      weeknightBase: [candidate("wn-1", { veg_status: "vegetarian" })],
+      weekendBase: [candidate("we-1", { veg_status: "vegetarian" })],
+      sides: [candidate("side-1", { veg_status: "vegetarian", is_side: true })],
+    });
+
+    const pools = await composePools(
+      ["family dinner"],
+      { ...baseCfg, maxPairedSides: 0 },
+      { search },
+    );
+
+    expect(pools.sides).toEqual([]);
+    expect(search.mock.calls.some(([, filters]) => filters?.sides_only)).toBe(
+      false,
+    );
+  });
+
+  it("scopes the side search by season when cfg.season is set", async () => {
+    const search = makeFakeSearch({
+      weeknightBase: [candidate("wn-1", { veg_status: "vegetarian" })],
+      weekendBase: [candidate("we-1", { veg_status: "vegetarian" })],
+      sides: [candidate("side-1", { veg_status: "vegetarian", is_side: true })],
+    });
+
+    await composePools(
+      ["family dinner"],
+      { ...baseCfg, season: "summer" },
+      { search },
+    );
+
+    const sideCall = search.mock.calls.find(
+      ([, filters]) => filters?.sides_only,
+    );
+    expect(sideCall?.[1]).toMatchObject({ season: "summer" });
   });
 
   // ── Multi-seed retrieval (bd meal-planner-8zs.6 Stage 2 / l7x) ──

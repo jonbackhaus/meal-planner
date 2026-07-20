@@ -73,6 +73,10 @@ function pools(): Pools {
       candidate("we-veg", { veg_status: "vegetarian" }),
       candidate("we-meat", { veg_status: "contains_meat" }),
     ],
+    sides: [
+      candidate("side-veg", { veg_status: "vegetarian", is_side: true }),
+      candidate("side-meat", { veg_status: "contains_meat", is_side: true }),
+    ],
   };
 }
 
@@ -180,6 +184,35 @@ describe("assertPoolsSufficient", () => {
       // Secret-free: no recipe titles/bodies leak (candidate titles are "Recipe <id>").
       expect(err.message).not.toContain("Recipe wn-a");
     }
+  });
+
+  it("is unaffected by the side pool: an empty side pool passes, and a large side pool cannot rescue short MAIN slots (8zs.8)", () => {
+    // A large side pool must not paper over a starved weeknight pool: the gate
+    // is about MAIN slots only.
+    const bigSides = Array.from({ length: 20 }, (_, i) =>
+      candidate(`side-${i}`, { veg_status: "vegetarian", is_side: true }),
+    );
+    const shortMains: Pools = {
+      weeknight: [candidate("wn-a")], // 1 < 2 constrained
+      weekend: [candidate("we-a"), candidate("we-b")],
+      sides: bigSides,
+    };
+    expect(() =>
+      assertPoolsSufficient(shortMains, { constrained: 2, relaxed: 1 }),
+    ).toThrow(InsufficientPoolError);
+
+    // Sufficient mains with an EMPTY side pool: no throw (sides never gate).
+    const sufficientMainsEmptySides: Pools = {
+      weeknight: [candidate("wn-a"), candidate("wn-b")],
+      weekend: [candidate("we-a")],
+      sides: [],
+    };
+    expect(() =>
+      assertPoolsSufficient(sufficientMainsEmptySides, {
+        constrained: 2,
+        relaxed: 1,
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -353,6 +386,84 @@ describe("validateWeekPlan", () => {
       issues.some((i) => /more than one/i.test(i) && /untested/i.test(i)),
     ).toBe(true);
   });
+
+  // ── Optional sides (bd meal-planner-8zs.8) ──
+  it("accepts a valid single vegetarian side drawn from the sides pool", () => {
+    const plan = validPlan();
+    plan.meals[0] = meal({
+      side: { recipe_id: "side-veg", title: "Recipe side-veg" },
+    });
+    expect(validateWeekPlan(plan, pools(), cfg)).toEqual([]);
+  });
+
+  it("flags a side.recipe_id that isn't a candidate in the sides pool", () => {
+    const plan = validPlan();
+    plan.meals[0] = meal({
+      side: { recipe_id: "ghost-side", title: "Ghost" },
+    });
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(
+      issues.some((i) => i.includes("ghost-side") && /sides pool/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags a paired side that is not vegetarian", () => {
+    const plan = validPlan();
+    plan.meals[0] = meal({
+      side: { recipe_id: "side-meat", title: "Recipe side-meat" },
+    });
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(
+      issues.some((i) => /side-meat/.test(i) && /vegetarian/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags more paired sides than maxPairedSides (hard ceiling)", () => {
+    const wideCfg: ValidatePlanConfig = {
+      slots: { constrained: 2, relaxed: 0 },
+      maxPairedSides: 1,
+    };
+    const widePools = pools();
+    widePools.sides?.push(
+      candidate("side-veg-2", { veg_status: "vegetarian", is_side: true }),
+    );
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({
+          recipe_id: "wn-veg",
+          side: { recipe_id: "side-veg", title: "Recipe side-veg" },
+        }),
+        meal({
+          recipe_id: "wn-meat",
+          veg: { kind: "separable", note: "hold the meat" },
+          side: { recipe_id: "side-veg-2", title: "Recipe side-veg-2" },
+        }),
+      ],
+    };
+    const issues = validateWeekPlan(plan, widePools, wideCfg);
+    expect(issues.some((i) => /exceeds the maximum of 1/.test(i))).toBe(true);
+  });
+
+  it("flags a side that duplicates a main recipe id", () => {
+    // A side reusing a main's id: caught by the no-duplicates check now that it
+    // folds side.recipe_id into the uniqueness set.
+    const plan = validPlan();
+    const sharedPools = pools();
+    // Make "we-veg" (meals[1].recipe_id) also a valid veg side candidate.
+    sharedPools.sides?.push(
+      candidate("we-veg", { veg_status: "vegetarian", is_side: true }),
+    );
+    plan.meals[0] = meal({
+      side: { recipe_id: "we-veg", title: "Recipe we-veg" },
+    });
+    const issues = validateWeekPlan(plan, sharedPools, cfg);
+    expect(
+      issues.some(
+        (i) => /more than once|duplicate/i.test(i) && i.includes("we-veg"),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("buildRepairPrompt", () => {
@@ -424,6 +535,26 @@ describe("selectValidatedPlan", () => {
     const badPlan = validPlan();
     badPlan.meals[0] = meal({ recipe_id: "wn-untested", flags: [] });
     const goodPlan = validPlan();
+
+    const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(plan).toEqual(goodPlan);
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a plan whose paired side is non-vegetarian, via the SAME single-repair path (8zs.8)", async () => {
+    const badPlan = validPlan();
+    badPlan.meals[0] = meal({
+      side: { recipe_id: "side-meat", title: "Recipe side-meat" },
+    });
+    const goodPlan = validPlan();
+    goodPlan.meals[0] = meal({
+      side: { recipe_id: "side-veg", title: "Recipe side-veg" },
+    });
 
     const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
 

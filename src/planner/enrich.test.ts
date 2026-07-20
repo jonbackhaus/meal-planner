@@ -74,6 +74,62 @@ describe("enrichPlan", () => {
     expect(enriched.meals[0].secondDishRecipe).toEqual(recipe("wn-veg-side"));
   });
 
+  it("attaches sideRecipe when the meal has an optional paired side (8zs.8)", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan = plan([
+      meal({
+        recipe_id: "wn-meat",
+        side: { recipe_id: "cornbread", title: "Cornbread" },
+      }),
+    ]);
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    expect(enriched.meals[0].recipe).toEqual(recipe("wn-meat"));
+    expect(enriched.meals[0].sideRecipe).toEqual(recipe("cornbread"));
+    // The selection-time `side` reference is preserved alongside the full recipe.
+    expect(enriched.meals[0].side).toEqual({
+      recipe_id: "cornbread",
+      title: "Cornbread",
+    });
+    expect(getRecipe).toHaveBeenCalledWith("cornbread");
+  });
+
+  it("attaches both secondDishRecipe and sideRecipe when a meal has both", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan = plan([
+      meal({
+        recipe_id: "wn-meat",
+        veg: { kind: "second_dish", recipe_id: "veg-main", title: "Veg Main" },
+        side: { recipe_id: "cornbread", title: "Cornbread" },
+      }),
+    ]);
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    expect(enriched.meals[0].secondDishRecipe).toEqual(recipe("veg-main"));
+    expect(enriched.meals[0].sideRecipe).toEqual(recipe("cornbread"));
+  });
+
+  it("throws EnrichmentError naming the id when getRecipe returns null for a side id", async () => {
+    const getRecipe = vi.fn(async (id: string) =>
+      id === "cornbread" ? null : recipe(id),
+    );
+    const weekPlan = plan([
+      meal({
+        recipe_id: "wn-meat",
+        side: { recipe_id: "cornbread", title: "Cornbread" },
+      }),
+    ]);
+
+    await expect(enrichPlan(weekPlan, { getRecipe })).rejects.toThrow(
+      EnrichmentError,
+    );
+    await expect(enrichPlan(weekPlan, { getRecipe })).rejects.toThrow(
+      /cornbread/,
+    );
+  });
+
   it("does not set secondDishRecipe for a non-second_dish meal", async () => {
     const getRecipe = vi.fn(async (id: string) => recipe(id));
     const weekPlan = plan([meal()]);
@@ -81,6 +137,7 @@ describe("enrichPlan", () => {
     const enriched = await enrichPlan(weekPlan, { getRecipe });
 
     expect(enriched.meals[0].secondDishRecipe).toBeUndefined();
+    expect(enriched.meals[0].sideRecipe).toBeUndefined();
   });
 
   it("calls getRecipe once per chosen id, including second dishes", async () => {
@@ -156,6 +213,21 @@ describe("EnrichedWeekPlanSchema (canonical, bd6.8)", () => {
       ],
       "a fine week of meals",
     );
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    const result = EnrichedWeekPlanSchema.safeParse(enriched);
+    expect(result.success).toBe(true);
+  });
+
+  it("parses an enrichPlan output carrying an optional paired side (8zs.8)", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan = plan([
+      meal({
+        recipe_id: "wn-meat",
+        side: { recipe_id: "cornbread", title: "Cornbread" },
+      }),
+    ]);
 
     const enriched = await enrichPlan(weekPlan, { getRecipe });
 

@@ -48,6 +48,14 @@ export type VegPath = z.infer<typeof VegPathSchema>;
  * that pool-membership check (along with counts/veg-consistency/no-dupes)
  * is the semantic `validate()` in 8zs.4, NOT enforced by this shape schema.
  * `day` is v1.0's literal `null` — day-of-week assignment is v2.0 scope.
+ *
+ * `side` (bd meal-planner-8zs.8) is an OPTIONAL side dish paired with this
+ * main ("we make this with cornbread"). It is DISTINCT from a
+ * `veg.kind:"second_dish"` (an accompaniment for everyone vs. the vegetarian
+ * daughter's substitute main) — both may appear on one meal. Its `recipe_id`
+ * must be a member of the sides pool and vegetarian, and paired sides are
+ * capped week-wide — all enforced by the semantic `validate()`, not this
+ * shape schema.
  */
 export const SelectedMealSchema = z
   .object({
@@ -58,6 +66,10 @@ export const SelectedMealSchema = z
     veg: VegPathSchema,
     flags: z.array(z.string()),
     rationale: z.string(),
+    side: z
+      .object({ recipe_id: z.string(), title: z.string() })
+      .strict()
+      .optional(),
   })
   .strict();
 export type SelectedMeal = z.infer<typeof SelectedMealSchema>;

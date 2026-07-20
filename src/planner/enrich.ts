@@ -28,11 +28,15 @@ import { SelectedMealSchema, type WeekPlan } from "./select.js";
  * null`, no passthrough).
  *
  * A `SelectedMeal` with its full `Recipe` attached, plus (for a
- * `veg.kind:"second_dish"` meal) the second dish's own `Recipe`.
+ * `veg.kind:"second_dish"` meal) the second dish's own `Recipe`, plus (for a
+ * meal with an optional paired `side`, bd meal-planner-8zs.8) the side's own
+ * `Recipe` as `sideRecipe` — carrying its full ingredient block for the later
+ * v4.0 grocery step (bd 0za) to consume.
  */
 export const EnrichedMealSchema = SelectedMealSchema.extend({
   recipe: RecipeSchema,
   secondDishRecipe: RecipeSchema.optional(),
+  sideRecipe: RecipeSchema.optional(),
 });
 export type EnrichedMeal = z.infer<typeof EnrichedMealSchema>;
 
@@ -85,7 +89,9 @@ async function fetchRecipe(
  * `getRecipe`, fetching concurrently (`Promise.all`) since this is ~5-6
  * independent reads with no ordering dependency between them. For a
  * `veg.kind:"second_dish"` meal, also fetches the second dish's `Recipe` as
- * `secondDishRecipe`.
+ * `secondDishRecipe`; for a meal with an optional paired `side` (8zs.8), also
+ * fetches the side's `Recipe` as `sideRecipe`. A missing/null `getRecipe`
+ * result for ANY of these ids fails loudly via `EnrichmentError`.
  */
 export async function enrichPlan(
   plan: WeekPlan,
@@ -95,16 +101,22 @@ export async function enrichPlan(
 
   const meals = await Promise.all(
     plan.meals.map(async (meal): Promise<EnrichedMeal> => {
-      const [recipe, secondDishRecipe] = await Promise.all([
+      const [recipe, secondDishRecipe, sideRecipe] = await Promise.all([
         fetchRecipe(meal.recipe_id, getRecipe),
         meal.veg.kind === "second_dish"
           ? fetchRecipe(meal.veg.recipe_id, getRecipe)
           : Promise.resolve(undefined),
+        meal.side
+          ? fetchRecipe(meal.side.recipe_id, getRecipe)
+          : Promise.resolve(undefined),
       ]);
 
-      return secondDishRecipe !== undefined
-        ? { ...meal, recipe, secondDishRecipe }
-        : { ...meal, recipe };
+      return {
+        ...meal,
+        recipe,
+        ...(secondDishRecipe !== undefined ? { secondDishRecipe } : {}),
+        ...(sideRecipe !== undefined ? { sideRecipe } : {}),
+      };
     }),
   );
 
