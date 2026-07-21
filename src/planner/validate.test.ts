@@ -13,6 +13,7 @@ import {
   buildRepairPrompt,
   buildShapeRepairPrompt,
   InsufficientPoolError,
+  normalizeUntestedFlags,
   PlanValidationError,
   selectValidatedPlan,
   type ValidatePlanConfig,
@@ -466,6 +467,89 @@ describe("validateWeekPlan", () => {
   });
 });
 
+describe("normalizeUntestedFlags", () => {
+  it("adds the untested flag when the own-pool candidate is untested and the flag is missing", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [meal({ recipe_id: "wn-untested", flags: [] }), relaxedMeal()],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).toEqual(["untested"]);
+  });
+
+  it("does not duplicate an already-present untested flag on an untested candidate", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-untested", flags: ["untested"] }),
+        relaxedMeal(),
+      ],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).toEqual(["untested"]);
+  });
+
+  it("strips a stray untested flag when the candidate is NOT untested", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-veg", flags: ["untested"] }),
+        relaxedMeal(),
+      ],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).not.toContain("untested");
+  });
+
+  it("preserves other flags when adding the untested flag", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-untested", flags: ["make_ahead"] }),
+        relaxedMeal(),
+      ],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).toEqual(["make_ahead", "untested"]);
+  });
+
+  it("preserves other flags when stripping a stray untested flag", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "wn-veg", flags: ["make_ahead", "untested"] }),
+        relaxedMeal(),
+      ],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).toEqual(["make_ahead"]);
+  });
+
+  it("leaves a hallucinated (out-of-pool) meal's flags untouched", () => {
+    // recipe_id not in the weeknight pool: the membership check reports this;
+    // normalization must not add or strip the flag on an id it can't resolve.
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [
+        meal({ recipe_id: "does-not-exist", flags: ["untested"] }),
+        relaxedMeal(),
+      ],
+    };
+    const result = normalizeUntestedFlags(plan, pools());
+    expect(result.meals[0].flags).toEqual(["untested"]);
+  });
+
+  it("does not mutate the input plan", () => {
+    const plan: WeekPlan = {
+      week_key: "2026-W29",
+      meals: [meal({ recipe_id: "wn-untested", flags: [] }), relaxedMeal()],
+    };
+    const snapshot = structuredClone(plan);
+    normalizeUntestedFlags(plan, pools());
+    expect(plan).toEqual(snapshot);
+  });
+});
+
 describe("buildRepairPrompt", () => {
   it("includes the previous plan and every issue, and stays a bounded single string", () => {
     const input = plannerInput();
@@ -531,19 +615,36 @@ describe("selectValidatedPlan", () => {
     expect(llm.runQuery).toHaveBeenCalledTimes(2);
   });
 
-  it("repairs a plan whose untested candidate is missing its flag", async () => {
-    const badPlan = validPlan();
-    badPlan.meals[0] = meal({ recipe_id: "wn-untested", flags: [] });
-    const goodPlan = validPlan();
+  it("normalizes a missing untested flag from ground truth and validates on the FIRST call (no repair, 6d3)", async () => {
+    // The 6d3 bug: the model selected an untested candidate but omitted the
+    // cosmetic "untested" flag. Normalization now reconciles it from the pool
+    // candidate's quality before validation, so the plan passes on call 1 (no
+    // PlanValidationError, no repair) AND the returned plan carries the flag.
+    const rawPlan = validPlan();
+    rawPlan.meals[0] = meal({ recipe_id: "wn-untested", flags: [] });
 
-    const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
+    const llm = makeFakeLlm(JSON.stringify(rawPlan));
 
     const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
       llm,
     });
 
-    expect(plan).toEqual(goodPlan);
-    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+    expect(llm.runQuery).toHaveBeenCalledTimes(1);
+    expect(plan.meals[0].flags).toContain("untested");
+  });
+
+  it("strips a spurious untested flag on a rated candidate and validates on the FIRST call (no repair, 6d3)", async () => {
+    const rawPlan = validPlan();
+    rawPlan.meals[0] = meal({ recipe_id: "wn-veg", flags: ["untested"] });
+
+    const llm = makeFakeLlm(JSON.stringify(rawPlan));
+
+    const plan = await selectValidatedPlan(plannerInput(), pools(), cfg, {
+      llm,
+    });
+
+    expect(llm.runQuery).toHaveBeenCalledTimes(1);
+    expect(plan.meals[0].flags).not.toContain("untested");
   });
 
   it("repairs a plan whose paired side is non-vegetarian, via the SAME single-repair path (8zs.8)", async () => {

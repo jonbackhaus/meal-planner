@@ -173,6 +173,52 @@ function checkMealsIndividually(
 }
 
 /**
+ * Reconciles the `"untested"` render hint from ground truth (bd
+ * meal-planner-6d3). The `"untested"` flag is a PURE presentation hint that is
+ * DERIVABLE from the chosen pool candidate's `quality` — which
+ * `checkMealsIndividually` and `checkUntestedCount` already treat as ground
+ * truth — so a non-deterministic LLM omission (or over-claim) of the cosmetic
+ * flag should be auto-reconciled, NOT hard-failed on the weekly critical path.
+ *
+ * Returns a NEW plan (never mutating `plan`) where, for each meal whose OWN
+ * candidate is found in its matching pool (weeknight for `constrained`, weekend
+ * for `relaxed` — the SAME lookup the validator uses):
+ *  - candidate `quality === "untested"` → ensure `"untested"` IS in `flags`
+ *    (append if missing; never duplicate);
+ *  - candidate `quality !== "untested"` → ensure `"untested"` is NOT in `flags`
+ *    (strip a stray one).
+ * A meal whose id isn't in the matching pool (a hallucinated id) is left
+ * untouched — the membership check already reports that. Every other flag and
+ * meal field is preserved exactly, and flag order is preserved aside from the
+ * single add/remove.
+ */
+export function normalizeUntestedFlags(plan: WeekPlan, pools: Pools): WeekPlan {
+  const meals = plan.meals.map((meal) => {
+    const { pool } = poolForSlot(pools, meal.slot_type);
+    const ownCandidate = findInPool(pool, meal.recipe_id);
+    if (!ownCandidate) {
+      return meal;
+    }
+
+    const isUntested = ownCandidate.quality === "untested";
+    const flagged = meal.flags.includes("untested");
+
+    if (isUntested && !flagged) {
+      return { ...meal, flags: [...meal.flags, "untested"] };
+    }
+    if (!isUntested && flagged) {
+      return {
+        ...meal,
+        flags: meal.flags.filter((flag) => flag !== "untested"),
+      };
+    }
+    return meal;
+  });
+
+  return { ...plan, meals };
+}
+
+/**
  * No-duplicates check: a recipe id may appear at most once across ALL
  * `recipe_id` + `second_dish.recipe_id` + `side.recipe_id` values in the week
  * (a paired side can't duplicate a main, a second_dish, or another side —
@@ -567,7 +613,10 @@ export async function selectValidatedPlan(
       error.message,
     );
     const repairedText = await runSelectionQuery(repairPrompt, deps);
-    const repairedPlan = parseSelectionResponse(repairedText);
+    const repairedPlan = normalizeUntestedFlags(
+      parseSelectionResponse(repairedText),
+      pools,
+    );
     const repairIssues = validateWeekPlan(repairedPlan, pools, cfg);
     if (repairIssues.length > 0) {
       throw new PlanValidationError(repairIssues);
@@ -575,15 +624,21 @@ export async function selectValidatedPlan(
     return repairedPlan;
   }
 
-  // Initial call parsed cleanly. SEMANTIC path (unchanged): spend the ONE shared
-  // repair budget on a semantic-repair re-prompt if code validation finds issues.
-  const issues = validateWeekPlan(plan, pools, cfg);
+  // Initial call parsed cleanly. SEMANTIC path: reconcile the derivable
+  // "untested" render hint from ground-truth pool quality (bd meal-planner-6d3)
+  // BEFORE validating, so a cosmetic flag omission/over-claim is auto-fixed
+  // rather than burning the ONE repair budget or hard-failing the week.
+  const normalizedPlan = normalizeUntestedFlags(plan, pools);
+  const issues = validateWeekPlan(normalizedPlan, pools, cfg);
   if (issues.length === 0) {
-    return plan;
+    return normalizedPlan;
   }
 
-  const repairPrompt = buildRepairPrompt(input, plan, issues);
-  const repairedPlan = await llmSelectFromPrompt(repairPrompt, deps);
+  const repairPrompt = buildRepairPrompt(input, normalizedPlan, issues);
+  const repairedPlan = normalizeUntestedFlags(
+    await llmSelectFromPrompt(repairPrompt, deps),
+    pools,
+  );
   const repairIssues = validateWeekPlan(repairedPlan, pools, cfg);
   if (repairIssues.length === 0) {
     return repairedPlan;
