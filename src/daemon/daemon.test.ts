@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config/config.js";
+import type { ProfileSettings } from "../config/profile.js";
+import { composeDaemon } from "../orchestrator/compose.js";
+import { SessionStore } from "../orchestrator/session-store.js";
 import type { Secrets } from "../secrets/secrets.js";
 
 vi.mock("./system-check.js", () => ({
@@ -256,5 +259,83 @@ describe("runDaemon", () => {
     expect(logger.warn).not.toHaveBeenCalled();
 
     await handle.shutdown();
+  });
+
+  describe("dev fireOnStart + startup catch-up overlap (bd meal-planner-8o3)", () => {
+    // The real, unmocked composeDaemon `{ onStartup, onTrigger }` wired
+    // together (not fakes) -- reproduces the actual reported defect: a dev
+    // boot past the weekly trigger with no session row yet, so onStartup's
+    // catch-up generates+posts, and then MP_FIRE_ON_START's test-fire
+    // (`fireOnStart: true`) re-fires the SAME onTrigger for the SAME week
+    // moments later. Before the fix, dev's `forceRegenerate: true` made that
+    // second call bypass generateForWeek's idempotency gate and collide with
+    // the row catch-up had just inserted (`UNIQUE constraint failed:
+    // session.week_key`), which runDaemon's fireOnStart handler then surfaced
+    // as a scary "Startup test-fire (fireOnStart) failed" #agent-alert even
+    // though the week generated and posted successfully.
+    const WEEK = "2026-07-12";
+    const TRIGGER_INSTANT = "2026-07-12T11:00:00.000Z"; // 06:00 America/Chicago (CDT)
+
+    function fakeProfile(
+      overrides: Partial<ProfileSettings> = {},
+    ): ProfileSettings {
+      return {
+        profile: "dev",
+        channelId: "C123",
+        sqlitePath: ":memory:",
+        forceRegenerate: true,
+        postMode: "dry-run",
+        ...overrides,
+      };
+    }
+
+    it("a successful catch-up-then-fireOnStart boot posts once and never fires the misleading failure alert", async () => {
+      const store = new SessionStore({ path: ":memory:" });
+      const config = fakeConfig();
+      const profile = fakeProfile();
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const buildPlan = vi.fn(async (weekKey: string) => ({
+        week_key: weekKey,
+        meals: [],
+      }));
+      const resumeQuietly = vi.fn(() => {});
+      const alert = vi.fn(async () => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+      const proc = new FakeProcess();
+      const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      const { onStartup, onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+      });
+
+      const handle = await runDaemon({
+        config,
+        secrets: fakeSecrets(),
+        onStartup,
+        onTrigger,
+        alert,
+        fireOnStart: true,
+        process: proc as unknown as NodeJS.Process,
+        logger,
+      });
+
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(store.get(WEEK)?.status).toBe("suggested");
+      // The genuine fix under test: no misleading failure alert/log.
+      expect(alert).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+
+      await handle.shutdown();
+      store.close();
+    });
   });
 });
