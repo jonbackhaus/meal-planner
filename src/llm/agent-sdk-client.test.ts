@@ -2,7 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config/config.js";
 import { createLlmClient } from "./agent-sdk-client.js";
-import { LlmCallError } from "./llm-client.js";
+import { LlmCallError, LlmTimeoutError } from "./llm-client.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
@@ -11,11 +11,14 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 const queryMock = vi.mocked(query);
 
 function baseConfig(
-  overrides: Partial<Pick<Config, "model" | "effort">> = {},
-): Pick<Config, "model" | "effort"> {
+  overrides: Partial<
+    Pick<Config, "model" | "effort" | "llmCallTimeoutMs">
+  > = {},
+): Pick<Config, "model" | "effort" | "llmCallTimeoutMs"> {
   return {
     model: "claude-sonnet-5",
     effort: "high",
+    llmCallTimeoutMs: 240_000,
     ...overrides,
   };
 }
@@ -544,6 +547,103 @@ describe("createLlmClient / AgentSdkLlmClient", () => {
       const err = caught as LlmCallError;
       expect(err.usage).toEqual({ inputTokens: 500, outputTokens: 10 });
       expect(err.message).toMatch(/boom/);
+    });
+  });
+
+  describe("per-call timeout (bd meal-planner-qjk)", () => {
+    /**
+     * A `Query` that never yields a terminal message — simulates the observed
+     * go-live failure mode: the SDK subprocess keeps reconnecting/retrying
+     * during a transient API rough patch and the stream just hangs forever.
+     * Optionally yields some `assistant` turns first so partial usage can be
+     * asserted on the resulting `LlmTimeoutError`.
+     */
+    function fakeQueryThatHangs(messages: unknown[] = []) {
+      async function* generator() {
+        for (const message of messages) {
+          yield message;
+        }
+        // Never resolves -- nothing further is ever yielded.
+        await new Promise<never>(() => {});
+      }
+      return generator() as unknown as ReturnType<typeof query>;
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("throws LlmTimeoutError once llmCallTimeoutMs elapses on a wedged call, and aborts the SDK stream", async () => {
+      vi.useFakeTimers();
+      queryMock.mockReturnValue(fakeQueryThatHangs());
+
+      const client = createLlmClient(baseConfig({ llmCallTimeoutMs: 60_000 }));
+      const pending = client.runQuery({ prompt: "hello" });
+      // A promise rejection under fake timers must be observed/attached before
+      // the timers advance, or Node/Vitest can flag it as unhandled.
+      const assertion = expect(pending).rejects.toBeInstanceOf(LlmTimeoutError);
+
+      // Do NOT actually wait 60s (or any wall-clock time) -- fake timers let
+      // us fast-forward instantly.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+
+      const [{ options }] = queryMock.mock.calls[0];
+      // The adapter must abort the SDK's own AbortController so the
+      // subprocess/stream actually tears down rather than leaking.
+      expect(options?.abortController?.signal.aborted).toBe(true);
+    });
+
+    it("carries partial usage from turns billed before the call wedged", async () => {
+      vi.useFakeTimers();
+      queryMock.mockReturnValue(
+        fakeQueryThatHangs([
+          {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "thinking..." }],
+              usage: { input_tokens: 100, output_tokens: 20 },
+            },
+          },
+        ]),
+      );
+
+      const client = createLlmClient(baseConfig({ llmCallTimeoutMs: 60_000 }));
+
+      let caught: unknown;
+      const pending = client.runQuery({ prompt: "hello" }).catch((error) => {
+        caught = error;
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await pending;
+
+      expect(caught).toBeInstanceOf(LlmTimeoutError);
+      expect((caught as LlmTimeoutError).usage).toEqual({
+        inputTokens: 100,
+        outputTokens: 20,
+      });
+      // LlmTimeoutError IS an LlmCallError so it composes with fkg.9 metering.
+      expect(caught).toBeInstanceOf(LlmCallError);
+    });
+
+    it("does NOT time out a normal call that completes well under the bound", async () => {
+      vi.useFakeTimers();
+      // Resolves on its own microtask/timer well before the configured bound.
+      async function* generator() {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        yield { type: "result", subtype: "success", result: "done" };
+      }
+      queryMock.mockReturnValue(
+        generator() as unknown as ReturnType<typeof query>,
+      );
+
+      const client = createLlmClient(baseConfig({ llmCallTimeoutMs: 60_000 }));
+      const pending = client.runQuery({ prompt: "hello" });
+
+      await vi.advanceTimersByTimeAsync(5);
+      const result = await pending;
+
+      expect(result.text).toBe("done");
     });
   });
 });

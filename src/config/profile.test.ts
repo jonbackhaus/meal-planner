@@ -20,6 +20,7 @@ function baseConfig(profile: "dev" | "prod"): Config {
     maxPairedSides: 2,
     generationDollarCap: 2,
     triggerTimeoutMs: 2_700_000,
+    llmCallTimeoutMs: 240_000,
   };
 }
 

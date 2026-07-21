@@ -17,6 +17,7 @@ import { z } from "zod";
  * - MP_MAX_PAIRED_SIDES          -> maxPairedSides
  * - MP_GENERATION_DOLLAR_CAP      -> generationDollarCap
  * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
+ * - MP_LLM_CALL_TIMEOUT_MS        -> llmCallTimeoutMs
  * - MP_HEALTHCHECK_URL            -> healthcheckUrl (OPTIONAL; unset/empty = disabled)
  *
  * `modelRates` is not env-configurable (it's a map); it is seeded here with
@@ -142,6 +143,19 @@ const configSchema = z
       .number()
       .positive("triggerTimeoutMs must be a positive number")
       .default(45 * 60 * 1000),
+    // Per-call watchdog for a single `LlmClient.runQuery` (bd meal-planner-qjk).
+    // During a transient API rough patch the SDK subprocess can keep
+    // reconnecting/retrying and never yield a terminal message -- `runQuery`
+    // then neither resolves nor throws, and the ONLY backstop left is
+    // `triggerTimeoutMs` above (up to 45 min of silent hang per call). This
+    // must stay << triggerTimeoutMs so a wedged call fails fast and surfaces
+    // via the existing failed+alert path long before the whole-trigger
+    // watchdog would even notice. Default 4 min: generous for a real slow
+    // turn, short enough to distinguish "slow" from "wedged".
+    llmCallTimeoutMs: z
+      .number()
+      .positive("llmCallTimeoutMs must be a positive number")
+      .default(4 * 60 * 1000),
     // External dead-man switch (bd meal-planner-fkg.8, SPEC §9.4). When set,
     // the daemon pings this healthchecks.io-style URL on each successful weekly
     // trigger (and its `<url>/fail` sub-path on a caught generation failure) so
@@ -222,6 +236,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxPairedSides: optionalNumber(env.MP_MAX_PAIRED_SIDES),
     generationDollarCap: optionalNumber(env.MP_GENERATION_DOLLAR_CAP),
     triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
+    llmCallTimeoutMs: optionalNumber(env.MP_LLM_CALL_TIMEOUT_MS),
     healthcheckUrl: optionalString(env.MP_HEALTHCHECK_URL),
   };
 
