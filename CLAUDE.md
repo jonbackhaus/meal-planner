@@ -97,6 +97,13 @@ pnpm sync                    # tsx src/sync-cli.ts (recipe sync CLI)
 
 Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context config (not hardcoded). Gotchas — manual thinking `budget_tokens` is rejected (use `effort`); non-default `temperature`/`top_p`/`top_k` are rejected; the new tokenizer runs ~1.0–1.35× higher token counts (size cost caps accordingly).
 
+**Local run & ops gotchas** (learned in the 2026-07-20 go-live):
+- **`.env` is NOT auto-loaded** (no dotenv) — `set -a; source ./.env; set +a` before `pnpm dev`/`pnpm sync`/`node dist/index.js`. launchd carries the same vars via the plist `EnvironmentVariables`, not your shell.
+- **macOS has no `timeout`** — bound a hangable command (`op`, sync, the daemon) with a background sleep-kill watchdog (`cmd & p=$!; (sleep N; kill -9 $p) & wait $p`), not `timeout`.
+- **A full recipe re-sync is expensive** — a note-reader/hash change invalidates the index, so the inline pre-gen sync re-processes the *whole* corpus and exceeds the default `MP_GENERATION_DOLLAR_CAP=2`; raise the cap for the one-time out-of-band `pnpm sync` backfill (RUNBOOK §6; bead a9e).
+- **launchd plist gotchas** — `PATH` must include `/opt/homebrew/bin` (else `op` isn't found → boot crash-loop), and it needs the *real* `OP_SERVICE_ACCOUNT_TOKEN` (not the template placeholder); the daemon's `node` needs Full Disk Access + Automation→Notes (TCC keys on the binary — re-grant after node/OS upgrades). RUNBOOK §0.1/§7.
+- **Verifying a worktree branch** — run gates *inside* the worktree dir; vitest launched from the repo root also globs `.claude/worktrees/*/` and doubles the test/file counts.
+
 ## Architecture Overview
 
 A **persistent local daemon** on the family Mac (not cloud — the recipe source is a local-only Apple Notes MCP with a local vector DB that cloud schedulers can't reach). Each Sunday it syncs recipes, drafts a weekly meal plan, and posts it to Slack `#meal-plan`. The full daemon architecture is built in v1.0 even though inbound interactivity doesn't land until v3.0 — a deliberate choice to avoid a later rewrite.

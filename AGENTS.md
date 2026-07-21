@@ -53,6 +53,15 @@ cp -rf source dest          # NOT: cp -r source dest
 - `apt-get` - use `-y` flag
 - `brew` - use `HOMEBREW_NO_AUTO_UPDATE=1` env var
 
+## Local Run & Ops Gotchas
+
+Learned in the 2026-07-20 go-live (mirrors the same block in CLAUDE.md):
+- **`.env` is NOT auto-loaded** (no dotenv) — `set -a; source ./.env; set +a` before `pnpm dev`/`pnpm sync`/`node dist/index.js`. launchd carries the same vars via the plist `EnvironmentVariables`, not your shell.
+- **macOS has no `timeout`** — bound a hangable command (`op`, sync, the daemon) with a background sleep-kill watchdog (`cmd & p=$!; (sleep N; kill -9 $p) & wait $p`), not `timeout`.
+- **A full recipe re-sync is expensive** — a note-reader/hash change invalidates the index, so the inline pre-gen sync re-processes the *whole* corpus and exceeds the default `MP_GENERATION_DOLLAR_CAP=2`; raise the cap for the one-time out-of-band `pnpm sync` backfill (RUNBOOK §6; bead a9e).
+- **launchd plist gotchas** — `PATH` must include `/opt/homebrew/bin` (else `op` isn't found → boot crash-loop), and it needs the *real* `OP_SERVICE_ACCOUNT_TOKEN` (not the template placeholder); the daemon's `node` needs Full Disk Access + Automation→Notes (TCC keys on the binary — re-grant after node/OS upgrades). RUNBOOK §0.1/§7.
+- **Verifying a worktree branch** — run gates *inside* the worktree dir; vitest launched from the repo root also globs `.claude/worktrees/*/` and doubles the test/file counts.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
