@@ -3,6 +3,8 @@ import type { Embedder } from "./embedder.js";
 import type { RawNote } from "./notes-reader.js";
 import { readNoteTags } from "./notes-tags.js";
 import {
+  countStaleNotes,
+  type StaleCount,
   type SyncResult,
   type SyncStore,
   type SyncStructuredStore,
@@ -52,5 +54,25 @@ export function runSync(
     structuredStore: deps.structuredStore,
     llm: deps.llm,
     readNoteTags: deps.readNoteTags ?? (() => readNoteTags()),
+  });
+}
+
+/**
+ * Cheaply pre-counts how many notes a `runSync` pass over the same
+ * collaborators would (re-)embed/re-extract (bd meal-planner-a9e), WITHOUT
+ * doing that expensive work — no `embedder`/`llm` needed. The daemon consults
+ * this BEFORE running `runSync` inline so a mass hash-invalidation (a
+ * note-reader/hash change, or a long Notes outage) can be detected and
+ * alerted on rather than run for hours inline. See `countStaleNotes` (sync.ts)
+ * for the gate logic this mirrors.
+ */
+export function countStale(
+  deps: Pick<RunSyncDeps, "readNotes" | "vectorStore" | "structuredStore">,
+  opts: RunSyncOptions = {},
+): Promise<StaleCount> {
+  return countStaleNotes({
+    readNotes: () => deps.readNotes({ folderName: opts.folderName }),
+    store: deps.vectorStore,
+    structuredStore: deps.structuredStore,
   });
 }

@@ -12,7 +12,7 @@ import {
   makeFatalHandler,
 } from "./index.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
-import type { SyncResult } from "./recipe-mcp/sync.js";
+import type { StaleCount, SyncResult } from "./recipe-mcp/sync.js";
 import type { Secrets } from "./secrets/secrets.js";
 
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -395,5 +395,130 @@ describe("makeBuildPlanWithSync", () => {
     const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
 
     await expect(fn("2026-07-12")).resolves.toBe(PLAN);
+  });
+
+  describe("mass-stale-sync budget guard (bd meal-planner-a9e)", () => {
+    function staleCount(stale: number, total = 764): StaleCount {
+      return { total, stale };
+    }
+
+    it("skips the inline sync, alerts with count + resync guidance, and proceeds against the existing index when stale count exceeds the threshold", async () => {
+      const runSync = vi.fn(async () => okSyncResult());
+      const countStale = vi.fn(async () => staleCount(694));
+      const buildPlan = vi.fn(async (_wk: string) => PLAN);
+      const alert = vi.fn(async (_message: string) => {});
+      const logger = { log: vi.fn(), warn: vi.fn() };
+
+      const fn = makeBuildPlanWithSync({
+        runSync,
+        countStale,
+        staleSyncThreshold: 50,
+        buildPlan,
+        alert,
+        logger,
+      });
+      const result = await fn("2026-07-19");
+
+      expect(result).toBe(PLAN);
+      expect(buildPlan).toHaveBeenCalledWith("2026-07-19");
+      // The expensive inline sync must NEVER be started (bd a9e's core guard).
+      expect(runSync).not.toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledTimes(1);
+      const message = alert.mock.calls[0]?.[0] ?? "";
+      expect(message).toContain("694");
+      expect(message).toContain("764");
+      expect(message).toMatch(/resync-recipes|RUNBOOK/i);
+      expect(message).toContain("2026-07-19");
+    });
+
+    it("runs the inline sync normally when the stale count is at or below the threshold", async () => {
+      const runSync = vi.fn(async () => okSyncResult());
+      const countStale = vi.fn(async () => staleCount(10));
+      const buildPlan = vi.fn(async (_wk: string) => PLAN);
+      const alert = vi.fn(async () => {});
+      const logger = { log: vi.fn(), warn: vi.fn() };
+
+      const fn = makeBuildPlanWithSync({
+        runSync,
+        countStale,
+        staleSyncThreshold: 50,
+        buildPlan,
+        alert,
+        logger,
+      });
+      const result = await fn("2026-07-19");
+
+      expect(result).toBe(PLAN);
+      expect(runSync).toHaveBeenCalledTimes(1);
+      expect(buildPlan).toHaveBeenCalledWith("2026-07-19");
+      expect(alert).not.toHaveBeenCalled();
+    });
+
+    it("respects a config-driven (non-hardcoded) threshold override", async () => {
+      const runSyncBelow = vi.fn(async () => okSyncResult());
+      const fnLowThreshold = makeBuildPlanWithSync({
+        runSync: runSyncBelow,
+        countStale: vi.fn(async () => staleCount(60)),
+        staleSyncThreshold: 50,
+        buildPlan: vi.fn(async (_wk: string) => PLAN),
+        alert: vi.fn(async () => {}),
+        logger: { log: vi.fn(), warn: vi.fn() },
+      });
+      await fnLowThreshold("2026-07-19");
+      // 60 > 50 -> guard trips, inline sync skipped.
+      expect(runSyncBelow).not.toHaveBeenCalled();
+
+      const runSyncHigh = vi.fn(async () => okSyncResult());
+      const fnHighThreshold = makeBuildPlanWithSync({
+        runSync: runSyncHigh,
+        countStale: vi.fn(async () => staleCount(60)),
+        staleSyncThreshold: 1000,
+        buildPlan: vi.fn(async (_wk: string) => PLAN),
+        alert: vi.fn(async () => {}),
+        logger: { log: vi.fn(), warn: vi.fn() },
+      });
+      await fnHighThreshold("2026-07-19");
+      // Same stale count, but the (overridden) threshold is now well above it.
+      expect(runSyncHigh).toHaveBeenCalledTimes(1);
+    });
+
+    it("falls back to running the normal inline sync when the pre-count itself fails", async () => {
+      const runSync = vi.fn(async () => okSyncResult());
+      const countStale = vi.fn(async () => {
+        throw new Error("Notes not authorized");
+      });
+      const buildPlan = vi.fn(async (_wk: string) => PLAN);
+      const alert = vi.fn(async () => {});
+      const logger = { log: vi.fn(), warn: vi.fn() };
+
+      const fn = makeBuildPlanWithSync({
+        runSync,
+        countStale,
+        staleSyncThreshold: 50,
+        buildPlan,
+        alert,
+        logger,
+      });
+      const result = await fn("2026-07-19");
+
+      expect(result).toBe(PLAN);
+      expect(runSync).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("stale-recipe pre-count failed"),
+      );
+    });
+
+    it("never consults the threshold guard when countStale is omitted (back-compat: always syncs inline)", async () => {
+      const runSync = vi.fn(async () => okSyncResult());
+      const buildPlan = vi.fn(async (_wk: string) => PLAN);
+      const alert = vi.fn(async () => {});
+      const logger = { log: vi.fn(), warn: vi.fn() };
+
+      const fn = makeBuildPlanWithSync({ runSync, buildPlan, alert, logger });
+      await fn("2026-07-19");
+
+      expect(runSync).toHaveBeenCalledTimes(1);
+      expect(alert).not.toHaveBeenCalled();
+    });
   });
 });

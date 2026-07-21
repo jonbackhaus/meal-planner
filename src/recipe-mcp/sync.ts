@@ -353,3 +353,70 @@ export async function syncNotes(deps: SyncDeps): Promise<SyncResult> {
     suspiciousEmptyRead,
   };
 }
+
+/** Result of {@link countStaleNotes}: how many notes a real `syncNotes` pass would (re-)process. */
+export interface StaleCount {
+  /** Total notes read from the source. */
+  total: number;
+  /** Notes that would be (re-)embedded and/or re-extracted — the expensive work (bd meal-planner-a9e). */
+  stale: number;
+}
+
+/** Minimal collaborators {@link countStaleNotes} needs — no embedder/llm, since it never does the expensive work. */
+export interface CountStaleDeps {
+  readNotes: () => Promise<RawNote[]>;
+  store: Pick<SyncStore, "getStoredHash">;
+  structuredStore: Pick<SyncStructuredStore, "getStructured">;
+}
+
+/**
+ * Cheaply counts how many notes a real `syncNotes` pass would re-embed and/or
+ * re-extract, WITHOUT doing any of that expensive work (bd meal-planner-a9e).
+ * Mirrors `syncNotes`'s two hash gates exactly (embeddableTextHash for
+ * embedding, body contentHash + extractor version + needsReview/attempt-cap
+ * for extraction) so the count matches what a real sync would actually do,
+ * but only hashes/reads — no `embedder.embed` or `extractRecipeFields` calls.
+ *
+ * Deliberately duplicates (rather than shares mutable state with) `syncNotes`'s
+ * per-note gate logic: keeping this a pure read-only pass, independent of the
+ * write-side loop, means it can never accidentally mutate the stores it's
+ * only supposed to be inspecting.
+ *
+ * A note counts as `stale` if EITHER gate is stale (a note needing only a
+ * title re-embed and a note needing only re-extraction both count once) —
+ * intentionally an upper bound on affected notes for the threshold check this
+ * feeds, not an exact operation count.
+ */
+export async function countStaleNotes(
+  deps: CountStaleDeps,
+): Promise<StaleCount> {
+  const notes = await deps.readNotes();
+  let stale = 0;
+
+  for (const note of notes) {
+    const embedHash = embeddableTextHash(note);
+    const storedHash = deps.store.getStoredHash(note.id);
+    const needsEmbed = storedHash !== embedHash;
+
+    const bodyHash = contentHash(note);
+    const structured = deps.structuredStore.getStructured(note.id);
+    const priorFailures =
+      structured !== null &&
+      structured.contentHash === bodyHash &&
+      structured.extractorVersion === EXTRACTOR_VERSION
+        ? (structured.failedAttempts ?? 0)
+        : 0;
+    const cappedOut = priorFailures >= MAX_EXTRACTION_ATTEMPTS;
+    const needsExtraction =
+      structured === null ||
+      structured.contentHash !== bodyHash ||
+      structured.extractorVersion !== EXTRACTOR_VERSION ||
+      (structured.needsReview && !cappedOut);
+
+    if (needsEmbed || needsExtraction) {
+      stale += 1;
+    }
+  }
+
+  return { total: notes.length, stale };
+}

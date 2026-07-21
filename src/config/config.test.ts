@@ -30,6 +30,7 @@ describe("loadConfig", () => {
       untestedRate: 0.15,
       maxPairedSides: 2,
       generationDollarCap: 2,
+      staleSyncThreshold: 50,
       triggerTimeoutMs: 2_700_000,
       llmCallTimeoutMs: 240_000,
     });
@@ -66,6 +67,21 @@ describe("loadConfig", () => {
     const config = loadConfig(validEnv({ MP_LLM_CALL_TIMEOUT_MS: "60000" }));
 
     expect(config.llmCallTimeoutMs).toBe(60_000);
+  });
+
+  it("applies a MP_STALE_SYNC_THRESHOLD override", () => {
+    const config = loadConfig(validEnv({ MP_STALE_SYNC_THRESHOLD: "100" }));
+
+    expect(config.staleSyncThreshold).toBe(100);
+  });
+
+  it("throws when staleSyncThreshold is negative or not an integer", () => {
+    expect(() =>
+      loadConfig(validEnv({ MP_STALE_SYNC_THRESHOLD: "-1" })),
+    ).toThrowError(/staleSyncThreshold/i);
+    expect(() =>
+      loadConfig(validEnv({ MP_STALE_SYNC_THRESHOLD: "1.5" })),
+    ).toThrowError(/staleSyncThreshold/i);
   });
 
   it("throws when llmCallTimeoutMs is not a positive number", () => {
