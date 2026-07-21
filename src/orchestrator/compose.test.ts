@@ -492,4 +492,88 @@ describe("composeDaemon", () => {
       expect(store.get(WEEK)?.status).toBe("failed");
     });
   });
+
+  describe("onStartup catch-up <-> fireOnStart overlap (bd meal-planner-8o3)", () => {
+    it("dev boot past the trigger, no row: onStartup's catch-up generates, then a same-boot onTrigger (fireOnStart, force:true) for the SAME week does NOT re-throw a PK collision -- it cleanly skips", async () => {
+      store = makeStore();
+      const config = makeConfig();
+      // dev: forceRegenerate true, exactly the profile that bypasses
+      // generateForWeek's idempotency gate and previously collided with the
+      // row onStartup's catch-up had just inserted.
+      const profile = makeProfile({ forceRegenerate: true });
+      const builtPlan = makePlan(WEEK);
+      const buildPlan = vi.fn(async () => builtPlan);
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      // Same clock reading for both calls -- mirrors runDaemon calling
+      // onStartup() then (fireOnStart) triggerNow() back-to-back at boot.
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+
+      const { onStartup, onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+      });
+
+      // 1. onStartup's catch-up: no row yet, past the trigger -> generates.
+      await onStartup();
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(store.get(WEEK)?.status).toBe("suggested");
+
+      // 2. fireOnStart's test-fire, same boot, same week: must NOT throw and
+      // must NOT re-generate/re-post (idempotency-aware, not a real error).
+      await expect(onTrigger()).resolves.toBeUndefined();
+      expect(buildPlan).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(alert).not.toHaveBeenCalled();
+      expect(store.get(WEEK)?.status).toBe("suggested");
+    });
+
+    it("the suppression is single-use: a THIRD call (an unrelated later force+existing-row collision) still throws normally", async () => {
+      store = makeStore();
+      const config = makeConfig();
+      const profile = makeProfile({ forceRegenerate: true });
+      const buildPlan = vi.fn(async () => makePlan(WEEK));
+      const post = vi.fn(async () => ({ ts: "dryrun-1" }));
+      const alert = vi.fn(async () => {});
+      const resumeQuietly = vi.fn((_row: Session) => {});
+      const nowDate = () => new Date(TRIGGER_INSTANT);
+      const nowIso = () => "2026-07-12T06:00:00.000Z";
+
+      const { onStartup, onTrigger } = composeDaemon({
+        config,
+        profile,
+        store,
+        buildPlan,
+        post,
+        alert,
+        resumeQuietly,
+        nowDate,
+        nowIso,
+      });
+
+      // 1. onStartup catch-up generates WEEK.
+      await onStartup();
+      // 2. fireOnStart's test-fire: suppressed cleanly (the fix), and
+      // consumes the one-shot suppression.
+      await expect(onTrigger()).resolves.toBeUndefined();
+
+      // 3. A later, unrelated onTrigger() call for the SAME still-`suggested`
+      // row (e.g. an operator's manual triggerNow(), or the row simply never
+      // having advanced past `suggested`) is NOT this boot's catch-up
+      // overlap -- dev's force:true still bypasses the idempotency gate and
+      // still hits the PK constraint exactly as before. This proves the fix
+      // does not weaken the general force+existing-row throw contract.
+      await expect(onTrigger()).rejects.toThrow();
+      expect(alert).not.toHaveBeenCalled(); // composeDaemon itself never alerts; that's the caller's (daemon.ts's) job
+    });
+  });
 });
