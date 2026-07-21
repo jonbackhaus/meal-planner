@@ -21,6 +21,9 @@ data/
 data/backups/
 *.bak
 
+# Runtime daemon logs (launchd StandardOut/ErrPath, RUNBOOK §7)
+logs/
+
 # Local secret/env files (never commit real tokens); .env.example is safe
 .env
 *.env
