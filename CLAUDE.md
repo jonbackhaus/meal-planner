@@ -97,6 +97,12 @@ pnpm sync                    # tsx src/sync-cli.ts (recipe sync CLI)
 
 Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context config (not hardcoded). Gotchas — manual thinking `budget_tokens` is rejected (use `effort`); non-default `temperature`/`top_p`/`top_k` are rejected; the new tokenizer runs ~1.0–1.35× higher token counts (size cost caps accordingly).
 
+**Local run & ops gotchas** (learned in the 2026-07-20 go-live):
+- **`.env` auto-loads for `pnpm dev`/`pnpm sync`** (the scripts pass `--env-file-if-exists=.env`) — but a hand-run *built* daemon (`node dist/index.js`) does not; `set -a; source ./.env; set +a` first. launchd carries the same vars via the plist `EnvironmentVariables`, not your shell.
+- **macOS has no `timeout`** — bound a hangable command (`op`, sync, the daemon) with a background sleep-kill watchdog (`cmd & p=$!; (sleep N; kill -9 $p) & wait $p`), not `timeout`.
+- **A full recipe re-sync is expensive** — a note-reader/hash change invalidates the index, so the whole corpus re-processes and exceeds the default `MP_GENERATION_DOLLAR_CAP=2`. Use the **`/resync-recipes`** skill (`.claude/skills/resync-recipes/`), which raises the cap for the one-off out-of-band `pnpm sync` and runs it under a watchdog (RUNBOOK §6; bead a9e).
+- **launchd plist gotchas** — `PATH` must include `/opt/homebrew/bin` (else `op` isn't found → boot crash-loop), and it needs the *real* `OP_SERVICE_ACCOUNT_TOKEN` (not the template placeholder); the daemon's `node` needs Full Disk Access + Automation→Notes (TCC keys on the binary — re-grant after node/OS upgrades). RUNBOOK §0.1/§7.
+
 ## Architecture Overview
 
 A **persistent local daemon** on the family Mac (not cloud — the recipe source is a local-only Apple Notes MCP with a local vector DB that cloud schedulers can't reach). Each Sunday it syncs recipes, drafts a weekly meal plan, and posts it to Slack `#meal-plan`. The full daemon architecture is built in v1.0 even though inbound interactivity doesn't land until v3.0 — a deliberate choice to avoid a later rewrite.
@@ -129,3 +135,18 @@ Invariants pulled from the design docs — preserve these when implementing:
 - **dev/prod profile** (SPEC §7): a single `--profile dev|prod` switch bundles settings that must move together — target channel **ID** (never a name lookup), a **separate** SQLite path for dev, force-regenerate (on in dev), and post-vs-dry-run.
 - **Slack** is outbound-only via the Web API (`chat:write`) through v2.0; Socket Mode + the app-level token are a v3.0 addition — do not front-load them.
 - Nullable `day` field is carried through v1.0 schemas (unused until v2.0 calendar assignment) so v2.0/v3.0 are purely additive.
+
+## Non-Interactive Shell Commands
+
+**ALWAYS use non-interactive flags** with file operations to avoid hanging on confirmation prompts. `cp`, `mv`, and `rm` may be aliased to `-i` (interactive) mode on some systems, causing the agent to hang indefinitely waiting for y/n input.
+
+```bash
+# Force overwrite / delete without prompting
+cp -f source dest           # NOT: cp source dest
+mv -f source dest           # NOT: mv source dest
+rm -f file                  # NOT: rm file
+rm -rf directory            # NOT: rm -r directory
+cp -rf source dest          # NOT: cp -r source dest
+```
+
+Other commands that may prompt: `scp`/`ssh` → `-o BatchMode=yes`; `apt-get` → `-y`; `brew` → `HOMEBREW_NO_AUTO_UPDATE=1`.
