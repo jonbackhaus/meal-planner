@@ -21,8 +21,8 @@ import { getRecipe } from "./recipe-mcp/get-recipe.js";
 import { readNotes } from "./recipe-mcp/notes-reader.js";
 import { searchRecipes } from "./recipe-mcp/search.js";
 import { StructuredStore } from "./recipe-mcp/structured-store.js";
-import type { SyncResult } from "./recipe-mcp/sync.js";
-import { runSync } from "./recipe-mcp/sync-runner.js";
+import type { StaleCount, SyncResult } from "./recipe-mcp/sync.js";
+import { countStale, runSync } from "./recipe-mcp/sync-runner.js";
 import { VectorStore } from "./recipe-mcp/vector-store.js";
 import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
@@ -261,16 +261,39 @@ export function makeFatalHandler(
 }
 
 /**
- * Injected deps for {@link makeBuildPlanWithSync}. `runSync` and `buildPlan`
- * are pre-bound (folder/config already applied); `alert` is the never-throwing
- * composite from {@link buildAlert}.
+ * Rough, LABELLED-APPROXIMATE per-recipe extraction cost/time (bd
+ * meal-planner-a9e), used ONLY to size the mass-stale-sync ALERT message
+ * below — never for cap enforcement (that stays `generationDollarCap` /
+ * `CostMeter`). Order-of-magnitude from the go-live mass-invalidation
+ * incident this bead was filed from (694 stale recipes, ~$14 / a few hours
+ * inline; see `.claude/skills/resync-recipes/` and docs/RUNBOOK.md §6).
+ */
+const ESTIMATED_COST_PER_RECIPE_USD = 0.02;
+const ESTIMATED_SECONDS_PER_RECIPE = 20;
+
+/**
+ * Injected deps for {@link makeBuildPlanWithSync}. `runSync`, `countStale`,
+ * and `buildPlan` are pre-bound (folder/config already applied); `alert` is
+ * the never-throwing composite from {@link buildAlert}.
+ *
+ * `countStale` and `staleSyncThreshold` are OPTIONAL (bd meal-planner-a9e):
+ * omitting `countStale` always runs the inline sync unconditionally, matching
+ * this function's pre-a9e behavior (and keeping callers/tests that don't care
+ * about the threshold gate unchanged).
  */
 export interface BuildPlanWithSyncDeps {
   runSync: () => Promise<SyncResult>;
   buildPlan: (weekKey: string) => Promise<EnrichedWeekPlan>;
   alert: (message: string) => Promise<void>;
   logger?: Pick<Console, "log" | "warn">;
+  /** Cheap pre-count of stale notes (no embed/LLM) — see `countStaleNotes` (sync.ts). */
+  countStale?: () => Promise<StaleCount>;
+  /** Consulted only when `countStale` is provided. Default {@link DEFAULT_STALE_SYNC_THRESHOLD}. */
+  staleSyncThreshold?: number;
 }
+
+/** Fallback threshold when `staleSyncThreshold` isn't supplied to {@link makeBuildPlanWithSync} — mirrors `config.ts`'s `staleSyncThreshold` default. */
+export const DEFAULT_STALE_SYNC_THRESHOLD = 50;
 
 /**
  * Wraps the planner's `buildPlan(weekKey)` with a recipe-sync pass that runs
@@ -291,13 +314,72 @@ export interface BuildPlanWithSyncDeps {
  * isolated inside `syncNotes`
  * (ADR 0001) and don't reach here. The `alert` call is additionally guarded so
  * a broken alerter can never sink an otherwise-healthy generation.
+ *
+ * BEFORE any of the above, a mass-stale-sync budget guard (bd meal-planner-a9e):
+ * when `countStale` is supplied, it cheaply pre-counts how many notes the
+ * inline sync below would (re-)embed/re-extract — no embed/LLM calls, just
+ * hashing. Sync is normally hash-gated and near-free, but a mass
+ * hash-invalidation (a note-reader/hash change, or a long Notes outage) can
+ * leave hundreds of notes stale; re-processing each SEQUENTIALLY inline
+ * (~10-34s LLM call each) would run for hours, tripping `generationDollarCap`
+ * and/or blowing past the 45-min trigger watchdog (bd6.11) — FAILING the
+ * week. If the stale count exceeds `staleSyncThreshold`, the inline sync is
+ * SKIPPED entirely (never started), an actionable alert fires (count,
+ * approximate $/time, and the out-of-band `/resync-recipes` escape hatch —
+ * RUNBOOK §6), and generation proceeds straight to `buildPlan` against the
+ * EXISTING (possibly stale) index — degrade gracefully rather than fail the
+ * week. Below the threshold (or when the pre-count itself fails — treated the
+ * same as "unknown," not a reason to add a new failure mode), the normal
+ * inline sync below runs exactly as before.
  */
 export function makeBuildPlanWithSync(
   deps: BuildPlanWithSyncDeps,
 ): (weekKey: string) => Promise<EnrichedWeekPlan> {
-  const { runSync: doSync, buildPlan, alert, logger = console } = deps;
+  const {
+    runSync: doSync,
+    buildPlan,
+    alert,
+    logger = console,
+    countStale,
+    staleSyncThreshold = DEFAULT_STALE_SYNC_THRESHOLD,
+  } = deps;
 
   return async (weekKey: string) => {
+    if (countStale) {
+      let stale: StaleCount | undefined;
+      try {
+        stale = await countStale();
+      } catch (e) {
+        logger.warn(
+          `stale-recipe pre-count failed before generating week ${weekKey}; proceeding with the normal inline sync attempt: ${String(e)}`,
+        );
+      }
+
+      if (stale !== undefined && stale.stale > staleSyncThreshold) {
+        const estCostUsd = stale.stale * ESTIMATED_COST_PER_RECIPE_USD;
+        const estMinutes = Math.ceil(
+          (stale.stale * ESTIMATED_SECONDS_PER_RECIPE) / 60,
+        );
+        const message =
+          `recipe sync would need to re-process ${stale.stale}/${stale.total} recipes ` +
+          `before generating week ${weekKey} (exceeds staleSyncThreshold=${staleSyncThreshold}) ` +
+          `— approx $${estCostUsd.toFixed(2)} / ~${estMinutes} min if run inline, which would ` +
+          `risk the generation $ cap and/or the trigger watchdog. SKIPPING inline sync and ` +
+          `proceeding to generate this week's plan against the EXISTING (possibly stale) index. ` +
+          `Run the out-of-band full re-sync to backfill: the /resync-recipes skill, or ` +
+          `MP_GENERATION_DOLLAR_CAP=20 pnpm sync (see docs/RUNBOOK.md §6).`;
+        logger.warn(message);
+        try {
+          await alert(message);
+        } catch (alertErr) {
+          logger.warn(
+            `alert during mass-stale-sync skip also failed for week ${weekKey}: ${String(alertErr)}`,
+          );
+        }
+        return buildPlan(weekKey);
+      }
+    }
+
     try {
       const r = await doSync();
       logger.log(
@@ -449,6 +531,15 @@ export async function main(): Promise<void> {
         { readNotes, embedder, vectorStore, structuredStore, llm },
         { folderName: recipesFolder },
       ),
+    // Cheap pre-count (no embed/LLM) consulted BEFORE the inline sync above
+    // (bd meal-planner-a9e) so a mass hash-invalidation is detected and
+    // alerted on rather than run for hours inline.
+    countStale: () =>
+      countStale(
+        { readNotes, vectorStore, structuredStore },
+        { folderName: recipesFolder },
+      ),
+    staleSyncThreshold: config.staleSyncThreshold,
     buildPlan: rawBuildPlan,
     alert,
   });

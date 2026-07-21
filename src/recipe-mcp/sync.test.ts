@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 import { CostCapExceededError } from "../cost/cost-cap-exceeded-error.js";
 import { contentHash, type RawNote } from "./notes-reader.js";
 import { EXTRACTOR_VERSION } from "./structured-store.js";
-import { embeddableTextHash, syncNotes } from "./sync.js";
+import {
+  countStaleNotes,
+  embeddableTextHash,
+  MAX_EXTRACTION_ATTEMPTS,
+  syncNotes,
+} from "./sync.js";
 
 function note(overrides: Partial<RawNote> = {}): RawNote {
   return {
@@ -980,5 +985,156 @@ describe("syncNotes — stale-recipe reconciliation (q95.14)", () => {
     expect(warned).not.toMatch(/reconciliation/i);
 
     warnSpy.mockRestore();
+  });
+});
+
+describe("countStaleNotes (bd meal-planner-a9e)", () => {
+  it("counts a note needing (re-)embedding as stale, without embedding it", async () => {
+    const a = note({ id: "note-1" });
+    // No stored hash at all -> new note -> needs embed.
+    const store = makeFakeStore();
+    const structuredStore = makeFakeStructuredStore({
+      "note-1": {
+        contentHash: contentHash(a),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+
+    const result = await countStaleNotes({
+      readNotes: vi.fn(async () => [a]),
+      store,
+      structuredStore,
+    });
+
+    expect(result).toEqual({ total: 1, stale: 1 });
+    expect(store.upsert).not.toHaveBeenCalled();
+  });
+
+  it("counts a note needing re-extraction (body hash changed) as stale", async () => {
+    const a = note({ id: "note-1", body: "new body text" });
+    const embedHash = embeddableTextHash(a);
+    const store = makeFakeStore({ "note-1": embedHash }); // embed hash matches -> not stale on embed gate
+    const structuredStore = makeFakeStructuredStore({
+      "note-1": {
+        contentHash: "stale-body-hash",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+
+    const result = await countStaleNotes({
+      readNotes: vi.fn(async () => [a]),
+      store,
+      structuredStore,
+    });
+
+    expect(result).toEqual({ total: 1, stale: 1 });
+  });
+
+  it("does not count an up-to-date note (both gates satisfied) as stale", async () => {
+    const a = note({ id: "note-1" });
+    const embedHash = embeddableTextHash(a);
+    const store = makeFakeStore({ "note-1": embedHash });
+    const structuredStore = makeFakeStructuredStore({
+      "note-1": {
+        contentHash: contentHash(a),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+
+    const result = await countStaleNotes({
+      readNotes: vi.fn(async () => [a]),
+      store,
+      structuredStore,
+    });
+
+    expect(result).toEqual({ total: 1, stale: 0 });
+  });
+
+  it("does not count an up-to-date note flagged needsReview but already capped-out (parked) as stale", async () => {
+    const a = note({ id: "note-1" });
+    const embedHash = embeddableTextHash(a);
+    const store = makeFakeStore({ "note-1": embedHash });
+    const structuredStore = makeFakeStructuredStore({
+      "note-1": {
+        contentHash: contentHash(a),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: null,
+        needsReview: true,
+        failedAttempts: MAX_EXTRACTION_ATTEMPTS,
+      },
+    });
+
+    const result = await countStaleNotes({
+      readNotes: vi.fn(async () => [a]),
+      store,
+      structuredStore,
+    });
+
+    expect(result).toEqual({ total: 1, stale: 0 });
+  });
+
+  it("mirrors a real syncNotes pass's affected-note set over a mixed batch, without doing any embed/extraction", async () => {
+    const fresh = note({ id: "note-fresh", body: "fresh body" });
+    const staleEmbed = note({ id: "note-stale-embed", body: "same body" });
+    const staleExtraction = note({
+      id: "note-stale-extraction",
+      body: "changed body",
+    });
+
+    const store = makeFakeStore({
+      "note-fresh": embeddableTextHash(fresh),
+      "note-stale-embed": "outdated-embed-hash",
+      "note-stale-extraction": embeddableTextHash(staleExtraction),
+    });
+    const structuredStore = makeFakeStructuredStore({
+      "note-fresh": {
+        contentHash: contentHash(fresh),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+      "note-stale-embed": {
+        contentHash: contentHash(staleEmbed),
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+      "note-stale-extraction": {
+        contentHash: "old-body-hash",
+        extractorVersion: EXTRACTOR_VERSION,
+        fields: extractedFields(),
+        needsReview: false,
+      },
+    });
+    const readNotes = vi.fn(async () => [fresh, staleEmbed, staleExtraction]);
+
+    const counted = await countStaleNotes({
+      readNotes,
+      store,
+      structuredStore,
+    });
+    // "note-stale-embed" (embed gate) and "note-stale-extraction" (extraction
+    // gate) are stale; "note-fresh" is up to date on both gates.
+    expect(counted).toEqual({ total: 3, stale: 2 });
+
+    // Cross-check against a real syncNotes pass over the SAME fixtures: no
+    // embed call for "note-fresh", confirming the pre-count didn't just count
+    // everything.
+    const embedder = makeFakeEmbedder();
+    await syncNotes({
+      readNotes,
+      embedder,
+      store,
+      structuredStore,
+      llm: llmReturning(extractedFields()),
+      readNoteTags: () => new Map(),
+    });
+    expect(embedder.embed).toHaveBeenCalledTimes(1); // only "note-stale-embed"
   });
 });

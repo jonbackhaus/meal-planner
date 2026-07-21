@@ -16,6 +16,7 @@ import { z } from "zod";
  * - MP_UNTESTED_RATE              -> untestedRate
  * - MP_MAX_PAIRED_SIDES          -> maxPairedSides
  * - MP_GENERATION_DOLLAR_CAP      -> generationDollarCap
+ * - MP_STALE_SYNC_THRESHOLD       -> staleSyncThreshold
  * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
  * - MP_LLM_CALL_TIMEOUT_MS        -> llmCallTimeoutMs
  * - MP_HEALTHCHECK_URL            -> healthcheckUrl (OPTIONAL; unset/empty = disabled)
@@ -131,6 +132,21 @@ const configSchema = z
       .number()
       .positive("generationDollarCap must be a positive number")
       .default(2),
+    // Threshold (count of stale notes) above which the daemon SKIPS its inline
+    // pre-generation recipe sync in favor of alerting + planning against the
+    // existing index (bd meal-planner-a9e). Sync is normally hash-gated and
+    // cheap, but a mass hash-invalidation (a note-reader/hash change, or a long
+    // Notes outage) can leave hundreds of notes stale; re-embedding +
+    // re-extracting each SEQUENTIALLY (~10-34s LLM call each) inline would trip
+    // `generationDollarCap` and/or blow past `triggerTimeoutMs`, failing the
+    // week. Default 50 is comfortably above a normal week's incremental drift
+    // (a handful of edited recipes) but well below a mass-invalidation event
+    // (hundreds) — tune per corpus size.
+    staleSyncThreshold: z
+      .number()
+      .int("staleSyncThreshold must be a non-negative integer")
+      .nonnegative("staleSyncThreshold must be a non-negative integer")
+      .default(50),
     // Watchdog cap for a single weekly trigger run (bd meal-planner-bd6.11).
     // If `onTrigger` (sync -> generate -> post) hangs past this, the Scheduler
     // stops WAITING on it (releasing its re-entrant `busy` flag so future
@@ -235,6 +251,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     untestedRate: optionalNumber(env.MP_UNTESTED_RATE),
     maxPairedSides: optionalNumber(env.MP_MAX_PAIRED_SIDES),
     generationDollarCap: optionalNumber(env.MP_GENERATION_DOLLAR_CAP),
+    staleSyncThreshold: optionalNumber(env.MP_STALE_SYNC_THRESHOLD),
     triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
     llmCallTimeoutMs: optionalNumber(env.MP_LLM_CALL_TIMEOUT_MS),
     healthcheckUrl: optionalString(env.MP_HEALTHCHECK_URL),

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { contentHash, type RawNote } from "./notes-reader.js";
 import { EXTRACTOR_VERSION } from "./structured-store.js";
 import { embeddableTextHash } from "./sync.js";
-import { runSync } from "./sync-runner.js";
+import { countStale, runSync } from "./sync-runner.js";
 
 /**
  * `runSync` is a thin factory over `syncNotes` (see sync.test.ts for the sync
@@ -106,5 +106,39 @@ describe("runSync", () => {
     });
 
     expect(readNotes).toHaveBeenCalledWith({ folderName: undefined });
+  });
+});
+
+describe("countStale (bd meal-planner-a9e)", () => {
+  it("passes folderName through to readNotes, counts stale notes, and never touches the embedder/llm", async () => {
+    const theNote = note();
+    const readNotes = vi.fn(async (_opts?: { folderName?: string }) => [
+      theNote,
+    ]);
+    const { vectorStore, structuredStore } = skippableDeps(theNote);
+
+    const result = await countStale(
+      { readNotes, vectorStore, structuredStore },
+      { folderName: "Desserts" },
+    );
+
+    expect(readNotes).toHaveBeenCalledWith({ folderName: "Desserts" });
+    // skippableDeps sets up a note that's already up to date on both gates.
+    expect(result).toEqual({ total: 1, stale: 0 });
+  });
+
+  it("counts a note whose stored hash doesn't match as stale", async () => {
+    const theNote = note();
+    const readNotes = vi.fn(async () => [theNote]);
+    const { vectorStore, structuredStore } = skippableDeps(theNote);
+    vectorStore.getStoredHash.mockReturnValue("outdated-hash");
+
+    const result = await countStale({
+      readNotes,
+      vectorStore,
+      structuredStore,
+    });
+
+    expect(result).toEqual({ total: 1, stale: 1 });
   });
 });
