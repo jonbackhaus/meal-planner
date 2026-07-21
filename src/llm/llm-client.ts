@@ -101,3 +101,23 @@ export class LlmCallError extends Error {
     this.usage = usage;
   }
 }
+
+/**
+ * Thrown by an `LlmClient.runQuery` that is aborted by its OWN per-call
+ * watchdog (bd meal-planner-qjk config `llmCallTimeoutMs`) rather than by any
+ * response from the SDK/API. Distinguishes "the call wedged and never yielded
+ * a terminal message" (this) from "the API returned a real error" (plain
+ * `LlmCallError`) — both matter for a human reading `#agent-alerts`, but only
+ * the wedge case implies the SDK subprocess needed to be forcibly aborted.
+ *
+ * A `LlmTimeoutError` IS an `LlmCallError` (same `usage`-carrying contract) so
+ * it composes with fkg.9 for free: `meteredLlmClient`'s `instanceof
+ * LlmCallError` check records whatever partial usage accrued before the
+ * timeout fired, exactly like any other failed call.
+ */
+export class LlmTimeoutError extends LlmCallError {
+  constructor(message: string, usage: LlmUsage, options?: { cause?: unknown }) {
+    super(message, usage, options);
+    this.name = "LlmTimeoutError";
+  }
+}

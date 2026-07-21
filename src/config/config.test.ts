@@ -31,6 +31,7 @@ describe("loadConfig", () => {
       maxPairedSides: 2,
       generationDollarCap: 2,
       triggerTimeoutMs: 2_700_000,
+      llmCallTimeoutMs: 240_000,
     });
   });
 
@@ -59,6 +60,18 @@ describe("loadConfig", () => {
     const env = validEnv({ MP_TRIGGER_TIMEOUT_MS: "0" });
 
     expect(() => loadConfig(env)).toThrowError(/triggerTimeoutMs/i);
+  });
+
+  it("applies a MP_LLM_CALL_TIMEOUT_MS override", () => {
+    const config = loadConfig(validEnv({ MP_LLM_CALL_TIMEOUT_MS: "60000" }));
+
+    expect(config.llmCallTimeoutMs).toBe(60_000);
+  });
+
+  it("throws when llmCallTimeoutMs is not a positive number", () => {
+    const env = validEnv({ MP_LLM_CALL_TIMEOUT_MS: "0" });
+
+    expect(() => loadConfig(env)).toThrowError(/llmCallTimeoutMs/i);
   });
 
   it("applies overrides for profile, model, and effort from env", () => {
