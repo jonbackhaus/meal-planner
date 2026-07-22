@@ -114,7 +114,7 @@ launchd ──(boot-launch + KeepAlive)──► Orchestrator daemon (always res
 | Phase | Delivers | Notes |
 |-------|----------|-------|
 | **v1.0 (MVP)** | Sync recipes (+ ingest extraction) → tag/time-based plan as an **unordered slot-typed set** → post draft to `#meal-plan`. Writes nothing anywhere. | Seasonality from recipe *tags* (not live weather). Within-week variety only — no cross-week dedup. **No day assignment.** Full daemon + in-process scheduler + SQLite state machine + idempotency + startup catch-up present; Socket Mode **not** open. dev/prod profile in place. |
-| **v2.0** | Live weather (Open-Meteo), **calendar integration** (schedule-awareness, **day assignment**, calendar-derived cook-night count, do-ahead prep timing), Todoist recency read → semantic dedup. | Gated on the *completion-signal* decision (§10). Calendar work is more than "read events" — it classifies events by effect on cooking capacity (§10). |
+| **v2.0** | Live weather (Open-Meteo), **calendar integration** (schedule-awareness, **day assignment**, calendar-derived cook-night count, do-ahead prep timing), Todoist recency read → semantic dedup. | Gated on the *completion-signal* decision (§10). Calendar work is more than "read events" — it classifies events by effect on cooking capacity, per **ADR 0004** (source = local Calendar.app/EventKit; per-calendar `cook`/`logistics` roles; FULL/QUICK/NONE per-night capacity; derived cook-night count; full prep placement; degrade-to-static on no calendar). |
 | **v3.0** | Socket Mode listener opens. Live thread revision + `/mealplan-approved` → commit to Todoist. | In-code turn/token caps become load-bearing. App-level token added here. Gated on *who-may-approve* (§10). |
 | **v4.0** | Recipe/ingredient fetch → normalize + aggregate → draft to `#grocery-list` → revision → `/grocerylist-approved` → AnyList. | Depends on the structured-ingredient block (built in v1.0, §5). Aggregation edge cases in §10. |
 
@@ -335,8 +335,8 @@ suggested / under-revision → expired                   (week rolled over, no c
 1. **Completion signal (gates v2.0):** v2.0 recency reads Todoist *completed* tasks as "meals eaten," but committing a plan creates *open* tasks. Who checks them off — does the family mark meals complete as cooked, or should recency key on *scheduled/committed* tasks instead? Resolve before v2.0.
 2. **Approval governance (gates v3.0):** who may issue `/mealplan-approved` / `/grocerylist-approved` — anyone in the workspace, or gated?
 3. **1Password service-account availability:** confirm support or fold setup into the build.
-4. **Calendar source (v2.0 recon):** Google Calendar (connected, mature MCP) vs. a shared iCloud family calendar vs. other. Cloud read, no local-first tension.
-5. **Todoist / AnyList / calendar MCP — adopt vs. build:** recon on maintained community servers before v2.0 / v3.0 / v4.0.
+4. **Calendar source (v2.0 recon):** ~~Google vs. iCloud vs. other~~ — **RESOLVED (ADR 0004):** read the **local macOS Calendar.app via EventKit**. The family schedule spans multiple iCloud calendars (incl. cross-account shares); Calendar.app is the aggregation layer, so one local read covers all of them without CalDAV/OAuth. Local-first, like the Notes reader.
+5. **Todoist / AnyList / calendar MCP — adopt vs. build:** recon on maintained community servers before v2.0 / v3.0 / v4.0. *Calendar half **RESOLVED (ADR 0004): build a local reader** (EventKit), not adopt.* Todoist (v2.0/v3.0) and AnyList (v4.0, see §10.6 / bead d9i) still open.
 6. **Grocery aggregation edge cases (v4.0):** unit reconciliation ("2 cloves garlic" + "1 tbsp minced garlic"), pantry staples to exclude, quantity scaling for household size. Related: the ingredient **package-size** capture decision (§5.1).
 
 *(The earlier "weekend slots" question is resolved: weekend = relaxed slots / candidate big-cook nights per the slot model in §6.1; the concrete day mapping is now a v2.0 calendar concern.)*
@@ -358,7 +358,7 @@ suggested / under-revision → expired                   (week rolled over, no c
 - Active-time hard filter (metadata predicate, not semantic search) + total-time soft penalty; active-time and `do-ahead` treated as orthogonal; do-aheads eligible-but-flagged.
 - Quality tags = soft ranking + parameterized untested injection.
 - Fan-out pooled by slot-type (~3–5× per slot; favor the high end).
-- Open-Meteo for weather; no key. Calendar = cloud read (v2.0).
+- Open-Meteo for weather; no key. **Calendar = local read (v2.0, ADR 0004): Calendar.app via EventKit** (aggregates multiple iCloud calendars incl. shares), TCC Calendars grant on `node`. Include-list of calendars with `cook`/`logistics` roles; per-night FULL/QUICK/NONE capacity from cooking-window overlap; cook-night count = #(FULL)+#(QUICK) (replaces static 4+2); full prep placement in v2.0, materialized to Todoist in v3.0; no calendar ⇒ degrade to static count + alert, never fail the week. Produces a `NightSchedule` (the seam bead 824 consumes for day assignment).
 - One channel, thread-per-week, listener scoped to the active (computed) week; slash-command approval resolves to the active thread; soft-commit; skip-on-silence, silent.
 - **dev/prod profile** (channel ID + SQLite path + force-regenerate + post/dry-run); `#dev-meal-plan` for test output.
 - SQLite for per-week state; resume-quietly on restart; nullable `day` field carried for v2.0.
