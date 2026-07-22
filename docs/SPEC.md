@@ -90,7 +90,7 @@ launchd ──(boot-launch + KeepAlive)──► Orchestrator daemon (always res
                       │        └─ ingest extraction pass runs here, hash-gated (§5)
                       ├─ fetch weather ◄────────► Open-Meteo                     (v2.0)
                       ├─ read calendar ◄────────► Family calendar                (v2.0)
-                      ├─ read recency ◄──stdio──► Todoist MCP                    (v2.0)
+                      ├─ read recency ◄──stdio──► Todoist MCP                    (v3.x, ADR 0006)
                       │
                       ├─ generate plan (Agent SDK / Claude)
                       │     v1.0: unordered slot-typed SET (no day assignment)
@@ -114,8 +114,8 @@ launchd ──(boot-launch + KeepAlive)──► Orchestrator daemon (always res
 | Phase | Delivers | Notes |
 |-------|----------|-------|
 | **v1.0 (MVP)** | Sync recipes (+ ingest extraction) → tag/time-based plan as an **unordered slot-typed set** → post draft to `#meal-plan`. Writes nothing anywhere. | Seasonality from recipe *tags* (not live weather). Within-week variety only — no cross-week dedup. **No day assignment.** Full daemon + in-process scheduler + SQLite state machine + idempotency + startup catch-up present; Socket Mode **not** open. dev/prod profile in place. |
-| **v2.0** | Live weather (Open-Meteo), **calendar integration** (schedule-awareness, **day assignment**, calendar-derived cook-night count, do-ahead prep timing), Todoist recency read → semantic dedup. | Gated on the *completion-signal* decision (§10). Calendar work is more than "read events" — it classifies events by effect on cooking capacity, per **ADR 0004** (source = local Calendar.app/EventKit; per-calendar `cook`/`logistics` roles; FULL/QUICK/NONE per-night capacity; derived cook-night count; full prep placement; degrade-to-static on no calendar). |
-| **v3.0** | Socket Mode listener opens. Live thread revision + `/mealplan-approved` → commit to Todoist. | In-code turn/token caps become load-bearing. App-level token added here. Gated on *who-may-approve* (§10). |
+| **v2.0** | Live weather (Open-Meteo), **calendar integration** (schedule-awareness, **day assignment**, calendar-derived cook-night count, do-ahead prep timing). | Calendar work is more than "read events" — it classifies events by effect on cooking capacity, per **ADR 0004** (source = local Calendar.app/EventKit; per-calendar `cook`/`logistics` roles; FULL/QUICK/NONE per-night capacity; derived cook-night count; full prep placement; degrade-to-static on no calendar). Weather = ADR 0003 A1. **No Todoist dependency** (recency moved to v3.x, ADR 0006). |
+| **v3.0** | Socket Mode listener opens. Live thread revision + `/mealplan-approved` → **commit to Todoist**, then **Todoist recency read → semantic dedup** (ADR 0006 — the read depends on the commit write). | In-code turn/token caps become load-bearing. App-level token added here. Gated on *who-may-approve* (§10.2) and the *completion-signal* decision (§10.1). Commit stamps `mp:rid=<recipe_id>` per task for the lossless recency round-trip; task-ids persist in `working_plan` (ADR 0006). |
 | **v4.0** | Recipe/ingredient fetch → normalize + aggregate → draft to `#grocery-list` → revision → `/grocerylist-approved` → AnyList. | Depends on the structured-ingredient block (built in v1.0, §5). Aggregation edge cases in §10. |
 
 ---
@@ -217,10 +217,13 @@ v1.0 emits an **unordered set tagged by slot-type** (N constrained + M relaxed),
 
 **Missing-data default (hard-filter safety):** if a note has neither a parseable active time nor a `#quick`/`#do-ahead` tag (or extraction is low-confidence), treat it as **not weeknight-eligible** but surface it for the weekend relaxed slots — conservative on busy nights, nothing lost. Catchable by eye in v1.0 (display-only); formally correctable in-thread only at v3.0.
 
-### 6.3 Recency / semantic dedup (v2.0)
+### 6.3 Recency / semantic dedup (v3.x — moved from v2.0 per ADR 0006)
+
+**Phase note (ADR 0006 D1):** recency reads Todoist completed tasks, which only exist once the v3.0 commit *writes* them — so recency + dedup + the completion-signal question (§10.1) live in **v3.x**, not v2.0. v2.0 has no Todoist dependency.
 
 - **Todoist completed tasks = sole source of truth** for "what we've eaten." No relational mirror; no ETL/sync job.
-- **Dedup is semantic, resolved on-the-fly:** resolve recent meals → recipe ids → embeddings (reuse the recipe server's existing vectors), then penalize candidates semantically close to what's recently been on the table.
+- **Round-trip is deterministic (ADR 0006 D2):** the commit stamps `mp:rid=<recipe_id>` into each task's description; recency parses it back to an exact `recipe_id` — no semantic guessing on the task→id step. Resolved ids feed **both** the exact-exclusion path (`exclude_ids`, already wired in `search.ts`/`vector-store.ts`) **and** the semantic penalty below.
+- **Dedup is semantic, resolved on-the-fly:** resolved recipe ids → embeddings (reuse the recipe server's existing vectors), then penalize candidates semantically close to what's recently been on the table.
 - Only build a persistent recency cache if on-the-fly resolution later proves expensive per run. Deferred with a real trigger.
 
 ### 6.4 Fan-out sizing
@@ -336,7 +339,7 @@ suggested / under-revision → expired                   (week rolled over, no c
 
 ## 10. Open questions (flagged, non-blocking for v1.0)
 
-1. **Completion signal (gates v2.0):** v2.0 recency reads Todoist *completed* tasks as "meals eaten," but committing a plan creates *open* tasks. Who checks them off — does the family mark meals complete as cooked, or should recency key on *scheduled/committed* tasks instead? Resolve before v2.0.
+1. **Completion signal (gates v3.x recency — moved from v2.0 per ADR 0006):** recency reads Todoist *completed* tasks as "meals eaten," but committing a plan creates *open* tasks. Who checks them off — does the family mark meals complete as cooked, or should recency key on *scheduled/committed* tasks instead? Resolve before wiring v3.x recency. (The task→recipe round-trip and task schema are now settled in **ADR 0006**; this remaining open question is only the read semantics.)
 2. **Approval governance (gates v3.0):** who may issue `/mealplan-approved` / `/grocerylist-approved` — anyone in the workspace, or gated?
 3. **1Password service-account availability:** confirm support or fold setup into the build.
 4. **Calendar source (v2.0 recon):** ~~Google vs. iCloud vs. other~~ — **RESOLVED (ADR 0004):** read the **local macOS Calendar.app via EventKit**. The family schedule spans multiple iCloud calendars (incl. cross-account shares); Calendar.app is the aggregation layer, so one local read covers all of them without CalDAV/OAuth. Local-first, like the Notes reader.
@@ -354,9 +357,9 @@ suggested / under-revision → expired                   (week rolled over, no c
 - **Trigger:** in-process scheduler in the resident daemon; `launchd` = boot-launch + `KeepAlive` only; startup catch-up makes the never-sleep assumption safe.
 - **Idempotency:** week-keyed guard; `generating` pre-post status; three-case startup catch-up.
 - **State machine:** `generating → suggested → under-revision → committed`, plus `failed` and `expired`; "active week" is computed, clock-derived; rows are retained, not cleaned up.
-- Phase map: v1.0 display-only (unordered slot-typed set, no day assignment); v2.0 weather + **calendar (introduces day assignment)** + recency; v3.0 revision + Todoist commit + Socket Mode; v4.0 grocery + AnyList.
+- Phase map: v1.0 display-only (unordered slot-typed set, no day assignment); v2.0 weather + **calendar (introduces day assignment)** (no Todoist dependency); v3.0 revision + Todoist commit + **recency/dedup** (moved from v2.0, ADR 0006) + Socket Mode; v4.0 grocery + AnyList.
 - **Planner = hybrid:** deterministic hard-filter pre-pass (structured predicates) + LLM reasoning over survivors. Signals grouped by mechanism; picky-youngest = prompt-level reasoning input; portion relocated to v4.0 scaling.
-- Recency = Todoist completed tasks, sole source of truth; semantic dedup on-the-fly; no mirror/ETL.
+- Recency = Todoist completed tasks, sole source of truth; semantic dedup on-the-fly; no mirror/ETL. **Moved v2.0 → v3.x (ADR 0006, bead `chj`):** recency reads the commit's writes, so it can't precede commit. **Round-trip is deterministic** — commit stamps `mp:rid=<recipe_id>` per task; recency parses it back (→ wired `exclude_ids` + semantic penalty), no title guessing. **Task schema:** config'd project, recipe-title content, ISO-`day` due, `second_dish`/prep → own tasks. **Task-ids persist in `working_plan` JSON** (`todoist_task_id?`, additive/resume-safe, no new column) for re-commit update-in-place. Completion signal (§10.1) + MCP adopt-vs-build stay open, both v3.x.
 - Two-tier recipe interface; **ingest-time extraction pass** (hash-gated, at sync, owned by the recipe server) produces structured **times + ingredients** in v1.0; ingredient schema frozen (raw always kept).
 - Vegetarian-satisfiable as a per-night hard constraint (inherent / separable / rare second dish); separability inferred; retrieval enforces a veg-satisfiable floor per pool.
 - Active-time hard filter (metadata predicate, not semantic search) + total-time soft penalty; active-time and `do-ahead` treated as orthogonal; do-aheads eligible-but-flagged.
