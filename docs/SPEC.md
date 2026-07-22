@@ -233,7 +233,11 @@ Retrieve candidates **pooled by slot-type**, not locked 1:1 to slots and not per
 
 ### 6.5 Weather (v2.0)
 
-Open-Meteo (no key). Three derived signals: temperature band (light-vs-hearty), precipitation flag (suppress grill/outdoor if rain), season (may correlate with season tags — avoid double-counting).
+Open-Meteo (no key). **Resolved in bead `bgb` → ADR 0003 A1 (amendment):**
+
+- **Temperature band (light-vs-hearty)** — **IMPLEMENTED** as a **week-level** soft signal `PlannerInput.temperature_band` (`cold`/`mild`/`hot`), horizon = the plan-week dates. Feeds the single selection call (which also does day assignment, ADR 0005). Degrades to absent (seasonal-only) on any Open-Meteo failure — silent, no alert, never fails the week.
+- ~~Precipitation flag (suppress grill/outdoor if rain)~~ — **DID NOT IMPLEMENT (cut from scope, not deferred).** No structured outdoor/grill signal on recipes to act on; forecast-rain uncertain; hard-enforcement impossible without new extraction — disproportionate for a soft nudge. See ADR 0003 A1.
+- **Season** — stays **tag-sourced** (§5.2, `current_season`/`season_tags`); the temperature band only *refines* it, with an explicit prompt instruction to **avoid double-counting**. Weather adds no separate season signal.
 
 ---
 
@@ -358,6 +362,7 @@ suggested / under-revision → expired                   (week rolled over, no c
 - Active-time hard filter (metadata predicate, not semantic search) + total-time soft penalty; active-time and `do-ahead` treated as orthogonal; do-aheads eligible-but-flagged.
 - Quality tags = soft ranking + parameterized untested injection.
 - Fan-out pooled by slot-type (~3–5× per slot; favor the high end).
+- **Weather (v2.0, ADR 0003 A1, bead `bgb`):** one **week-level** soft signal `temperature_band` (`cold`/`mild`/`hot`) from Open-Meteo (no key); refines the tag-based `current_season` (no double-count); feeds the single selection+assignment call; degrade-to-absent (seasonal-only) + silent on fetch failure. **Precipitation/grill signal cut from scope** (no structured outdoor signal; §6.5). No validation added (advisory only).
 - **Day assignment (v2.0, ADR 0005):** the single ADR-0003 selection call assigns each meal an **ISO-date `day`** by placing it onto ADR-0004's `NightSchedule` (LLM decides, code guarantees — no separate pass). `validate()` gains day rules (valid non-NONE night, slot↔weekday, QUICK capacity-fit, distinct days, prep-before-serve) under the existing one-shot repair; the Slack render moves from slot-sections to **day-ordered** (Mon→Sun) with capacity + prep annotations. `SelectedMeal.day` becomes a **nullable ISO date** (null = legacy v1.0 / degraded) — the first additive `working_plan` evolution, resume-safe (bd6.10, bd6.13).
 - Open-Meteo for weather; no key. **Calendar = local read (v2.0, ADR 0004): Calendar.app via EventKit** (aggregates multiple iCloud calendars incl. shares), TCC Calendars grant on `node`. Include-list of calendars with `cook`/`logistics` roles; per-night FULL/QUICK/NONE capacity from cooking-window overlap; cook-night count = #(FULL)+#(QUICK) (replaces static 4+2); full prep placement in v2.0, materialized to Todoist in v3.0; no calendar ⇒ degrade to static count + alert, never fail the week. Produces a `NightSchedule` (the seam bead 824 consumes for day assignment).
 - One channel, thread-per-week, listener scoped to the active (computed) week; slash-command approval resolves to the active thread; soft-commit; skip-on-silence, silent.

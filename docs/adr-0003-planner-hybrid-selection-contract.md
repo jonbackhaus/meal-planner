@@ -1,6 +1,6 @@
 # ADR 0003 — Planner: hybrid selection contract (prompt, output schema, validation)
 
-- **Status:** Accepted (mechanism fixed; prompt wording + thresholds refined during implementation)
+- **Status:** Accepted (mechanism fixed; prompt wording + thresholds refined during implementation). **Amended 2026-07-21 (v2.0, bead `bgb`)** — see [Amendments](#amendments-post-v10) for the weather-to-planner contract (`temperature_band`); day assignment (v2.0) layers on via ADR 0005.
 - **Date:** 2026-07-09
 - **Owner:** Backhaus
 - **Relates to:** Meal Planner Bot design doc v1.0, §6 (planning logic), §6.2 (signals by mechanism), §6.4 (fan-out); sibling ADRs 0001 (recipe interface — what the planner reads), 0002 (state machine — `buildPlan` is called by `generateForWeek`)
@@ -59,6 +59,9 @@ interface PlannerInput {
                                     // likes/dislikes; smaller appetites; cook 5–6 nights
   current_season?: string;          // for the seasonality soft signal (v1.0 tag-based)
   untested_present: boolean;        // did retrieval inject untested candidates this week?
+  temperature_band?: "cold" | "mild" | "hot";  // v2.0 amendment (bgb): week-level live-weather
+                                    // SOFT signal; refines current_season (don't double-count).
+                                    // absent = Open-Meteo unavailable → seasonal-only (degrade)
 }
 ```
 
@@ -179,3 +182,18 @@ function buildPlan(wk): WeekPlan {
 - **Seed-query strategy** — **RATIFIED: category-seeded multi-query shipped** (beads l7x / kd5, commit e10eb31; `DEFAULT_SEEDS` in `src/planner/build-plan.ts`). The single generic seed under-recalled (weeknight pool fell to 3, 0 rated-veg despite 206 rated / 49 rated-veg in the 764-recipe corpus). Retrieval is now **quality-aware + multi-seed**: a set of **6 category seeds** (one vegetarian + a protein/cuisine spread), retrieved per-seed and merged; veg-floor and untested-injection iterate the seed set. Measured result: pool size 19, rated 16, veg 6, rated-veg 3. `buildPlan`/`BuildPlanConfig` now take `seeds: string[]`. kd5's params (`vegFloorK`, `untestedRate`) validated as-is once retrieval became quality-aware.
 - **Post-`get_recipe` separability confirmation pass** — formalize when it lands (leaning v4.0, where it changes the grocery list); until then, provisional + human-reviewed (design §5.3).
 - **Repair-prompt content** — how much of the violation detail to feed back; keep minimal to bound tokens.
+
+---
+
+## Amendments (post-v1.0)
+
+### A1 — Weather-to-planner contract (v2.0, bead `bgb`, ratified 2026-07-21)
+
+Resolves SPEC §6.5's weather signals into a concrete `PlannerInput` addition. Deliberately minimal — weather is a *soft* signal and, since ADR 0005 folded day assignment into this same single call, weather informs both selection and placement without any new pass or ordering question.
+
+- **One signal: `temperature_band`** — a **week-level** enum (`"cold" | "mild" | "hot"`) derived from the Open-Meteo forecast for the plan-week dates (no key). It's a **soft** LLM reasoning input (light-vs-hearty), entering the prompt like the other structured soft signals (D2). Week-level, not per-day: with precipitation dropped (below) there is no per-day driver, and dinner heaviness doesn't meaningfully swing day-to-day.
+- **No double-counting with season** — `temperature_band` *refines* the coarse tag-based `current_season`; the prompt explicitly instructs the model not to penalize a dish via both its season tag *and* the live temperature. Season stays tag-sourced (§5.2/§6.2); weather adds only the live temperature nuance.
+- **Precipitation / "suppress grill if rain" — DID NOT IMPLEMENT.** SPEC §6.5's third signal is **dropped** (marked did-not-implement there). Rationale: there is **no structured outdoor/grill signal** on recipes to act on (no field, no reliable tag), a forecast-rain flag is uncertain, and hard-enforcing it is impossible without inventing an ingest-time extraction — disproportionate for a soft nudge. Not deferred-to-a-phase; **cut from scope**. If ever revisited, it would need an outdoor-cooking signal first (ADR 0001 extraction or a recognized `#grill`/`#smoker` tag).
+- **Horizon** — the plan-week dates (the same ~7-night window the calendar covers, ADR 0004).
+- **Degrade-to-absent** — any Open-Meteo fetch failure ⇒ omit `temperature_band` and plan **seasonally as v1.0 does**. Silent (log-only, **no `#agent-alert`**): weather is softer than the calendar (which alerts once, ADR 0004 D6) and its absence changes nothing structural. Never fails the week (consistent with beads `a9e` / ADR 0004 D6).
+- **Validation** — none added: `temperature_band` is optional and purely advisory; it introduces no hard constraint, so `validate()` (D5) is unchanged.
