@@ -7,6 +7,7 @@ import { makeHeartbeat } from "./daemon/heartbeat.js";
 import { withTimeout } from "./daemon/with-timeout.js";
 import { getScaffoldVersion } from "./lib/version.js";
 import { createLlmClient } from "./llm/agent-sdk-client.js";
+import { retryLlmClient } from "./llm/retry-llm-client.js";
 import { makeAlert } from "./ops/alerter.js";
 import { appendLog } from "./ops/local-log.js";
 import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
@@ -459,9 +460,18 @@ export async function main(): Promise<void> {
   // client throws `CostCapExceededError`, which propagates through
   // `buildPlan` into `generateForWeek`'s existing failure/alert path.
   const meter = new CostMeter(config.modelRates[config.model], config.model);
-  const llm = meteredLlmClient(createLlmClient(config), meter, {
-    capUsd: config.generationDollarCap,
-  });
+  // Bounded retry-before-fail for a transient per-call stall (bd
+  // meal-planner-k31, qjk follow-up). MUST wrap the OUTSIDE of
+  // meteredLlmClient (see retryLlmClient's doc comment) so every retried
+  // attempt -- not just the final one -- passes through the SAME cost-cap
+  // gate and has its usage recorded individually; a retry can never spend
+  // past generationDollarCap.
+  const llm = retryLlmClient(
+    meteredLlmClient(createLlmClient(config), meter, {
+      capUsd: config.generationDollarCap,
+    }),
+    { maxRetries: config.llmCallMaxRetries },
+  );
   const search = (
     query: string,
     filters?: Parameters<typeof searchRecipes>[1],

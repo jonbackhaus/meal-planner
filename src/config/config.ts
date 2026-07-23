@@ -19,7 +19,15 @@ import { z } from "zod";
  * - MP_STALE_SYNC_THRESHOLD       -> staleSyncThreshold
  * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
  * - MP_LLM_CALL_TIMEOUT_MS        -> llmCallTimeoutMs
+ * - MP_LLM_CALL_MAX_RETRIES       -> llmCallMaxRetries
  * - MP_HEALTHCHECK_URL            -> healthcheckUrl (OPTIONAL; unset/empty = disabled)
+ * - MP_QUICK_ACTIVE_MAX           -> quickActiveMax (ADR-0004 D4, minutes)
+ * - MP_CALENDAR_ENABLED           -> calendar.enabled (ADR-0004 D6; "true"|"false")
+ * - MP_CALENDAR_INCLUDE           -> calendar.include (ADR-0004 D2; JSON array of
+ *                                    {name, role: "cook"|"logistics"} — deployment
+ *                                    config, not code)
+ * - MP_CALENDAR_COOKING_WINDOW_START -> calendar.cookingWindow.start (ADR-0004 D3, HH:MM)
+ * - MP_CALENDAR_COOKING_WINDOW_END   -> calendar.cookingWindow.end (ADR-0004 D3, HH:MM)
  *
  * `modelRates` is not env-configurable (it's a map); it is seeded here with
  * SPEC §9.3 intro-pricing values and can be edited in code when pricing changes.
@@ -31,6 +39,11 @@ import { z } from "zod";
 const IANA_TIMEZONE_ERROR =
   "must be a valid IANA timezone (e.g. America/Chicago)";
 const TRIGGER_TIME_ERROR = "must be a 24h HH:MM time (e.g. 06:00)";
+const HHMM_TIME_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function isHhMmTime(value: string): boolean {
+  return HHMM_TIME_REGEX.test(value);
+}
 
 function isValidIanaTimezone(timezone: string): boolean {
   try {
@@ -56,6 +69,79 @@ const DEFAULT_MODEL_RATES: Record<
   "claude-sonnet-5": Object.freeze({ inputPerMTok: 2, outputPerMTok: 10 }),
   "claude-opus-4-8": Object.freeze({ inputPerMTok: 5, outputPerMTok: 25 }),
 });
+
+// ADR-0004 D2 — an included calendar's role. `cook` removes that person as an
+// available cook for an overlapping event's span; `logistics` is assumed to
+// pull a cook away (drive/attend) without removing them outright.
+const calendarIncludeEntrySchema = z
+  .object({
+    name: z.string().min(1, "calendar.include[].name must not be empty"),
+    role: z.enum(["cook", "logistics"], {
+      error: 'calendar.include[].role must be "cook" or "logistics"',
+    }),
+  })
+  .strict();
+
+function hhMmTimeSchema(fieldName: string) {
+  return z.string().superRefine((value, ctx) => {
+    if (!isHhMmTime(value)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${fieldName} "${value}" is invalid: ${TRIGGER_TIME_ERROR}`,
+      });
+    }
+  });
+}
+
+// ADR-0004 D2/D3/D6 — per-context calendar config. Concrete calendar names,
+// roles, and the exact cookingWindow are deployment config (set at v2.0
+// deployment against the family's real calendars), not code. This is
+// config-schema only: it does not depend on the EventKit reader (sibling
+// bead r0o.1).
+const calendarSchema = z.preprocess(
+  (value) => value ?? {},
+  z
+    .object({
+      // D6 master switch: off ⇒ static v1.0 fallback. Defaults false so the
+      // schema is purely additive until a deployment opts in.
+      enabled: z
+        .preprocess(
+          (value) => {
+            if (value === undefined) return undefined;
+            if (typeof value === "boolean") return value;
+            if (value === "true") return true;
+            if (value === "false") return false;
+            return value;
+          },
+          z.boolean({ error: "calendar.enabled must be true or false" }),
+        )
+        .default(false),
+      // D2 — explicit allowlist; a denylist was rejected (fails safe: an
+      // unlisted/new calendar never silently marks nights busy).
+      include: z.array(calendarIncludeEntrySchema).default([]),
+      // D3 — the window an event must overlap to affect a night's capacity.
+      cookingWindow: z.preprocess(
+        (value) => value ?? {},
+        z.object({
+          start: hhMmTimeSchema("calendar.cookingWindow.start").default(
+            "16:30",
+          ),
+          end: hhMmTimeSchema("calendar.cookingWindow.end").default("19:30"),
+        }),
+      ),
+    })
+    .strict()
+    .superRefine((calendar, ctx) => {
+      if (calendar.cookingWindow.start >= calendar.cookingWindow.end) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["cookingWindow"],
+          message:
+            "calendar.cookingWindow.start must be before calendar.cookingWindow.end",
+        });
+      }
+    }),
+);
 
 const configSchema = z
   .object({
@@ -172,6 +258,22 @@ const configSchema = z
       .number()
       .positive("llmCallTimeoutMs must be a positive number")
       .default(4 * 60 * 1000),
+    // Bounded retry-before-fail for a transient per-call stall (bd
+    // meal-planner-k31, qjk follow-up). `AgentSdkLlmClient.runQuery`'s own
+    // per-call watchdog above throws `LlmTimeoutError` on a wedged call; a
+    // brief API rough patch (the observed go-live failure mode) may clear on
+    // a fresh subprocess, so `retryLlmClient` retries ONLY that stall (never
+    // a genuine API error or a cost-cap trip) up to this many additional
+    // times. Must stay small: worst-case wall time for one logical call is
+    // `(1 + llmCallMaxRetries) * llmCallTimeoutMs`, which must stay well
+    // under `triggerTimeoutMs` above. Default 1 (one retry: at most 2x
+    // llmCallTimeoutMs = 8 min, still << the 45 min trigger watchdog). 0
+    // disables retrying entirely (fail-fast, the pre-k31 behavior).
+    llmCallMaxRetries: z
+      .number()
+      .int("llmCallMaxRetries must be a non-negative integer")
+      .nonnegative("llmCallMaxRetries must be a non-negative integer")
+      .default(1),
     // External dead-man switch (bd meal-planner-fkg.8, SPEC §9.4). When set,
     // the daemon pings this healthchecks.io-style URL on each successful weekly
     // trigger (and its `<url>/fail` sub-path on a caught generation failure) so
@@ -180,6 +282,16 @@ const configSchema = z
     // disables the feature entirely (no ping is ever made). Mildly sensitive
     // (the path is a shared secret), so it is never logged in full.
     healthcheckUrl: z.url("healthcheckUrl must be a valid URL").optional(),
+    // ADR-0004 D4 — tighter active-time gate for a QUICK-capacity night (or a
+    // make-ahead recipe). Top-level, mirrors activeMaxMinutes. Default 30,
+    // tuned during v2.0 plan-quality validation per the ADR's open items.
+    quickActiveMax: z
+      .number()
+      .positive("quickActiveMax must be a positive number")
+      .default(30),
+    // ADR-0004 D2/D3/D6 — calendar config (schema only; independent of the
+    // EventKit reader, sibling bead r0o.1).
+    calendar: calendarSchema,
   })
   .strict();
 
@@ -190,6 +302,8 @@ export type Profile = Config["profile"];
 export type Effort = Config["effort"];
 export type ModelRate = Config["modelRates"][string];
 export type CookNights = Config["cookNights"];
+export type CalendarConfig = Config["calendar"];
+export type CalendarRole = CalendarConfig["include"][number]["role"];
 
 /** Loosely-typed candidate object accepted by validateConfig, prior to schema validation. */
 export type RawConfigInput = Record<string, unknown>;
@@ -230,6 +344,25 @@ function optionalString(value: string | undefined): string | undefined {
 }
 
 /**
+ * Parses MP_CALENDAR_INCLUDE (a JSON array string) into a raw candidate value
+ * for the calendar.include schema field. A malformed JSON string throws
+ * immediately (before schema validation runs) since it can't be handed to
+ * zod as structured data.
+ */
+function optionalJsonArray(value: string | undefined): unknown {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(
+      "Invalid configuration:\n - calendar.include: MP_CALENDAR_INCLUDE must be valid JSON",
+    );
+  }
+}
+
+/**
  * Reads MP_-namespaced environment variables, builds a raw candidate config,
  * and validates it via validateConfig. Throws a clear aggregated error on
  * invalid/missing values.
@@ -254,7 +387,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     staleSyncThreshold: optionalNumber(env.MP_STALE_SYNC_THRESHOLD),
     triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
     llmCallTimeoutMs: optionalNumber(env.MP_LLM_CALL_TIMEOUT_MS),
+    llmCallMaxRetries: optionalNumber(env.MP_LLM_CALL_MAX_RETRIES),
     healthcheckUrl: optionalString(env.MP_HEALTHCHECK_URL),
+    quickActiveMax: optionalNumber(env.MP_QUICK_ACTIVE_MAX),
+    calendar: {
+      enabled: optionalString(env.MP_CALENDAR_ENABLED),
+      include: optionalJsonArray(env.MP_CALENDAR_INCLUDE),
+      cookingWindow: {
+        start: optionalString(env.MP_CALENDAR_COOKING_WINDOW_START),
+        end: optionalString(env.MP_CALENDAR_COOKING_WINDOW_END),
+      },
+    },
   };
 
   return validateConfig(raw);

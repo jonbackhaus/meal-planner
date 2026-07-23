@@ -22,6 +22,13 @@ function baseConfig(profile: "dev" | "prod"): Config {
     staleSyncThreshold: 50,
     triggerTimeoutMs: 2_700_000,
     llmCallTimeoutMs: 240_000,
+    llmCallMaxRetries: 1,
+    quickActiveMax: 30,
+    calendar: {
+      enabled: false,
+      include: [],
+      cookingWindow: { start: "16:30", end: "19:30" },
+    },
   };
 }
 
