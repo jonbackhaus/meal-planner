@@ -119,33 +119,39 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
   const boundGenerate = (weekKey: string, opts: { force?: boolean }) =>
     generateForWeek(weekKey, opts, genDeps);
 
-  // Tracks the week_key `onStartup`'s catch-up branch just attempted to
-  // generate THIS boot (bd meal-planner-8o3). Dev's `fireOnStart`
-  // (MP_FIRE_ON_START=1, RUNBOOK §5/§8) reuses this SAME `onTrigger` hook
-  // moments after `onStartup` runs (see `runDaemon`), for the SAME
-  // `currentPlanWeek`. In dev, `profile.forceRegenerate` is true, so without
-  // this guard that second call bypasses `generateForWeek`'s own idempotency
-  // gate and collides with the row catch-up just inserted -- a real
-  // `UNIQUE constraint failed: session.week_key` throw that `runDaemon`
-  // surfaces as a scary "Startup test-fire failed" alert, even though the
-  // week generated and posted fine. Since the test-fire is redundant once
-  // catch-up has already posted for the SAME week, `onTrigger` neuters
-  // `force` for exactly that one next call, letting `generateForWeek`'s
-  // UNCHANGED idempotency gate (`!force && rowExists -> "skipped"`) handle it
-  // cleanly instead. One-shot: cleared the moment it's read, so this affects
-  // only the very next `onTrigger()` call -- a later genuine force+existing-
-  // row collision (a manual re-triggerNow, the next Sunday's scheduled fire
-  // finding a stale row, etc.) still throws exactly as before. This never
-  // touches `generateForWeek`/rerun.ts's own force-overwrite contract.
-  let catchUpAttemptedWeek: string | null = null;
+  // Tracks the week_key `onStartup` just RESOLVED this boot -- either by
+  // catching up (generating, bd meal-planner-8o3) or by finding an
+  // already-live row and calling `resumeQuietly` on it (bd meal-planner-4ke).
+  // Dev's `fireOnStart` (MP_FIRE_ON_START=1, RUNBOOK §5/§8) reuses this SAME
+  // `onTrigger` hook moments after `onStartup` runs (see `runDaemon`), for the
+  // SAME `currentPlanWeek`. In dev, `profile.forceRegenerate` is true, so
+  // without this guard that second call bypasses `generateForWeek`'s own
+  // idempotency gate and collides with the pre-existing row (either just
+  // inserted by catch-up, or already there from a prior boot and reloaded via
+  // resumeQuietly) -- a real `UNIQUE constraint failed: session.week_key`
+  // throw that `runDaemon` surfaces as a scary "Startup test-fire failed"
+  // alert, even though the week is in a perfectly good state. Since the
+  // test-fire is redundant once `onStartup` has already resolved the SAME
+  // week (by either path), `onTrigger` neuters `force` for exactly that one
+  // next call, letting `generateForWeek`'s UNCHANGED idempotency gate
+  // (`!force && rowExists -> "skipped"`) handle it cleanly instead. One-shot:
+  // cleared the moment it's read, so this affects only the very next
+  // `onTrigger()` call -- a later genuine force+existing-row collision (a
+  // manual re-triggerNow, the next Sunday's scheduled fire finding a stale
+  // row, etc.) still throws exactly as before. This never touches
+  // `generateForWeek`/rerun.ts's own force-overwrite contract, and it does
+  // NOT arm on the stale-`generating` branch (`startup.ts`'s alert-once path
+  // calls neither `generateForWeek` nor `resumeQuietly`), so that genuine
+  // alert is unaffected.
+  let resolvedThisBootWeek: string | null = null;
 
   async function onTrigger(): Promise<void> {
     const weekKey = currentPlanWeek(nowDate(), config);
     let force = profile.forceRegenerate;
-    if (force && weekKey === catchUpAttemptedWeek) {
+    if (force && weekKey === resolvedThisBootWeek) {
       force = false;
     }
-    catchUpAttemptedWeek = null;
+    resolvedThisBootWeek = null;
 
     try {
       await boundGenerate(weekKey, { force });
@@ -167,17 +173,24 @@ export function composeDaemon(deps: ComposeDaemonDeps): ComposedDaemon {
     await onStartupFn({
       cfg: config,
       store,
-      // Records the attempted week (see catchUpAttemptedWeek doc above)
+      // Records the resolved week (see resolvedThisBootWeek doc above)
       // BEFORE delegating to the real boundGenerate -- onStartupFn's own
       // catch-up branch is the only caller of this, and it may throw (which
       // onStartupFn itself already contains/logs); recording ahead of the
       // call is correct either way, since a thrown catch-up still leaves a
       // row behind that a same-week force fire would otherwise collide with.
       generateForWeek: (weekKey, opts) => {
-        catchUpAttemptedWeek = weekKey;
+        resolvedThisBootWeek = weekKey;
         return boundGenerate(weekKey, opts);
       },
-      resumeQuietly,
+      // Same arming as the catch-up branch above (bd meal-planner-4ke): an
+      // already-live row resolved via resumeQuietly is just as much a
+      // same-boot resolution of `row.week_key` as a catch-up generate is, and
+      // must equally suppress the next same-week fireOnStart force-insert.
+      resumeQuietly: (row) => {
+        resolvedThisBootWeek = row.week_key;
+        return resumeQuietly(row);
+      },
       alert,
       now: nowDate,
     });

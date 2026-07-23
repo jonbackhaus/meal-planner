@@ -33,6 +33,13 @@ describe("loadConfig", () => {
       staleSyncThreshold: 50,
       triggerTimeoutMs: 2_700_000,
       llmCallTimeoutMs: 240_000,
+      llmCallMaxRetries: 1,
+      quickActiveMax: 30,
+      calendar: {
+        enabled: false,
+        include: [],
+        cookingWindow: { start: "16:30", end: "19:30" },
+      },
     });
   });
 
@@ -88,6 +95,34 @@ describe("loadConfig", () => {
     const env = validEnv({ MP_LLM_CALL_TIMEOUT_MS: "0" });
 
     expect(() => loadConfig(env)).toThrowError(/llmCallTimeoutMs/i);
+  });
+
+  describe("llmCallMaxRetries (bd meal-planner-k31, qjk follow-up)", () => {
+    it("defaults llmCallMaxRetries to 1", () => {
+      const config = loadConfig(validEnv());
+
+      expect(config.llmCallMaxRetries).toBe(1);
+    });
+
+    it("applies a MP_LLM_CALL_MAX_RETRIES override, including 0 to disable retrying", () => {
+      expect(
+        loadConfig(validEnv({ MP_LLM_CALL_MAX_RETRIES: "3" }))
+          .llmCallMaxRetries,
+      ).toBe(3);
+      expect(
+        loadConfig(validEnv({ MP_LLM_CALL_MAX_RETRIES: "0" }))
+          .llmCallMaxRetries,
+      ).toBe(0);
+    });
+
+    it("throws when llmCallMaxRetries is negative or not an integer", () => {
+      expect(() =>
+        loadConfig(validEnv({ MP_LLM_CALL_MAX_RETRIES: "-1" })),
+      ).toThrowError(/llmCallMaxRetries/i);
+      expect(() =>
+        loadConfig(validEnv({ MP_LLM_CALL_MAX_RETRIES: "1.5" })),
+      ).toThrowError(/llmCallMaxRetries/i);
+    });
   });
 
   it("applies overrides for profile, model, and effort from env", () => {
@@ -177,5 +212,140 @@ describe("loadConfig", () => {
       expect(message).toMatch(/triggerTime/i);
       expect(message).toMatch(/untestedRate/i);
     }
+  });
+
+  describe("quickActiveMax (ADR-0004 D4/D6)", () => {
+    it("defaults quickActiveMax to 30", () => {
+      const config = loadConfig(validEnv());
+
+      expect(config.quickActiveMax).toBe(30);
+    });
+
+    it("reads quickActiveMax from MP_QUICK_ACTIVE_MAX when set", () => {
+      const config = loadConfig(validEnv({ MP_QUICK_ACTIVE_MAX: "20" }));
+
+      expect(config.quickActiveMax).toBe(20);
+    });
+
+    it("throws when quickActiveMax is not a positive number", () => {
+      expect(() =>
+        loadConfig(validEnv({ MP_QUICK_ACTIVE_MAX: "0" })),
+      ).toThrowError(/quickActiveMax/i);
+      expect(() =>
+        loadConfig(validEnv({ MP_QUICK_ACTIVE_MAX: "-5" })),
+      ).toThrowError(/quickActiveMax/i);
+    });
+  });
+
+  describe("calendar config (ADR-0004 D2/D3/D6)", () => {
+    it("defaults calendar to disabled, empty include-list, and the default cooking window", () => {
+      const config = loadConfig(validEnv());
+
+      expect(config.calendar).toEqual({
+        enabled: false,
+        include: [],
+        cookingWindow: { start: "16:30", end: "19:30" },
+      });
+    });
+
+    it("reads calendar.enabled from MP_CALENDAR_ENABLED", () => {
+      expect(
+        loadConfig(validEnv({ MP_CALENDAR_ENABLED: "true" })).calendar.enabled,
+      ).toBe(true);
+      expect(
+        loadConfig(validEnv({ MP_CALENDAR_ENABLED: "false" })).calendar.enabled,
+      ).toBe(false);
+    });
+
+    it("throws when MP_CALENDAR_ENABLED is not a boolean literal", () => {
+      expect(() =>
+        loadConfig(validEnv({ MP_CALENDAR_ENABLED: "yes" })),
+      ).toThrowError(/calendar\.enabled/i);
+    });
+
+    it("reads the include allowlist with per-calendar roles from MP_CALENDAR_INCLUDE", () => {
+      const config = loadConfig(
+        validEnv({
+          MP_CALENDAR_ENABLED: "true",
+          MP_CALENDAR_INCLUDE: JSON.stringify([
+            { name: "Jonathan", role: "cook" },
+            { name: "Family", role: "cook" },
+            { name: "Kids", role: "logistics" },
+          ]),
+        }),
+      );
+
+      expect(config.calendar.include).toEqual([
+        { name: "Jonathan", role: "cook" },
+        { name: "Family", role: "cook" },
+        { name: "Kids", role: "logistics" },
+      ]);
+    });
+
+    it("throws when MP_CALENDAR_INCLUDE is not valid JSON", () => {
+      expect(() =>
+        loadConfig(validEnv({ MP_CALENDAR_INCLUDE: "not-json" })),
+      ).toThrowError(/calendar\.include/i);
+    });
+
+    it("throws when an include entry has an empty name", () => {
+      expect(() =>
+        loadConfig(
+          validEnv({
+            MP_CALENDAR_INCLUDE: JSON.stringify([{ name: "", role: "cook" }]),
+          }),
+        ),
+      ).toThrowError(/calendar\.include/i);
+    });
+
+    it("throws when an include entry's role is not cook or logistics (denylist-style roles rejected)", () => {
+      expect(() =>
+        loadConfig(
+          validEnv({
+            MP_CALENDAR_INCLUDE: JSON.stringify([
+              { name: "Kids", role: "exclude" },
+            ]),
+          }),
+        ),
+      ).toThrowError(/calendar\.include/i);
+    });
+
+    it("reads a cookingWindow override from MP_CALENDAR_COOKING_WINDOW_START/END", () => {
+      const config = loadConfig(
+        validEnv({
+          MP_CALENDAR_COOKING_WINDOW_START: "17:00",
+          MP_CALENDAR_COOKING_WINDOW_END: "20:00",
+        }),
+      );
+
+      expect(config.calendar.cookingWindow).toEqual({
+        start: "17:00",
+        end: "20:00",
+      });
+    });
+
+    it("throws when a cookingWindow time is not HH:MM 24h format", () => {
+      expect(() =>
+        loadConfig(validEnv({ MP_CALENDAR_COOKING_WINDOW_START: "5:00pm" })),
+      ).toThrowError(/cookingWindow/i);
+    });
+
+    it("throws when cookingWindow.start is not before cookingWindow.end", () => {
+      expect(() =>
+        loadConfig(
+          validEnv({
+            MP_CALENDAR_COOKING_WINDOW_START: "19:30",
+            MP_CALENDAR_COOKING_WINDOW_END: "16:30",
+          }),
+        ),
+      ).toThrowError(/cookingWindow/i);
+    });
+
+    it("does not require the reader to exist — enabled defaults false and include-list is code-independent", () => {
+      const config = loadConfig(validEnv());
+
+      expect(config.calendar.enabled).toBe(false);
+      expect(Array.isArray(config.calendar.include)).toBe(true);
+    });
   });
 });
