@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { NightSchedule } from "./calendar/night-schedule.js";
 import type { ProfileSettings } from "./config/profile.js";
 import {
   applySecretsToEnv,
@@ -12,8 +13,10 @@ import {
   makeFatalHandler,
 } from "./index.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
+import type { PrepUnit } from "./planner/select.js";
 import type { StaleCount, SyncResult } from "./recipe-mcp/sync.js";
 import type { Secrets } from "./secrets/secrets.js";
+import { renderPlan } from "./slack/render.js";
 
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
@@ -190,6 +193,77 @@ describe("buildDryRunPost", () => {
         "[DRY-RUN post] channel=C_DRYRUN ts=dryrun-2026-07-19",
       ),
     );
+  });
+
+  it("passes plan.nightSchedule + resolved prep into renderPlan so the dry-run log shows capacity/prep annotations (ADR 0005 D4, bd meal-planner-0v7.7)", async () => {
+    const nightSchedule: NightSchedule = [
+      {
+        date: "2026-07-28",
+        weekday: "Tuesday",
+        capacity: "QUICK",
+        blocking_events: [],
+      },
+    ];
+    const prep: PrepUnit[] = [
+      {
+        description: "marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "2026-07-26",
+      },
+    ];
+    const dayPlan: EnrichedWeekPlan = {
+      week_key: "2026-07-26",
+      meals: [
+        {
+          slot_type: "constrained",
+          recipe_id: "tue-1",
+          title: "Tuesday Meal",
+          day: "2026-07-28",
+          veg: { kind: "inherent" },
+          flags: [],
+          rationale: "quick + vegetarian",
+          recipe: {
+            id: "tue-1",
+            title: "Tuesday Meal",
+            time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
+            effort_tags: [],
+            season_tags: [],
+            veg_status: "vegetarian",
+            ingredients: [],
+            body: "body",
+            source_note_id: "tue-1",
+          },
+        },
+      ],
+      prep,
+      nightSchedule,
+    };
+
+    const logger = { log: vi.fn() };
+    const post = buildDryRunPost(fakeProfile(), logger);
+
+    await post(dayPlan);
+
+    const expectedText = renderPlan(dayPlan, { nightSchedule, prep });
+    expect(expectedText).toMatch(/\*Tuesday\*.*quick/i);
+    expect(expectedText).toContain("prep Sun → serve Tue");
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining(expectedText),
+    );
+  });
+
+  it("still posts (fallback render, no crash) when the plan is degraded (day: null, no nightSchedule)", async () => {
+    const degradedPlan: EnrichedWeekPlan = {
+      week_key: "2026-07-26",
+      meals: [],
+    };
+    const logger = { log: vi.fn() };
+    const post = buildDryRunPost(fakeProfile(), logger);
+
+    const result = await post(degradedPlan);
+
+    expect(result.ts).toBe("dryrun-2026-07-26");
+    expect(logger.log).toHaveBeenCalled();
   });
 });
 

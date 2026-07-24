@@ -197,6 +197,39 @@ describe("enrichPlan", () => {
 
     expect(enriched.summary).toBe("a fine week of meals");
   });
+
+  it("carries WeekPlan.prep through unchanged when present (ADR 0004 D5, bd meal-planner-0v7.7)", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan: WeekPlan = {
+      ...plan([meal()]),
+      prep: [
+        {
+          description: "marinate the chicken",
+          serve_date: "2026-07-28",
+          prep_date: "2026-07-26",
+        },
+      ],
+    };
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    expect(enriched.prep).toEqual([
+      {
+        description: "marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "2026-07-26",
+      },
+    ]);
+  });
+
+  it("leaves prep absent when the plan carries no prep key (predates prep scheduling)", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan = plan([meal()]);
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    expect(enriched.prep).toBeUndefined();
+  });
 });
 
 describe("EnrichedWeekPlanSchema (canonical, bd6.8)", () => {
@@ -246,5 +279,24 @@ describe("EnrichedWeekPlanSchema (canonical, bd6.8)", () => {
   it("rejects a plan missing its meals array", () => {
     const result = EnrichedWeekPlanSchema.safeParse({ week_key: "2026-W29" });
     expect(result.success).toBe(false);
+  });
+
+  it("parses an enrichPlan output carrying prep units (ADR 0004 D5)", async () => {
+    const getRecipe = vi.fn(async (id: string) => recipe(id));
+    const weekPlan: WeekPlan = {
+      ...plan([meal()]),
+      prep: [
+        {
+          description: "marinate the chicken",
+          serve_date: "2026-07-28",
+          prep_date: "2026-07-26",
+        },
+      ],
+    };
+
+    const enriched = await enrichPlan(weekPlan, { getRecipe });
+
+    const result = EnrichedWeekPlanSchema.safeParse(enriched);
+    expect(result.success).toBe(true);
   });
 });

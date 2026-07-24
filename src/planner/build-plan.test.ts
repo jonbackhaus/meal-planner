@@ -76,6 +76,7 @@ const baseCfg = {
   untestedRate: 0,
   timezone: "America/Chicago",
   calendar: DISABLED_CALENDAR,
+  quickActiveMax: 30,
 };
 
 function fakeSearch() {
@@ -474,6 +475,40 @@ describe("buildPlan threads the NightSchedule into the selection prompt", () => 
   });
 });
 
+// ── ADR-0005 D4: NightSchedule attached as render context (bd meal-planner-0v7.7) ──
+describe("buildPlan attaches nightSchedule onto the returned plan", () => {
+  it("returns the SAME NightSchedule it derived slots/fed the selection prompt from (disabled-calendar static fallback)", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
+    });
+
+    // baseCfg.cookNights: 1 constrained + 1 relaxed -> the D6 static
+    // fallback sizes the schedule to exactly those 2 nights (Mon + Sun).
+    expect(result.nightSchedule).toBeDefined();
+    expect(result.nightSchedule).toHaveLength(2);
+    const dates = result.nightSchedule?.map((night) => night.date) ?? [];
+    expect(dates).toContain("2026-08-02");
+    expect(dates).toContain("2026-08-03");
+    // Disabled-calendar static fallback (baseCfg): every night is FULL.
+    expect(
+      result.nightSchedule?.every((night) => night.capacity === "FULL"),
+    ).toBe(true);
+  });
+});
+
 // ── ADR-0004 D4/D6: slots derived from NightSchedule (bead r0o.5) ──
 describe("buildPlan derives slots from NightSchedule", () => {
   const ENABLED_CALENDAR: CalendarConfig = {
@@ -566,5 +601,135 @@ describe("buildPlan derives slots from NightSchedule", () => {
       (err as InstanceType<typeof InsufficientPoolError>).relaxedSlots,
     ).toBe(2);
     expect(llm.runQuery).not.toHaveBeenCalled();
+  });
+});
+
+// ── ADR-0005 D3 (bd meal-planner-kro): calendarEnabled/quickActiveMax threaded
+// from BuildPlanConfig into selectValidatedPlan's ValidatePlanConfig, so the
+// day rules (0v7.3) actually fire in production instead of staying dormant. ──
+describe("buildPlan threads calendarEnabled/quickActiveMax into day-rule validation (bd meal-planner-kro)", () => {
+  const ENABLED_CALENDAR: CalendarConfig = {
+    enabled: true,
+    include: [{ name: "Jonathan", role: "cook" }],
+    cookingWindow: { start: "16:30", end: "19:30" },
+  };
+
+  function fullyBlockingEvent(start: string, end: string): CalendarEvent {
+    return {
+      calendarName: "Jonathan",
+      title: "Busy all evening",
+      start: new Date(start),
+      end: new Date(end),
+      allDay: false,
+      status: "confirmed",
+    };
+  }
+
+  function partiallyBlockingEvent(start: string, end: string): CalendarEvent {
+    return {
+      calendarName: "Jonathan",
+      title: "Quick errand",
+      start: new Date(start),
+      end: new Date(end),
+      allDay: false,
+      status: "confirmed",
+    };
+  }
+
+  // Week anchored Sun 2026-08-02. Fully block Mon/Tue/Wed/Thu (08-03..08-06)
+  // and Sat (08-08) -> NONE, leaving exactly 1 weeknight (Fri 08-07) + 1
+  // weekend night (Sun 08-02) -> matches fakeSearch()/planJson()'s
+  // single-candidate-per-pool shape with the derived (not static cookNights)
+  // slot counts.
+  function blockAllExceptFriAndSun(): CalendarEvent[] {
+    return [
+      fullyBlockingEvent("2026-08-03T20:00:00Z", "2026-08-04T01:00:00Z"), // Mon
+      fullyBlockingEvent("2026-08-04T20:00:00Z", "2026-08-05T01:00:00Z"), // Tue
+      fullyBlockingEvent("2026-08-05T20:00:00Z", "2026-08-06T01:00:00Z"), // Wed
+      fullyBlockingEvent("2026-08-06T20:00:00Z", "2026-08-07T01:00:00Z"), // Thu
+      fullyBlockingEvent("2026-08-08T20:00:00Z", "2026-08-09T01:00:00Z"), // Sat
+    ];
+  }
+
+  it("calendar ENABLED: a fresh plan with a null day FAILS validation (rule fires)", async () => {
+    const readEvents = vi.fn(async (_options: CalendarReaderOptions) =>
+      blockAllExceptFriAndSun(),
+    );
+    const search = fakeSearch();
+    // planJson()'s meals default `day: null` (see the `meal()` factory).
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await expect(
+      buildPlan({
+        weekKey: "2026-08-02",
+        cfg: { ...baseCfg, calendar: ENABLED_CALENDAR, quickActiveMax: 30 },
+        household: "Vegetarian daughter every night.",
+        deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+      }),
+    ).rejects.toThrow(/day is null but a night schedule is available/);
+  });
+
+  it("calendar DISABLED: a null-day plan still passes validation (lenient)", async () => {
+    const search = fakeSearch();
+    // planJson()'s meals default `day: null`; DISABLED_CALENDAR (baseCfg)
+    // keeps `calendarEnabled` false, so the non-null gate stays off.
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: { ...baseCfg, quickActiveMax: 30 },
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
+    });
+
+    expect(result.meals[0].day).toBeNull();
+    expect(result.meals[1].day).toBeNull();
+  });
+
+  it("threads cfg.quickActiveMax into the capacity-fit rule: a non-quick-eligible meal on a QUICK night fails validation", async () => {
+    // Same as blockAllExceptFriAndSun, but Friday gets only a PARTIAL cook
+    // overlap -> QUICK (not FULL). Sunday stays fully open -> FULL.
+    const readEvents = vi.fn(async (_options: CalendarReaderOptions) => [
+      ...blockAllExceptFriAndSun(),
+      partiallyBlockingEvent("2026-08-07T20:00:00Z", "2026-08-07T22:00:00Z"), // Fri, 15:00-17:00 CDT
+    ]);
+    const search = fakeSearch();
+    const plan: WeekPlan = {
+      week_key: "2026-08-02",
+      meals: [
+        // wn-veg's candidate() default active time is 20 min (see the
+        // `candidate()` factory) -> exceeds a quickActiveMax of 5, and is not
+        // flagged "do-ahead".
+        meal({
+          recipe_id: "wn-veg",
+          slot_type: "constrained",
+          day: "2026-08-07",
+        }),
+        meal({
+          recipe_id: "we-veg",
+          slot_type: "relaxed",
+          day: "2026-08-02",
+        }),
+      ],
+    };
+    const llm = fakeLlm(JSON.stringify(plan));
+    const getRecipe = fakeGetRecipe();
+
+    await expect(
+      buildPlan({
+        weekKey: "2026-08-02",
+        cfg: { ...baseCfg, calendar: ENABLED_CALENDAR, quickActiveMax: 5 },
+        household: "Vegetarian daughter every night.",
+        deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+      }),
+    ).rejects.toThrow(/5-min quick ceiling/);
   });
 });

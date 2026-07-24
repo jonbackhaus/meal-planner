@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import type { NightSchedule } from "../calendar/night-schedule.js";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
+import type { PrepUnit } from "../planner/select.js";
 import { renderPlan } from "./render.js";
 import { SlackPoster } from "./slack-poster.js";
 
@@ -109,5 +111,70 @@ describe("SlackPoster", () => {
     });
 
     await expect(poster.post(plan())).rejects.toThrow();
+  });
+
+  it("passes plan.nightSchedule + resolved prep into renderPlan so capacity/prep annotations reach the real post (ADR 0005 D4, bd meal-planner-0v7.7)", async () => {
+    const nightSchedule: NightSchedule = [
+      {
+        date: "2026-07-28",
+        weekday: "Tuesday",
+        capacity: "QUICK",
+        blocking_events: [],
+      },
+    ];
+    const prep: PrepUnit[] = [
+      {
+        description: "marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "2026-07-26",
+      },
+    ];
+    const dayPlan: EnrichedWeekPlan = {
+      week_key: "2026-07-26",
+      meals: [
+        {
+          slot_type: "constrained",
+          recipe_id: "tue-1",
+          title: "Tuesday Meal",
+          day: "2026-07-28",
+          veg: { kind: "inherent" },
+          flags: [],
+          rationale: "quick + vegetarian",
+          recipe: {
+            id: "tue-1",
+            title: "Tuesday Meal",
+            time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
+            effort_tags: [],
+            season_tags: [],
+            veg_status: "vegetarian",
+            ingredients: [],
+            body: "body",
+            source_note_id: "tue-1",
+          },
+        },
+      ],
+      prep,
+      nightSchedule,
+    };
+
+    const postMessage = vi
+      .fn()
+      .mockResolvedValue({ ok: true, ts: "1234.5678" });
+    const poster = new SlackPoster({
+      token: "xoxb-fake",
+      channelId: "C123ABC",
+      client: { chat: { postMessage } },
+    });
+
+    await poster.post(dayPlan);
+
+    const expectedText = renderPlan(dayPlan, { nightSchedule, prep });
+    expect(expectedText).toMatch(/\*Tuesday\*.*quick/i);
+    expect(expectedText).toContain("prep Sun → serve Tue");
+    expect(postMessage).toHaveBeenCalledWith({
+      channel: "C123ABC",
+      text: expectedText,
+      mrkdwn: true,
+    });
   });
 });

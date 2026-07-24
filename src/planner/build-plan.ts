@@ -50,12 +50,16 @@ export const DEFAULT_SEEDS: string[] = [
  * `fanoutMultiplier`, `vegFloorK`, `untestedRate`, optional `season`), plus
  * `timezone` + `calendar` (ADR-0004 D4/D6 — fed to `getWeekNightSchedule` to
  * derive `slots`, replacing the old static `cookNights`-as-slots read), plus
- * an optional `seeds` override (see `DEFAULT_SEEDS` above).
+ * an optional `seeds` override (see `DEFAULT_SEEDS` above), plus
+ * `quickActiveMax` (ADR-0004 D4; threaded into `selectValidatedPlan`'s
+ * `ValidatePlanConfig` — ADR-0005 D3 rule 3, "capacity fit" — bd
+ * meal-planner-kro).
  */
 export type BuildPlanConfig = PoolCompositionConfig & {
   seeds?: string[];
   timezone: string;
   calendar: CalendarConfig;
+  quickActiveMax: number;
 };
 
 export interface BuildPlanDeps {
@@ -104,6 +108,13 @@ export interface BuildPlanArgs {
  * 4. `selectValidatedPlan(input, pools, cfg, { llm })` — one selection call, validated
  *    against those SAME pools, with the one bounded repair retry (8zs.4).
  * 5. `enrichPlan(plan, { getRecipe })` — attaches the full `Recipe` to every chosen meal (8zs.5).
+ * 6. Attaches the SAME `NightSchedule` from step 2 onto the enriched plan as
+ *    `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7) — render context for
+ *    `renderPlan`'s capacity annotations. Threaded this way (an optional field
+ *    on the returned `EnrichedWeekPlan`, see enrich.ts) rather than widening
+ *    `BuildPlanFn`/`PostFn` (`orchestrator/generate.ts`), so it rides the SAME
+ *    object `generateForWeek` already carries through `buildPlan -> post ->
+ *    working_plan` without touching that contract.
  *
  * The SAME `pools` value from step 1 is passed into BOTH step 3 (selection input)
  * and step 4 (validation) — a plan that references an id outside those pools
@@ -158,9 +169,28 @@ export async function buildPlan(
   const plan = await selectValidatedPlan(
     input,
     pools,
-    { slots, maxPairedSides: cfg.maxPairedSides },
+    {
+      slots,
+      maxPairedSides: cfg.maxPairedSides,
+      // ADR-0005 D3 (bd meal-planner-kro): activate the day rules that were
+      // implemented-but-dormant in 0v7.3. `calendarEnabled` mirrors
+      // `cfg.calendar.enabled` exactly — including the ADR-0004 D6 degraded
+      // fallback case, where `enabled` is still `true` but
+      // `getWeekNightSchedule` internally substitutes a static schedule (see
+      // `ValidatePlanConfig.calendarEnabled`'s doc: the non-null gate is keyed
+      // on "real schedule available", which the fallback still provides).
+      // When `cfg.calendar.enabled` is false, this stays false, so a null
+      // `day` on the degraded/disabled path remains lenient.
+      calendarEnabled: cfg.calendar.enabled,
+      quickActiveMax: cfg.quickActiveMax,
+    },
     { llm: deps.llm },
   );
 
-  return enrichPlan(plan, { getRecipe: deps.getRecipe });
+  const enriched = await enrichPlan(plan, { getRecipe: deps.getRecipe });
+  // ADR 0005 D4 (bd meal-planner-0v7.7): carry the SAME NightSchedule the
+  // selection call reasoned over onto the returned plan as render context —
+  // see enrich.ts's `EnrichedWeekPlan.nightSchedule` doc for why this rides
+  // the plan object rather than a separate return value.
+  return { ...enriched, nightSchedule: schedule };
 }

@@ -18,6 +18,7 @@ import { SessionStore } from "./orchestrator/session-store.js";
 import { buildPlan } from "./planner/build-plan.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
 import { seasonForDate } from "./planner/season.js";
+import { resolvePrepUnits } from "./planner/select.js";
 import { TransformersEmbedder } from "./recipe-mcp/embedder.js";
 import { getRecipe } from "./recipe-mcp/get-recipe.js";
 import { readNotes } from "./recipe-mcp/notes-reader.js";
@@ -72,6 +73,13 @@ const DEFAULT_HOUSEHOLD =
  * `week_key`), so even if two dry-run posts fired for the same week they'd
  * share this ts by design — matching the single retained row for that week.
  *
+ * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (render
+ * context `buildPlan` attaches, see `planner/enrich.ts`) and
+ * `resolvePrepUnits(plan)` into `renderPlan` so the dry-run log shows the
+ * same capacity/prep annotations the real post would. `plan.nightSchedule` is
+ * `undefined` on a v1.0/degraded plan — `renderPlan` already falls back to
+ * the unordered render in that case.
+ *
  * The real `chat.postMessage`-backed `PostFn` (E5 bj1.3, `SlackPoster`) is
  * wired in `main()` below when `profile.postMode === "post"`.
  */
@@ -81,9 +89,11 @@ export function buildDryRunPost(
 ): (plan: EnrichedWeekPlan) => Promise<{ ts: string }> {
   return async (plan: EnrichedWeekPlan) => {
     const ts = `dryrun-${plan.week_key}`;
-    logger.log(
-      `[DRY-RUN post] channel=${profile.channelId} ts=${ts}\n${renderPlan(plan)}`,
-    );
+    const text = renderPlan(plan, {
+      nightSchedule: plan.nightSchedule,
+      prep: resolvePrepUnits(plan),
+    });
+    logger.log(`[DRY-RUN post] channel=${profile.channelId} ts=${ts}\n${text}`);
     return { ts };
   };
 }
@@ -531,6 +541,10 @@ export async function main(): Promise<void> {
         // calendar.enabled is false or the live read fails).
         timezone: config.timezone,
         calendar: config.calendar,
+        // ADR-0005 D3 (bd meal-planner-kro): threaded into
+        // selectValidatedPlan's ValidatePlanConfig.quickActiveMax so the
+        // QUICK-night capacity-fit day rule actually fires in production.
+        quickActiveMax: config.quickActiveMax,
       },
       household,
       deps: {
