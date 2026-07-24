@@ -1,5 +1,8 @@
 import { DateTime } from "luxon";
-import type { Capacity, NightSchedule } from "../calendar/night-schedule.js";
+import type {
+  Capacity,
+  NightCapacitySchedule,
+} from "../calendar/night-schedule.js";
 import type { EnrichedMeal, EnrichedWeekPlan } from "../planner/enrich.js";
 import type { PrepUnit } from "../planner/select.js";
 
@@ -22,24 +25,28 @@ import type { PrepUnit } from "../planner/select.js";
  *
  * ADR 0005 D4 dual-mode render: when at least one meal carries a non-null
  * `day` (ISO date, ADR 0005 D2), the render groups meals into day-ordered
- * sections Monday->Sunday, each annotated with its `NightSchedule` capacity
- * (when supplied) and any matching prep note (ADR 0004 D5). When every meal
- * has `day: null` (a v1.0 plan, or the ADR 0004 D6 degraded no-calendar
- * path), the render falls back UNCHANGED to the v1.0 unordered
+ * sections Monday->Sunday, each annotated with its `NightCapacitySchedule`
+ * capacity (when supplied) and any matching prep note (ADR 0004 D5). When
+ * every meal has `day: null` (a v1.0 plan, or the ADR 0004 D6 degraded
+ * no-calendar path), the render falls back UNCHANGED to the v1.0 unordered
  * `slot_type`-sectioned render below — this fallback must never crash or
  * render blank days.
  */
 
 /**
  * Optional day-ordered-render inputs (ADR 0005 D4). Both are optional so a
- * caller can render a day-ordered plan without a `NightSchedule` (capacity
- * annotations are simply omitted) and/or without prep units (no prep notes).
+ * caller can render a day-ordered plan without a `NightCapacitySchedule`
+ * (capacity annotations are simply omitted) and/or without prep units (no
+ * prep notes). `nightSchedule` is the COMPACT, PII-free per-night capacity
+ * view (date/weekday/capacity only — see `calendar/night-schedule.ts`'s
+ * `NightCapacity`; no `blocking_events` event titles, bd meal-planner-0v7.8)
+ * since this render never needed event titles in the first place.
  * `nightSchedule`/`prep` are read-only inputs threaded in by the caller (the
  * orchestrator/build-plan integration owns actually wiring these) — this
  * module never fetches or derives them itself.
  */
 export interface RenderPlanOptions {
-  nightSchedule?: NightSchedule;
+  nightSchedule?: NightCapacitySchedule;
   prep?: PrepUnit[];
 }
 
@@ -222,7 +229,7 @@ interface DaySectionInput {
  * Builds the Monday->Sunday-ordered list of day sections (ADR 0005 D4) by
  * merging `plan.meals` (keyed by their `day`) with `nightSchedule` (when
  * supplied — the capacity/weekday-name source of truth). Every date that
- * has either a placed meal or a `NightSchedule` entry is a candidate; a
+ * has either a placed meal or a `nightSchedule` entry is a candidate; a
  * `nightSchedule` night with no meal is kept ONLY when its capacity is
  * `NONE` (so a plain "no cook — leftovers" line can show) — a capacity-
  * having night with no meal otherwise is dropped rather than rendered
@@ -231,7 +238,7 @@ interface DaySectionInput {
  */
 function buildDaySections(
   plan: EnrichedWeekPlan,
-  nightSchedule: NightSchedule | undefined,
+  nightSchedule: NightCapacitySchedule | undefined,
 ): DaySectionInput[] {
   const mealsByDay = new Map<string, EnrichedMeal>();
   for (const meal of plan.meals) {

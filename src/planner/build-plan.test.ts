@@ -531,6 +531,95 @@ describe("buildPlan attaches nightSchedule onto the returned plan", () => {
   });
 });
 
+// ── bd meal-planner-0v7.8: the attached nightSchedule is the COMPACT,
+// PII-free capacity view (date/weekday/capacity), NOT the full NightSchedule
+// with blocking_events/raw calendar event titles. This is what generate.ts
+// (ADR 0002 write-before-post) persists as working_plan, so a raw event
+// title must never reach the returned/persisted plan. ──
+describe("buildPlan attaches a COMPACT nightSchedule (bd meal-planner-0v7.8)", () => {
+  const ENABLED_CALENDAR: CalendarConfig = {
+    enabled: true,
+    include: [{ name: "Jonathan", role: "cook" }],
+    cookingWindow: { start: "16:30", end: "19:30" },
+  };
+
+  function fullyBlockingEvent(start: string, end: string): CalendarEvent {
+    return {
+      calendarName: "Jonathan",
+      title: "Busy all evening",
+      start: new Date(start),
+      end: new Date(end),
+      allDay: false,
+      status: "confirmed",
+    };
+  }
+
+  // Same shape as the "kro" describe block's blockAllExceptFriAndSun: blocks
+  // Mon-Thu + Sat -> NONE, leaving exactly Fri (weeknight) + Sun (weekend)
+  // open, matching fakeSearch()/single-candidate-per-pool sizing.
+  function blockAllExceptFriAndSun(): CalendarEvent[] {
+    return [
+      fullyBlockingEvent("2026-08-03T20:00:00Z", "2026-08-04T01:00:00Z"), // Mon
+      fullyBlockingEvent("2026-08-04T20:00:00Z", "2026-08-05T01:00:00Z"), // Tue
+      fullyBlockingEvent("2026-08-05T20:00:00Z", "2026-08-06T01:00:00Z"), // Wed
+      fullyBlockingEvent("2026-08-06T20:00:00Z", "2026-08-07T01:00:00Z"), // Thu
+      fullyBlockingEvent("2026-08-08T20:00:00Z", "2026-08-09T01:00:00Z"), // Sat
+    ];
+  }
+
+  it("returns date/weekday/capacity per night with NO blocking_events / raw event titles", async () => {
+    const readEvents = vi.fn(async (_options: CalendarReaderOptions) =>
+      blockAllExceptFriAndSun(),
+    );
+    const search = fakeSearch();
+    const plan: WeekPlan = {
+      week_key: "2026-08-02",
+      meals: [
+        meal({
+          recipe_id: "wn-veg",
+          slot_type: "constrained",
+          day: "2026-08-07",
+        }),
+        meal({
+          recipe_id: "we-veg",
+          slot_type: "relaxed",
+          day: "2026-08-02",
+        }),
+      ],
+    };
+    const llm = fakeLlm(JSON.stringify(plan));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: { ...baseCfg, calendar: ENABLED_CALENDAR, quickActiveMax: 30 },
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents,
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+      },
+    });
+
+    expect(result.nightSchedule).toBeDefined();
+    expect(result.nightSchedule).toHaveLength(7);
+    for (const night of result.nightSchedule ?? []) {
+      expect(night).not.toHaveProperty("blocking_events");
+      expect(Object.keys(night).sort()).toEqual([
+        "capacity",
+        "date",
+        "weekday",
+      ]);
+    }
+    // No raw calendar event title survives onto the returned plan (the same
+    // object generate.ts persists as working_plan) or anywhere in its JSON.
+    expect(JSON.stringify(result)).not.toContain("Busy all evening");
+  });
+});
+
 // ── ADR-0004 D5: prep-unit placement wired into the pipeline (bd meal-planner-468.2) ──
 describe("buildPlan places prep units before enrich/return", () => {
   it("attaches a placed PrepUnit for a do-ahead meal, reachable via result.prep", async () => {

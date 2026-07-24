@@ -2,6 +2,7 @@ import type {
   CalendarEvent,
   CalendarReaderOptions,
 } from "../calendar/calendar-reader.js";
+import { toNightCapacitySchedule } from "../calendar/night-schedule.js";
 import { getWeekNightSchedule } from "../calendar/week-night-schedule.js";
 import type { CalendarConfig, WeatherConfig } from "../config/config.js";
 import type { LlmClient } from "../llm/llm-client.js";
@@ -129,13 +130,17 @@ export interface BuildPlanArgs {
  *    (ADR-0004 D5, bd meal-planner-468.2) off that SAME `schedule`; attached as
  *    `plan.prep` BEFORE enrich.
  * 6. `enrichPlan(plan, { getRecipe })` — attaches the full `Recipe` to every chosen meal (8zs.5).
- * 7. Attaches the SAME `NightSchedule` from step 2 onto the enriched plan as
- *    `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7) — render context for
- *    `renderPlan`'s capacity annotations. Threaded this way (an optional field
- *    on the returned `EnrichedWeekPlan`, see enrich.ts) rather than widening
+ * 7. Attaches a COMPACT, PII-free projection of the SAME `NightSchedule` from
+ *    step 2 onto the enriched plan as `nightSchedule` (ADR 0005 D4, bd
+ *    meal-planner-0v7.7; compacted in bd meal-planner-0v7.8 via
+ *    `toNightCapacitySchedule` — date/weekday/capacity only, `blocking_events`
+ *    event titles dropped) — render context for `renderPlan`'s capacity
+ *    annotations. Threaded this way (an optional field on the returned
+ *    `EnrichedWeekPlan`, see enrich.ts) rather than widening
  *    `BuildPlanFn`/`PostFn` (`orchestrator/generate.ts`), so it rides the SAME
  *    object `generateForWeek` already carries through `buildPlan -> post ->
- *    working_plan` without touching that contract.
+ *    working_plan` without touching that contract — meaning `working_plan`
+ *    never contains raw calendar event titles.
  *
  * The SAME `pools` value from step 1 is passed into BOTH step 3 (selection input)
  * and step 4 (validation) — a plan that references an id outside those pools
@@ -234,9 +239,11 @@ export async function buildPlan(
   const enriched = await enrichPlan(planWithPrep, {
     getRecipe: deps.getRecipe,
   });
-  // ADR 0005 D4 (bd meal-planner-0v7.7): carry the SAME NightSchedule the
-  // selection call reasoned over onto the returned plan as render context —
-  // see enrich.ts's `EnrichedWeekPlan.nightSchedule` doc for why this rides
-  // the plan object rather than a separate return value.
-  return { ...enriched, nightSchedule: schedule };
+  // ADR 0005 D4 (bd meal-planner-0v7.7), compacted in bd meal-planner-0v7.8:
+  // carry a COMPACT, PII-free projection (date/weekday/capacity, no
+  // blocking_events) of the SAME NightSchedule the selection call reasoned
+  // over onto the returned plan as render context — see enrich.ts's
+  // `EnrichedWeekPlan.nightSchedule` doc for why this rides the plan object
+  // rather than a separate return value.
+  return { ...enriched, nightSchedule: toNightCapacitySchedule(schedule) };
 }
