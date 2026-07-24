@@ -48,6 +48,19 @@ you run `pnpm sync` / `pnpm dev` by hand:
    hashtag read works, `q95.13`). System Settings → **Privacy & Security → Full
    Disk Access** → **＋** → add the daemon's `node` binary (⌘⇧G to type the
    absolute path) → enable its toggle.
+3. **Calendars** (v2.0+, only if `calendar.enabled=true`) — `osascript`/JXA
+   controlling Calendar.app (how `readCalendarEvents`,
+   `src/calendar/calendar-reader.ts`, reads events for ADR-0004's calendar
+   capacity classification). Unlike the two grants above, this shows up under
+   its own **Calendars** category (not Automation) because Calendar.app's
+   scripting bridge is itself EventKit-backed — System Settings →
+   **Privacy & Security → Calendars** → find the daemon's `node` binary →
+   enable its toggle. Same TCC-keys-on-the-binary rule as Notes/FDA above
+   applies. Degrade-safe: with `calendar.enabled=false` (the default) or an
+   ungranted/failed read, the daemon falls back to the static v1.0 cook-night
+   count and alerts `#agent-alerts` once (ADR-0004 D6) — it never fails the
+   Sunday post, so this grant is only needed once you opt a deployment into
+   the v2.0 calendar feature.
 
 **Why this must happen before/at first run, not lazily:** the very first
 `osascript` Notes access raises a **one-time permission dialog**, and **launchd
@@ -87,6 +100,12 @@ pnpm sync            # should read your recipe corpus and print total>0
 - Re-confirm both toggles in System Settings are still enabled for the daemon's
   current `node` binary; re-run the foreground `pnpm sync` to re-trigger the
   prompt if a grant was dropped.
+- If `calendar.enabled=true` (v2.0+), the same re-grant risk applies to the
+  **Calendars** toggle from §0.1 item 3 — a dropped grant degrades to the
+  static cook-night count + a one-time `#agent-alerts` alert (ADR-0004 D6)
+  rather than a hang or failed post, but re-confirm the toggle and re-trigger
+  the permission prompt in the foreground the same way after any OS/node
+  upgrade.
 
 ### 0.3 Apple-schema-change risk  · `bd fkg.7`
 
@@ -406,7 +425,11 @@ boot-launch + restart-on-crash.
      path (used by `ProgramArguments`, `WorkingDirectory`, `StandardOutPath`,
      `StandardErrorPath`) and `pnpm build` first so `dist/index.js` exists.
    - Replace `/usr/local/bin/node` with the output of `which node` if different
-     (launchd does not use your shell `PATH`).
+     (launchd does not use your shell `PATH`). This exact binary path is what
+     needs the Automation/Full Disk Access grants from §0.1 — and, if
+     `calendar.enabled=true`, the **Calendars** grant too (§0.1 item 3): TCC
+     keys on the binary, so a `node` upgrade that moves this path needs all
+     three re-granted, not just re-verified.
    - Fill in real secret/config values under `EnvironmentVariables` (or set
      `OP_SERVICE_ACCOUNT_TOKEN` and rely on the 1Password source — see §3).
      **Never commit the filled-in copy back to git.**
