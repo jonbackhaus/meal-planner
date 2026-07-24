@@ -47,7 +47,14 @@ export type VegPath = z.infer<typeof VegPathSchema>;
  * One selected meal. `recipe_id` MUST be a member of the matching pool —
  * that pool-membership check (along with counts/veg-consistency/no-dupes)
  * is the semantic `validate()` in 8zs.4, NOT enforced by this shape schema.
- * `day` is v1.0's literal `null` — day-of-week assignment is v2.0 scope.
+ * `day` (ADR 0005 D2) is a nullable ISO calendar date (`"2026-07-28"`), not
+ * a weekday name: it is the unambiguous key into `NightSchedule`, `week_key`
+ * already pins the week, and the render derives the "Tuesday" label from the
+ * date. Nullability is load-bearing, not a placeholder — a legacy v1.0 row
+ * (`day: null`) and the ADR 0004 D6 degraded no-calendar path both persist
+ * `null` and must keep parsing; v2.0 only requires non-null on a *freshly
+ * generated* plan, which is a semantic `validate()` rule (ADR 0005 D3), not
+ * enforced by this shape schema.
  *
  * `side` (bd meal-planner-8zs.8) is an OPTIONAL side dish paired with this
  * main ("we make this with cornbread"). It is DISTINCT from a
@@ -62,7 +69,10 @@ export const SelectedMealSchema = z
     slot_type: z.enum(["constrained", "relaxed"]),
     recipe_id: z.string(),
     title: z.string(),
-    day: z.null(),
+    day: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable(),
     veg: VegPathSchema,
     flags: z.array(z.string()),
     rationale: z.string(),
@@ -75,18 +85,65 @@ export const SelectedMealSchema = z
 export type SelectedMeal = z.infer<typeof SelectedMealSchema>;
 
 /**
+ * A single make-ahead prep unit (ADR 0004 D5): "prep Sun -> serve Tue".
+ * `serve_date`/`prep_date` are unambiguous ISO calendar dates, matching
+ * `day`'s format/rationale (ADR 0005 D2) rather than weekday names.
+ * `prep_date` is nullable and starts `null` — v2.0's placement step
+ * (bd meal-planner-468.2) fills it in by choosing an earlier suitable night
+ * off the capacity schedule; `null` also covers the ADR 0004 D6 degraded
+ * no-calendar path, where no earlier night can be chosen. This is the first
+ * additive plan-schema evolution to carry a NESTED (object) value rather
+ * than a flat scalar like `day` — hence its own reusable schema here rather
+ * than inlining three fields onto `WeekPlanSchema`.
+ */
+export const PrepUnitSchema = z
+  .object({
+    description: z.string(),
+    serve_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    prep_date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .nullable(),
+  })
+  .strict();
+export type PrepUnit = z.infer<typeof PrepUnitSchema>;
+
+/**
  * The full week's selection. `meals.length` is expected to equal
  * `slots.constrained + slots.relaxed` — that count check is also 8zs.4's
  * semantic `validate()`, not this shape schema.
+ *
+ * `prep` (ADR 0004 D5) is an OPTIONAL, additive array of {@link PrepUnit}s —
+ * absent on any plan predating v2.0 prep scheduling (bd meal-planner-468) and
+ * on a freshly-generated plan until 468.2 populates it; absent is equivalent
+ * to "no prep units this week", not an error. Purely additive: existing
+ * stored plans without a `prep` key keep parsing (resume-safety, bd6.10 /
+ * bd6.13) — see `resolvePrepUnits` below for the read-side default, and
+ * `orchestrator/resume.ts`'s `ResumedWeekPlanSchema` for the lenient-read
+ * mirror of this same field.
  */
 export const WeekPlanSchema = z
   .object({
     week_key: z.string(),
     meals: z.array(SelectedMealSchema),
     summary: z.string().optional(),
+    prep: z.array(PrepUnitSchema).optional(),
   })
   .strict();
 export type WeekPlan = z.infer<typeof WeekPlanSchema>;
+
+/**
+ * Forward-migration read helper (ADR 0004 D5, bd6.13): a plan that predates
+ * prep scheduling carries no `prep` key at all. Backfills that absence to an
+ * empty array so a caller (468.2's placement step, a future render) can
+ * treat "no `prep` key" and "`prep: []`" identically as "no prep units this
+ * week" without an `undefined` check at every call site. Never mutates its
+ * input — this is a pure read, not a stored migration (there is nothing to
+ * write back; the empty-array reading is synthesized on demand).
+ */
+export function resolvePrepUnits(plan: Pick<WeekPlan, "prep">): PrepUnit[] {
+  return plan.prep ?? [];
+}
 
 /**
  * Thrown when the single selection call's response can't be turned into a
