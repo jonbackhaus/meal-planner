@@ -478,6 +478,83 @@ in prod, confirming the post, then relaunching without it.
 
 ---
 
+## 8.1 Enable v2.0 (calendar + weather)  · epics `r0o` / `0v7` / `468`
+
+v2.0 (calendar-driven day assignment + capacity, weather signal, make-ahead prep
+scheduling) ships **off by default** — a fresh prod boot behaves exactly like
+v1.0 (a static all-FULL schedule, unordered slot-typed post). Turn it on
+deliberately, and **grant the TCC first** or it silently degrades.
+
+> **The daemon reads env from the plist `EnvironmentVariables`, NOT `.env`.** All
+> the vars below go in your machine-local
+> `~/Library/LaunchAgents/com.backhaus.meal-planner.plist` (the committed
+> template `deploy/launchd/…` carries them commented). `.env` only affects
+> `pnpm dev`/`pnpm sync`.
+
+**Ordered checklist:**
+
+1. **Grant the "Calendars" TCC to the daemon's `node` binary — do this first.**
+   TCC keys on the exact binary (`which node` that the plist's `ProgramArguments`
+   uses), same as the Notes Full-Disk-Access/Automation grants (§0.1 item 3).
+   Trigger the prompt with a foreground read from the checkout, click **Allow**
+   (or enable it under **System Settings → Privacy & Security → Calendars**):
+   ```bash
+   set -a; source ./meal-planner.env; set +a          # or your env source
+   node -e 'import("./dist/calendar/calendar-reader.js").then(async m => { \
+     const s=new Date(), e=new Date(s.getTime()+7*864e5); \
+     console.log((await m.readCalendarEvents({start:s,end:e})).length, "events"); })'
+   ```
+   A count (not a 60s timeout / permission error) means the grant is in place.
+   ⚠️ If the daemon runs a **different** `node` than your shell, grant that exact
+   binary too — a `node`/OS upgrade that moves the path needs a re-grant.
+
+2. **Set the calendar vars in the plist** (uncomment the v2.0 block in your
+   local copy):
+   - `MP_CALENDAR_ENABLED` → `true` (master switch).
+   - `MP_CALENDAR_INCLUDE` → JSON allowlist of the family's **real** Calendar.app
+     calendar names + roles. Names must match Calendar.app **exactly**. Roles:
+     - `cook` — an event **fully covering** the cooking window blocks it → the
+       night is **NONE** (a partial overlap → QUICK). Use for "we're out /
+       travelling / eating out" calendars.
+     - `logistics` — **any** overlap pulls a cook away → the night is **QUICK**.
+       Use for kids' activities, drives, appointments.
+     - Example (adapt to your calendars):
+       `[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"},{"name":"TripIt","role":"cook"}]`
+     - Tip: **exclude `Siri Suggestions`** — it mirrors events already on other
+       calendars and would double-count. An **empty** allowlist means nothing
+       marks a night busy → every night stays FULL (you get day *ordering* but
+       no real capacity signal), so a non-empty list is what makes it worthwhile.
+   - `MP_CALENDAR_COOKING_WINDOW_START` / `_END` → the dinner-prep window an
+     event must overlap to affect a night (defaults `16:30`/`19:30`).
+   - `MP_QUICK_ACTIVE_MAX` → minutes; a meal placed on a QUICK night must be
+     `active ≤ this` **or** make-ahead (default `30`).
+
+3. **(Optional) Set the weather vars** for the `temperature_band` soft signal:
+   `MP_WEATHER_LATITUDE` / `MP_WEATHER_LONGITUDE` (decimal degrees). Both must be
+   set; unset = weather silently skipped (seasonal-only). Keyless — no account.
+
+4. **Reload the daemon** so it re-reads the plist env:
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+   launchctl load   ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+   ```
+
+5. **Verify with a controlled test-fire** (`MP_FIRE_ON_START=1` for one launch,
+   then relaunch without it). On a healthy calendar-enabled run the `#meal-plan`
+   post is **day-ordered (Mon→Sun)** with weekday labels and capacity annotations
+   (quick / leftover nights), and any make-ahead meal shows a "prep … → serve …"
+   note. If it still posts an **unordered** slot-typed set, the calendar path
+   degraded — check `#agent-alerts`/the log for the degrade line and re-confirm
+   the TCC grant + `MP_CALENDAR_ENABLED=true`.
+
+**Degrade-don't-fail (by design):** a missing/denied calendar, a read failure, or
+`MP_CALENDAR_ENABLED=false` falls back to the v1.0 static schedule, alerts
+`#agent-alerts` **once**, and still posts — it never fails a Sunday. Weather
+degrades **silently** (no alert). So a misconfiguration degrades gracefully
+rather than skipping the week.
+
+---
+
 ## 9. Post-launch checklist
 
 - [ ] `#meal-plan` received a sensible draft at the scheduled time.
