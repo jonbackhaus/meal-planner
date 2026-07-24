@@ -353,6 +353,53 @@ describe("resumeQuietly", () => {
     expect(resumeQuietly(row).working_plan?.meals[0].day).toBe("Monday");
   });
 
+  it("lenient read (ADR 0005 D5): a meal with `day` absent entirely (pre-day-field v1.0 row) parses without throwing", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12") as {
+      meals: Array<Record<string, unknown>>;
+    };
+    const { day: _day, ...mealWithoutDay } = plan.meals[0];
+    const withoutDay = {
+      ...plan,
+      meals: [mealWithoutDay, plan.meals[1]],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      working_plan: withoutDay,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    expect(() => resumeQuietly(row)).not.toThrow();
+    expect(resumeQuietly(row).working_plan?.meals[0].day).toBeUndefined();
+  });
+
+  it("lenient read (ADR 0005 D2/D5): a meal with an ISO-date `day` (v2.0 day assignment) resumes without throwing", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12") as {
+      meals: Array<Record<string, unknown>>;
+    };
+    const withIsoDay = {
+      ...plan,
+      meals: [{ ...plan.meals[0], day: "2026-07-28" }, plan.meals[1]],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      working_plan: withIsoDay,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    expect(() => resumeQuietly(row)).not.toThrow();
+    expect(resumeQuietly(row).working_plan?.meals[0].day).toBe("2026-07-28");
+  });
+
   it("lenient read stays STRICT about the core: a plan missing `meals` still throws ResumeError", () => {
     store = makeStore();
     store.insert({

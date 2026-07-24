@@ -1,3 +1,8 @@
+import type {
+  BlockingEvent,
+  Night,
+  NightSchedule,
+} from "../calendar/night-schedule.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import { DEFAULT_MAX_PAIRED_SIDES, type Pools } from "./pools.js";
 
@@ -33,6 +38,15 @@ export interface PlannerInput {
   slots: { constrained: number; relaxed: number };
   pools: Pools;
   /**
+   * The week's 7-night cooking-capacity schedule (ADR-0004 D4, ADR-0005 D1) —
+   * folded into the SAME selection call so the model can co-reason over
+   * selection AND placement (e.g. a make-ahead for a QUICK Tuesday, a smoker
+   * cook for a FULL Saturday) rather than a blind second assignment pass.
+   * Always the schedule `buildPlan` already derived `slots` from (real read,
+   * or the ADR-0004 D6 static all-FULL fallback) — never re-derived here.
+   */
+  night_schedule: NightSchedule;
+  /**
    * Household prose: vegetarian daughter (HARD, every night), picky-youngest
    * likes/dislikes, smaller appetites, cook-nights cadence, etc. This is
    * FAMILY-SPECIFIC config, not something this module (or any planner code)
@@ -56,6 +70,8 @@ export interface BuildPlannerInputArgs {
   weekKey: string;
   slots: { constrained: number; relaxed: number };
   pools: Pools;
+  /** The week's `NightSchedule` — see `PlannerInput.night_schedule` doc above. */
+  nightSchedule: NightSchedule;
   /** Caller-supplied household prose — see `PlannerInput.household` doc above. */
   household: string;
   currentSeason?: string;
@@ -70,8 +86,15 @@ export interface BuildPlannerInputArgs {
  * `quality === "untested"` candidate.
  */
 export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
-  const { weekKey, slots, pools, household, currentSeason, maxPairedSides } =
-    args;
+  const {
+    weekKey,
+    slots,
+    pools,
+    nightSchedule,
+    household,
+    currentSeason,
+    maxPairedSides,
+  } = args;
 
   const untestedPresent = [...pools.weeknight, ...pools.weekend].some(
     (candidate) => candidate.quality === "untested",
@@ -81,6 +104,7 @@ export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
     week_key: weekKey,
     slots,
     pools,
+    night_schedule: nightSchedule,
     household,
     ...(currentSeason !== undefined ? { current_season: currentSeason } : {}),
     untested_present: untestedPresent,
@@ -115,6 +139,25 @@ function renderCandidate(candidate: RecipeCandidate): string {
   );
 }
 
+/** Renders one night's `blocking_events` as a compact "why constrained" suffix. */
+function renderBlockingEvents(events: BlockingEvent[]): string {
+  if (events.length === 0) {
+    return "";
+  }
+  const summary = events.map((e) => `${e.title} (${e.role})`).join(", ");
+  return ` — blocked by: ${summary}`;
+}
+
+/** Renders one `Night` as `<date> (<weekday>): <capacity>[ — blocked by: ...]`. */
+function renderNight(night: Night): string {
+  return `- ${night.date} (${night.weekday}): ${night.capacity}${renderBlockingEvents(night.blocking_events)}`;
+}
+
+/** Renders the full `NightSchedule` (ADR-0004 D4), one line per night. */
+function renderNightSchedule(schedule: NightSchedule): string {
+  return schedule.map(renderNight).join("\n");
+}
+
 function renderPool(name: string, candidates: RecipeCandidate[]): string {
   if (candidates.length === 0) {
     return `${name} pool (0 candidates): none.`;
@@ -140,9 +183,11 @@ export function buildSelectionPrompt(input: PlannerInput): string {
 
   sections.push(
     "TASK\n" +
-      "Select a week of family dinners from the candidate pools below. " +
-      "You are choosing WHICH recipes to cook this week — not assigning " +
-      "them to specific days.",
+      "Select a week of family dinners from the candidate pools below AND " +
+      "assign each selected meal to a specific night from the SCHEDULE " +
+      "below. Selection and placement are ONE decision: choose recipes " +
+      "WITH their night in mind (e.g. a make-ahead for a QUICK night, a " +
+      "heavier cook for a FULL night).",
   );
 
   sections.push(
@@ -155,8 +200,22 @@ export function buildSelectionPrompt(input: PlannerInput): string {
   sections.push(
     "SLOTS\n" +
       `Select exactly ${input.slots.constrained} weeknight meals (slot_type "constrained") ` +
-      `+ ${input.slots.relaxed} weekend meals (slot_type "relaxed"). Do NOT assign days — ` +
-      "slot-to-day scheduling happens later, outside this selection.",
+      `+ ${input.slots.relaxed} weekend meals (slot_type "relaxed"). Assign each meal a ` +
+      "specific ISO-date `day` from the SCHEDULE below (see SCHEDULE for the " +
+      "per-night capacity and how it constrains placement).",
+  );
+
+  sections.push(
+    "SCHEDULE\n" +
+      "The week's nights and each one's cooking capacity (FULL = normal " +
+      "cook, QUICK = tight on time, NONE = no cook possible):\n" +
+      `${renderNightSchedule(input.night_schedule)}\n\n` +
+      "Assign each selected meal to one of these nights via its `day` field, " +
+      'using the EXACT ISO date shown above. A "constrained" (slot_type) ' +
+      'meal must land on a weeknight (Mon-Fri) date; a "relaxed" meal must ' +
+      "land on a weekend (Sat/Sun) date. NEVER assign a meal to a NONE " +
+      "night. Favor a QUICK night for a quick-to-cook or make-ahead meal, " +
+      "and reserve FULL nights for anything heavier.",
   );
 
   const sidePool = input.pools.sides ?? [];
@@ -238,7 +297,7 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       '      "slot_type": "constrained" | "relaxed",\n' +
       '      "recipe_id": "<an id from a pool above>",\n' +
       '      "title": "<that recipe\'s title>",\n' +
-      '      "day": null,\n' +
+      '      "day": "<an ISO date from SCHEDULE above>",\n' +
       '      "veg": { "kind": "inherent" }\n' +
       '            | { "kind": "separable", "note": "<how she is served meat-free>" }\n' +
       '            | { "kind": "second_dish", "recipe_id": "<a vegetarian id from a pool>", "title": "<its title>" },\n' +
@@ -252,7 +311,9 @@ export function buildSelectionPrompt(input: PlannerInput): string {
       `Emit exactly ${input.slots.constrained} meals with slot_type "constrained" and ` +
       `${input.slots.relaxed} with slot_type "relaxed" — one object per selected meal. Do NOT ` +
       `wrap the object in any outer key (no "week_plan" envelope). Every key shown is required ` +
-      `${optionalKeysNote}; "flags" is [] when none apply; "day" is always null.`,
+      `${optionalKeysNote}; "flags" is [] when none apply; "day" must be an ISO date ` +
+      "(YYYY-MM-DD) copied EXACTLY from the SCHEDULE above — the specific night this meal is " +
+      "assigned to, consistent with its slot_type per the SCHEDULE section's placement rules.",
   );
 
   return sections.join("\n\n");

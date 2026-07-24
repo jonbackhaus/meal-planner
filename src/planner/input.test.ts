@@ -1,10 +1,40 @@
 import { describe, expect, it } from "vitest";
+import type { NightSchedule } from "../calendar/night-schedule.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import {
   buildPlannerInput,
   buildSelectionPrompt,
   type PlannerInput,
 } from "./input.js";
+
+function night(
+  date: string,
+  weekday: string,
+  capacity: NightSchedule[number]["capacity"] = "FULL",
+  blocking_events: NightSchedule[number]["blocking_events"] = [],
+): NightSchedule[number] {
+  return { date, weekday, capacity, blocking_events };
+}
+
+const BASE_SCHEDULE: NightSchedule = [
+  night("2026-07-19", "Sunday"),
+  night("2026-07-20", "Monday"),
+  night("2026-07-21", "Tuesday", "QUICK", [
+    {
+      calendar: "Jonathan",
+      role: "logistics",
+      title: "Soccer practice",
+      start: "2026-07-21T23:00:00.000Z",
+      end: "2026-07-22T00:30:00.000Z",
+      allDay: false,
+      effect: "pulls-cook-away",
+    },
+  ]),
+  night("2026-07-22", "Wednesday"),
+  night("2026-07-23", "Thursday"),
+  night("2026-07-24", "Friday"),
+  night("2026-07-25", "Saturday"),
+];
 
 function candidate(
   id: string,
@@ -30,6 +60,7 @@ describe("buildPlannerInput", () => {
   const baseArgs = {
     weekKey: "2026-W29",
     slots: { constrained: 4, relaxed: 2 },
+    nightSchedule: BASE_SCHEDULE,
     household: HOUSEHOLD_PROSE,
   };
 
@@ -45,6 +76,7 @@ describe("buildPlannerInput", () => {
     expect(input.slots).toEqual({ constrained: 4, relaxed: 2 });
     expect(input.pools).toBe(pools);
     expect(input.household).toBe(HOUSEHOLD_PROSE);
+    expect(input.night_schedule).toBe(BASE_SCHEDULE);
   });
 
   it("computes untested_present true when a pool has an untested candidate", () => {
@@ -142,6 +174,7 @@ describe("buildSelectionPrompt", () => {
           }),
         ],
       },
+      night_schedule: BASE_SCHEDULE,
       household: HOUSEHOLD_PROSE,
       untested_present: false,
       ...overrides,
@@ -156,15 +189,38 @@ describe("buildSelectionPrompt", () => {
     expect(prompt.toLowerCase()).toMatch(/every night/);
   });
 
-  it("states the exact slot counts, tagged by slot_type, without assigning days", () => {
+  it("states the exact slot counts, tagged by slot_type, and instructs ISO-date day assignment", () => {
     const prompt = buildSelectionPrompt(makeInput());
 
     expect(prompt).toContain("4");
     expect(prompt).toContain("2");
     expect(prompt.toLowerCase()).toContain("slot_type");
-    expect(prompt.toLowerCase()).toMatch(
+    expect(prompt.toLowerCase()).toMatch(/assign each meal a specific/);
+    expect(prompt.toLowerCase()).not.toMatch(
       /do not assign days|don't assign days/,
     );
+  });
+
+  it("renders the NightSchedule with per-night date, weekday, and capacity (ADR-0005 D1)", () => {
+    const prompt = buildSelectionPrompt(makeInput());
+
+    expect(prompt).toContain("SCHEDULE");
+    for (const n of BASE_SCHEDULE) {
+      expect(prompt).toContain(n.date);
+      expect(prompt).toContain(n.weekday);
+      expect(prompt).toContain(n.capacity);
+    }
+    // The blocking event's reason surfaces for the QUICK Tuesday night.
+    expect(prompt).toContain("Soccer practice");
+  });
+
+  it("instructs the model to assign each meal an ISO-date day consistent with slot_type/night capacity", () => {
+    const prompt = buildSelectionPrompt(makeInput());
+
+    expect(prompt.toLowerCase()).toMatch(/weeknight/);
+    expect(prompt.toLowerCase()).toMatch(/weekend/);
+    expect(prompt.toLowerCase()).toMatch(/none/);
+    expect(prompt.toLowerCase()).toMatch(/quick/);
   });
 
   it("specifies the exact WeekPlan output shape with schema field names (bd 8zs.7)", () => {
@@ -183,8 +239,9 @@ describe("buildSelectionPrompt", () => {
     expect(prompt).toContain("inherent");
     expect(prompt).toContain("separable");
     expect(prompt).toContain("second_dish");
-    // day is the literal null (v1.0).
-    expect(prompt).toMatch(/"day":\s*null/);
+    // day is an ISO-date string assigned from the SCHEDULE (ADR-0005 D1/D2).
+    expect(prompt).toMatch(/"day":\s*"/);
+    expect(prompt.toLowerCase()).toMatch(/iso date/);
   });
 
   it("renders the actual week_key value so the model can echo it (bd 8zs.7)", () => {

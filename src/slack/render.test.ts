@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { NightSchedule } from "../calendar/night-schedule.js";
 import type { EnrichedMeal, EnrichedWeekPlan } from "../planner/enrich.js";
+import type { PrepUnit } from "../planner/select.js";
 import type { Recipe } from "../recipe-mcp/schema.js";
 import { renderPlan } from "./render.js";
 
@@ -252,5 +254,172 @@ describe("renderPlan", () => {
     // The rendered bullet must not contain a literal newline inside the title.
     expect(output).toContain("Weeknight Pasta Surprise");
     expect(output).not.toContain("Weeknight\nPasta Surprise");
+  });
+
+  describe("day-ordered render (ADR 0005 D4)", () => {
+    // A real week: Sunday 2026-07-26 .. Saturday 2026-08-01.
+    const SUN = "2026-07-26";
+    const MON = "2026-07-27";
+    const TUE = "2026-07-28";
+    const WED = "2026-07-29";
+    const THU = "2026-07-30";
+    const FRI = "2026-07-31";
+    const SAT = "2026-08-01";
+
+    function night(
+      date: string,
+      weekday: string,
+      capacity: NightSchedule[number]["capacity"] = "FULL",
+    ): NightSchedule[number] {
+      return { date, weekday, capacity, blocking_events: [] };
+    }
+
+    const fullWeekSchedule: NightSchedule = [
+      night(SUN, "Sunday"),
+      night(MON, "Monday"),
+      night(TUE, "Tuesday", "QUICK"),
+      night(WED, "Wednesday"),
+      night(THU, "Thursday", "NONE"),
+      night(FRI, "Friday"),
+      night(SAT, "Saturday"),
+    ];
+
+    it("orders meals Monday->Sunday by their ISO day, with weekday labels derived from the date", () => {
+      const output = renderPlan(
+        plan([
+          meal({ recipe_id: "sun-1", title: "Sunday Meal", day: SUN }),
+          meal({ recipe_id: "mon-1", title: "Monday Meal", day: MON }),
+          meal({ recipe_id: "wed-1", title: "Wednesday Meal", day: WED }),
+          meal({ recipe_id: "sat-1", title: "Saturday Meal", day: SAT }),
+        ]),
+      );
+
+      expect(output).toContain("*Monday*");
+      expect(output).toContain("*Wednesday*");
+      expect(output).toContain("*Saturday*");
+      expect(output).toContain("*Sunday*");
+
+      const monIdx = output.indexOf("*Monday*");
+      const wedIdx = output.indexOf("*Wednesday*");
+      const satIdx = output.indexOf("*Saturday*");
+      const sunIdx = output.indexOf("*Sunday*");
+
+      expect(monIdx).toBeLessThan(wedIdx);
+      expect(wedIdx).toBeLessThan(satIdx);
+      expect(satIdx).toBeLessThan(sunIdx);
+
+      // Meal titles land under their own weekday, in order.
+      expect(output.indexOf("Monday Meal")).toBeGreaterThan(monIdx);
+      expect(output.indexOf("Monday Meal")).toBeLessThan(wedIdx);
+      expect(output.indexOf("Sunday Meal")).toBeGreaterThan(sunIdx);
+
+      // The v1.0 slot headings must not appear in day-ordered mode.
+      expect(output).not.toContain("*Weeknights*");
+      expect(output).not.toContain("*Weekend*");
+    });
+
+    it("annotates a QUICK night's capacity from the NightSchedule", () => {
+      const output = renderPlan(
+        plan([
+          meal({ recipe_id: "mon-1", title: "Monday Meal", day: MON }),
+          meal({ recipe_id: "tue-1", title: "Tuesday Meal", day: TUE }),
+        ]),
+        { nightSchedule: fullWeekSchedule },
+      );
+
+      const tueIdx = output.indexOf("*Tuesday*");
+      expect(tueIdx).toBeGreaterThanOrEqual(0);
+      expect(output).toMatch(/\*Tuesday\*.*quick/i);
+
+      // A FULL night (Monday) gets no capacity annotation.
+      const monLineEnd = output.indexOf("\n", output.indexOf("*Monday*"));
+      expect(output.slice(output.indexOf("*Monday*"), monLineEnd)).toBe(
+        "*Monday*",
+      );
+    });
+
+    it("shows a NONE night with no meal as a leftovers line, in its correct day position", () => {
+      const output = renderPlan(
+        plan([
+          meal({ recipe_id: "wed-1", title: "Wednesday Meal", day: WED }),
+          meal({ recipe_id: "fri-1", title: "Friday Meal", day: FRI }),
+        ]),
+        { nightSchedule: fullWeekSchedule },
+      );
+
+      expect(output).toMatch(/\*Thursday\*.*leftovers/i);
+
+      const wedIdx = output.indexOf("*Wednesday*");
+      const thuIdx = output.indexOf("*Thursday*");
+      const friIdx = output.indexOf("*Friday*");
+      expect(wedIdx).toBeLessThan(thuIdx);
+      expect(thuIdx).toBeLessThan(friIdx);
+    });
+
+    it("renders a prep note ('prep Sun -> serve Tue') from WeekPlan.prep", () => {
+      const prep: PrepUnit[] = [
+        {
+          description: "marinate the chicken",
+          serve_date: TUE,
+          prep_date: SUN,
+        },
+      ];
+
+      const output = renderPlan(
+        plan([meal({ recipe_id: "tue-1", title: "Tuesday Meal", day: TUE })]),
+        { prep },
+      );
+
+      expect(output).toContain("prep Sun → serve Tue");
+      expect(output).toContain("marinate the chicken");
+    });
+
+    it("omits a prep note when prep_date hasn't been placed yet (still null)", () => {
+      const prep: PrepUnit[] = [
+        {
+          description: "marinate the chicken",
+          serve_date: TUE,
+          prep_date: null,
+        },
+      ];
+
+      const output = renderPlan(
+        plan([meal({ recipe_id: "tue-1", title: "Tuesday Meal", day: TUE })]),
+        { prep },
+      );
+
+      expect(output).not.toContain("prep");
+    });
+
+    it("falls back to the unordered v1.0 slot-typed render when every meal has day: null", () => {
+      const wn = meal({
+        recipe_id: "wn-1",
+        title: "Weeknight One",
+        slot_type: "constrained",
+        day: null,
+      });
+      const we = meal({
+        recipe_id: "we-1",
+        title: "Weekend One",
+        slot_type: "relaxed",
+        day: null,
+      });
+
+      // Even with nightSchedule/prep supplied, an all-null-day plan must
+      // still render the unchanged v1.0 unordered slot-typed sections, not
+      // crash, and not render blank days.
+      const output = renderPlan(plan([wn, we]), {
+        nightSchedule: fullWeekSchedule,
+        prep: [{ description: "prep", serve_date: TUE, prep_date: SUN }],
+      });
+
+      expect(output).toContain("*Weeknights*");
+      expect(output).toContain("*Weekend*");
+      expect(output).toContain("Weeknight One");
+      expect(output).toContain("Weekend One");
+      expect(output).not.toMatch(
+        /\*(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\*/,
+      );
+    });
   });
 });
