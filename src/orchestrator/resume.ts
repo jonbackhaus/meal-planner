@@ -50,9 +50,15 @@ export interface ActiveSession {
  * read-leniencies bd6.13 introduced (plus ADR 0004 D5's `prep`, bd6.10):
  *
  *  1. `day: z.string().nullable().optional()` — tolerate the v2.0 nullable
- *     `day` (a weekday string) as well as v1.0's literal `null` or an absent
- *     field. v1.0 STORAGE still writes `day: null` (planner/select.ts) —
- *     only the read is widened here.
+ *     `day` (an ISO date, `"YYYY-MM-DD"`, per ADR 0005 D2 — NOT a weekday
+ *     name) as well as v1.0's literal `null` or an absent field. Deliberately
+ *     NOT regex-validated on read: the canonical write-side schema
+ *     (`planner/select.ts`) enforces the ISO format on a freshly generated
+ *     plan, but the resume READ stays maximally lenient (any string) so a
+ *     future format change to this field still loads on an old daemon,
+ *     matching the `.passthrough()` philosophy below rather than adding a
+ *     second place the date format is asserted. v1.0 STORAGE still writes
+ *     `day: null` (planner/select.ts) — only the read is widened here.
  *  2. `prep: z.array(PrepUnitSchema).optional()` (ADR 0004 D5) — tolerate a
  *     plan that predates prep-unit placement (bd meal-planner-468) and has no
  *     `prep` key at all, same additive-optional pattern as `day` above. Left

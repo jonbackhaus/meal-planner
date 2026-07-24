@@ -404,6 +404,76 @@ describe("buildPlan pool-sufficiency pre-check", () => {
   });
 });
 
+// ── ADR-0005 D1: NightSchedule folded into the same selection call ──
+describe("buildPlan threads the NightSchedule into the selection prompt", () => {
+  it("passes the SAME NightSchedule buildPlan derived slots from into the selection prompt (disabled-calendar static fallback)", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
+    });
+
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    // The static fallback (baseCfg.cookNights: 1 constrained + 1 relaxed)
+    // anchors weekKey 2026-08-02 (Sunday) -> Monday (2026-08-03, weeknight)
+    // + Sunday itself (2026-08-02, weekend).
+    expect(prompt).toContain("SCHEDULE");
+    expect(prompt).toContain("2026-08-03");
+    expect(prompt).toContain("2026-08-02");
+    expect(prompt).toContain("FULL");
+    expect(prompt.toLowerCase()).toMatch(/iso date/);
+  });
+
+  it("flows a stubbed selection response's populated ISO `day` through validation/enrich intact (ADR-0005 D1)", async () => {
+    const search = fakeSearch();
+    const plan: WeekPlan = {
+      week_key: "2026-08-02",
+      meals: [
+        meal({
+          recipe_id: "wn-veg",
+          slot_type: "constrained",
+          day: "2026-08-03",
+        }),
+        meal({
+          recipe_id: "we-veg",
+          slot_type: "relaxed",
+          day: "2026-08-02",
+        }),
+      ],
+    };
+    const llm = fakeLlm(JSON.stringify(plan));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
+    });
+
+    expect(result.meals[0].day).toBe("2026-08-03");
+    expect(result.meals[1].day).toBe("2026-08-02");
+  });
+});
+
 // ── ADR-0004 D4/D6: slots derived from NightSchedule (bead r0o.5) ──
 describe("buildPlan derives slots from NightSchedule", () => {
   const ENABLED_CALENDAR: CalendarConfig = {

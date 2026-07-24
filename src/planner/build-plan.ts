@@ -98,7 +98,9 @@ export interface BuildPlanArgs {
  * 2. `getWeekNightSchedule(...)` + `deriveSlots(...)` — the week's `NightSchedule`
  *    (real read, or the ADR-0004 D6 static fallback) and the slot counts derived
  *    from it (ADR-0004 D4; replaces the old static `cfg.cookNights`-as-slots read).
- * 3. `buildPlannerInput(...)` — assembles the typed selection input from those SAME pools.
+ * 3. `buildPlannerInput(...)` — assembles the typed selection input from those SAME pools
+ *    AND that SAME `NightSchedule` (ADR-0005 D1: selection and day-assignment co-reason
+ *    in the one selection call, so the model sees the very schedule `slots` was derived from).
  * 4. `selectValidatedPlan(input, pools, cfg, { llm })` — one selection call, validated
  *    against those SAME pools, with the one bounded repair retry (8zs.4).
  * 5. `enrichPlan(plan, { getRecipe })` — attaches the full `Recipe` to every chosen meal (8zs.5).
@@ -147,6 +149,7 @@ export async function buildPlan(
     weekKey,
     slots,
     pools,
+    nightSchedule: schedule,
     household,
     currentSeason: cfg.season,
     maxPairedSides: cfg.maxPairedSides,

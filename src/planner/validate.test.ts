@@ -55,6 +55,7 @@ function plannerInput(overrides: Partial<PlannerInput> = {}): PlannerInput {
       weeknight: [candidate("weeknight-veg")],
       weekend: [candidate("weekend-veg")],
     },
+    night_schedule: [],
     household: "Vegetarian daughter every night.",
     untested_present: false,
     ...overrides,
