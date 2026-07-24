@@ -10,6 +10,7 @@ import type { TemperatureBand } from "../weather/weather.js";
 import { deriveSlots } from "./derive-slots.js";
 import { type EnrichedWeekPlan, enrichPlan } from "./enrich.js";
 import { buildPlannerInput } from "./input.js";
+import { placePrepUnits } from "./place-prep.js";
 import {
   type ComposePoolsDeps,
   composePools,
@@ -124,8 +125,11 @@ export interface BuildPlanArgs {
  *    in the one selection call, so the model sees the very schedule `slots` was derived from).
  * 4. `selectValidatedPlan(input, pools, cfg, { llm })` — one selection call, validated
  *    against those SAME pools, with the one bounded repair retry (8zs.4).
- * 5. `enrichPlan(plan, { getRecipe })` — attaches the full `Recipe` to every chosen meal (8zs.5).
- * 6. Attaches the SAME `NightSchedule` from step 2 onto the enriched plan as
+ * 5. `placePrepUnits(plan.meals, schedule)` — deterministic prep-unit placement
+ *    (ADR-0004 D5, bd meal-planner-468.2) off that SAME `schedule`; attached as
+ *    `plan.prep` BEFORE enrich.
+ * 6. `enrichPlan(plan, { getRecipe })` — attaches the full `Recipe` to every chosen meal (8zs.5).
+ * 7. Attaches the SAME `NightSchedule` from step 2 onto the enriched plan as
  *    `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7) — render context for
  *    `renderPlan`'s capacity annotations. Threaded this way (an optional field
  *    on the returned `EnrichedWeekPlan`, see enrich.ts) rather than widening
@@ -220,7 +224,16 @@ export async function buildPlan(
     { llm: deps.llm },
   );
 
-  const enriched = await enrichPlan(plan, { getRecipe: deps.getRecipe });
+  // ADR-0004 D5 (bd meal-planner-468.2): deterministic prep-unit placement —
+  // for each validated do-ahead meal, place its PrepUnit onto an earlier
+  // suitable night off the SAME `schedule` slots was derived from. Attached
+  // BEFORE enrich so `enrichPlan`'s existing `plan.prep` passthrough (see
+  // enrich.ts) carries it onto the returned `EnrichedWeekPlan` unchanged.
+  const planWithPrep = { ...plan, prep: placePrepUnits(plan.meals, schedule) };
+
+  const enriched = await enrichPlan(planWithPrep, {
+    getRecipe: deps.getRecipe,
+  });
   // ADR 0005 D4 (bd meal-planner-0v7.7): carry the SAME NightSchedule the
   // selection call reasoned over onto the returned plan as render context —
   // see enrich.ts's `EnrichedWeekPlan.nightSchedule` doc for why this rides
