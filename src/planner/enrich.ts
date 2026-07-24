@@ -1,6 +1,7 @@
 import { z } from "zod";
+import type { NightSchedule } from "../calendar/night-schedule.js";
 import { type Recipe, RecipeSchema } from "../recipe-mcp/schema.js";
-import { SelectedMealSchema, type WeekPlan } from "./select.js";
+import { PrepUnitSchema, SelectedMealSchema, type WeekPlan } from "./select.js";
 
 /**
  * Final planner pipeline step: `get_recipe` enrich (ADR 0003 pipeline step 4,
@@ -40,13 +41,38 @@ export const EnrichedMealSchema = SelectedMealSchema.extend({
 });
 export type EnrichedMeal = z.infer<typeof EnrichedMealSchema>;
 
-/** `WeekPlan` with every meal enriched to an `EnrichedMeal`. */
+/**
+ * `WeekPlan` with every meal enriched to an `EnrichedMeal`. `prep` (ADR 0004
+ * D5) is carried through unchanged from `WeekPlan.prep` the same way
+ * `summary` already is — additive/optional, absent on any plan predating
+ * prep scheduling (see `resolvePrepUnits`, planner/select.ts, for the
+ * read-side default).
+ */
 export const EnrichedWeekPlanSchema = z.object({
   week_key: z.string(),
   meals: z.array(EnrichedMealSchema),
   summary: z.string().optional(),
+  prep: z.array(PrepUnitSchema).optional(),
 });
-export type EnrichedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema>;
+
+/**
+ * `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7) is deliberately NOT
+ * part of `EnrichedWeekPlanSchema` above: it's a per-generation RENDER aid
+ * (the week's `NightSchedule`, ADR 0004 D4) attached by `buildPlan`
+ * (build-plan.ts) — not part of the plan's own canonical selection/
+ * enrichment shape, and this module has no calendar dependency of its own.
+ * It's threaded this way (as an optional field on the SAME object, rather
+ * than a separate `PostFn`/`BuildPlanFn` parameter) so it reaches
+ * `SlackPoster.post`/`buildDryRunPost` without changing the orchestrator's
+ * `BuildPlanFn`/`PostFn` contracts (`orchestrator/generate.ts`) — the same
+ * `plan` object `generateForWeek` already threads through
+ * `buildPlan -> post -> working_plan` (ADR 0002 write-before-post) simply
+ * carries it along. Optional throughout: absent on any caller that hasn't
+ * wired this yet, and unused by the v1.0 fallback render path (`day: null`).
+ */
+export type EnrichedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema> & {
+  nightSchedule?: NightSchedule;
+};
 
 export interface EnrichPlanDeps {
   /** A bound `getRecipe(id)` callback — `getRecipe` with its own store deps already applied. */
@@ -124,5 +150,6 @@ export async function enrichPlan(
     week_key: plan.week_key,
     meals,
     ...(plan.summary !== undefined ? { summary: plan.summary } : {}),
+    ...(plan.prep !== undefined ? { prep: plan.prep } : {}),
   };
 }

@@ -1,3 +1,4 @@
+import type { Night, NightSchedule } from "../calendar/night-schedule.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import { buildSelectionPrompt, type PlannerInput } from "./input.js";
@@ -38,7 +39,46 @@ export interface ValidatePlanConfig {
    * Optional; defaults to `DEFAULT_MAX_PAIRED_SIDES` when omitted.
    */
   maxPairedSides?: number;
+  /**
+   * ADR-0004 D4's tighter active-time gate for a QUICK-capacity night: a meal
+   * placed there must be quick-eligible (`active <= quickActiveMax`) OR
+   * flagged `"do-ahead"` (ADR-0005 D3 rule 3, "capacity fit"). Optional;
+   * defaults to `DEFAULT_QUICK_ACTIVE_MAX` below (mirrors `Config
+   * .quickActiveMax`'s own ADR-0004 D4 default of 30 minutes) when omitted.
+   */
+  quickActiveMax?: number;
+  /**
+   * ADR-0005 D3/D2 gate for the "day must be non-null" requirement ("v2.0
+   * validation requires non-null on a freshly generated plan").
+   *
+   * GATING DECISION (this task): non-null is required whenever the caller
+   * declares a real night schedule is in play (`calendarEnabled: true`) —
+   * which covers BOTH a live calendar read AND the ADR-0004 D6 static
+   * fallback. The fallback still hands the planner concrete dated nights to
+   * place onto, so a freshly generated plan is expected to place onto it
+   * the same as a real read; the requirement is therefore gated on
+   * "calendar enabled / real schedule available", NOT on whether the
+   * schedule happens to be the degraded fallback. When omitted (default
+   * `false`), a null `day` is tolerated — covering legacy/resume reads and
+   * any caller not yet threading calendar context through this config.
+   *
+   * The other four day rules (valid-night, slot/weekday, capacity-fit,
+   * distinct-days) run independently of this flag, against whatever
+   * `input.night_schedule` is provided (empty when `input` is omitted), for
+   * whatever non-null `day` values are already present.
+   */
+  calendarEnabled?: boolean;
 }
+
+/** ADR-0004 D4's own default quick-night active-time ceiling (minutes), used
+ * when `cfg.quickActiveMax` is omitted. The live value normally flows from
+ * `Config.quickActiveMax` (same default, config.ts) via the caller's `cfg`. */
+const DEFAULT_QUICK_ACTIVE_MAX = 30;
+
+/** Full local weekday names (`Night.weekday`) treated as weekend — mirrors
+ * `derive-slots.ts`'s own private set, duplicated here rather than exporting
+ * a two-string constant across modules for it. */
+const WEEKEND_WEEKDAYS = new Set(["Saturday", "Sunday"]);
 
 function findInPool(
   pool: RecipeCandidate[],
@@ -62,6 +102,214 @@ function poolForSlot(
 
 function mealLabel(meal: SelectedMeal, index: number): string {
   return `meal ${index + 1} (recipe_id="${meal.recipe_id}", slot_type=${meal.slot_type})`;
+}
+
+function findNight(schedule: NightSchedule, date: string): Night | undefined {
+  return schedule.find((night) => night.date === date);
+}
+
+/**
+ * ADR-0005 D3 non-null gate (see `ValidatePlanConfig.calendarEnabled`'s doc
+ * for the gating decision): when `cfg.calendarEnabled`, every meal must
+ * carry an assigned (non-null) `day`. A no-op when `calendarEnabled` is
+ * false/omitted.
+ */
+function checkDayNonNull(
+  meals: SelectedMeal[],
+  cfg: ValidatePlanConfig,
+): ValidationIssue[] {
+  if (!cfg.calendarEnabled) {
+    return [];
+  }
+  const issues: ValidationIssue[] = [];
+  meals.forEach((meal, index) => {
+    if (meal.day === null) {
+      issues.push(
+        `${mealLabel(meal, index)}: day is null but a night schedule is ` +
+          "available (calendarEnabled); assign an ISO date from the schedule",
+      );
+    }
+  });
+  return issues;
+}
+
+/**
+ * Rule 1 (ADR-0005 D3, "valid night"): every non-null `day` must name a
+ * non-NONE night present in `schedule`. Runs against whatever `schedule` is
+ * given (empty when no `PlannerInput` was supplied) for every non-null
+ * `day`, independent of `calendarEnabled` — a null `day` is
+ * `checkDayNonNull`'s concern, not this one's.
+ */
+function checkValidNight(
+  meals: SelectedMeal[],
+  schedule: NightSchedule,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  meals.forEach((meal, index) => {
+    if (meal.day === null) {
+      return;
+    }
+    const label = mealLabel(meal, index);
+    const night = findNight(schedule, meal.day);
+    if (!night) {
+      issues.push(
+        `${label}: day="${meal.day}" is not a night present in the schedule`,
+      );
+      return;
+    }
+    if (night.capacity === "NONE") {
+      issues.push(
+        `${label}: day="${meal.day}" is a NONE-capacity night (no cook that ` +
+          "night); assign a FULL or QUICK night instead",
+      );
+    }
+  });
+  return issues;
+}
+
+/**
+ * Rule 2 (ADR-0005 D3, "slot ↔ weekday consistency") — the day-side
+ * counterpart of `checkMealsIndividually`'s pool-membership check: a
+ * `constrained` meal's assigned day must fall on a WEEKNIGHT (Mon-Fri), a
+ * `relaxed` meal's on a WEEKEND (Sat/Sun), per the schedule's own `weekday`
+ * label for that date. Skips a `day` that doesn't resolve to a schedule
+ * night at all (`checkValidNight` already reports that) or is null.
+ */
+function checkSlotWeekdayConsistency(
+  meals: SelectedMeal[],
+  schedule: NightSchedule,
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  meals.forEach((meal, index) => {
+    if (meal.day === null) {
+      return;
+    }
+    const night = findNight(schedule, meal.day);
+    if (!night) {
+      return;
+    }
+    const label = mealLabel(meal, index);
+    const isWeekendNight = WEEKEND_WEEKDAYS.has(night.weekday);
+    if (meal.slot_type === "constrained" && isWeekendNight) {
+      issues.push(
+        `${label}: slot_type "constrained" is assigned to day="${meal.day}" ` +
+          `(${night.weekday}), a weekend night; constrained meals must land ` +
+          "on a weeknight",
+      );
+    } else if (meal.slot_type === "relaxed" && !isWeekendNight) {
+      issues.push(
+        `${label}: slot_type "relaxed" is assigned to day="${meal.day}" ` +
+          `(${night.weekday}), a weeknight; relaxed meals must land on a ` +
+          "weekend night",
+      );
+    }
+  });
+  return issues;
+}
+
+/**
+ * Rule 3 (ADR-0005 D3, "capacity fit"): a meal placed on a QUICK-capacity
+ * night must be quick-eligible — its own pool candidate's active time
+ * `<= quickActiveMax` (default `DEFAULT_QUICK_ACTIVE_MAX`), OR the meal is
+ * flagged `"do-ahead"`. An unknown (`null`) active time is treated as NOT
+ * quick-eligible unless flagged `"do-ahead"` (can't confirm the ceiling,
+ * conservative default, mirrors `renderMinutes`'s "unknown" handling
+ * elsewhere in this pipeline). Skips a `day` that isn't a QUICK night, isn't
+ * in the schedule (`checkValidNight`'s concern), or is null.
+ */
+function checkCapacityFit(
+  meals: SelectedMeal[],
+  pools: Pools,
+  schedule: NightSchedule,
+  cfg: ValidatePlanConfig,
+): ValidationIssue[] {
+  const quickActiveMax = cfg.quickActiveMax ?? DEFAULT_QUICK_ACTIVE_MAX;
+  const issues: ValidationIssue[] = [];
+
+  meals.forEach((meal, index) => {
+    if (meal.day === null) {
+      return;
+    }
+    const night = findNight(schedule, meal.day);
+    if (night?.capacity !== "QUICK") {
+      return;
+    }
+    const label = mealLabel(meal, index);
+    const { pool } = poolForSlot(pools, meal.slot_type);
+    const ownCandidate = findInPool(pool, meal.recipe_id);
+    const active = ownCandidate?.time.active ?? null;
+    const isDoAhead = meal.flags.includes("do-ahead");
+    const quickEligible =
+      isDoAhead || (active !== null && active <= quickActiveMax);
+
+    if (!quickEligible) {
+      const activeDescription = active === null ? "unknown" : `${active} min`;
+      issues.push(
+        `${label}: assigned to day="${meal.day}", a QUICK-capacity night, ` +
+          `but its active time (${activeDescription}) exceeds the ` +
+          `${quickActiveMax}-min quick ceiling and it is not flagged "do-ahead"`,
+      );
+    }
+  });
+
+  return issues;
+}
+
+/**
+ * Rule 4 (ADR-0005 D3, "distinct days"): no two meals may share the same
+ * non-null `day`. Mirrors `checkNoDuplicates`'s shape/labeling.
+ */
+function checkDistinctDays(meals: SelectedMeal[]): ValidationIssue[] {
+  const occurrences = new Map<string, string[]>();
+
+  meals.forEach((meal, index) => {
+    if (meal.day === null) {
+      return;
+    }
+    const labels = occurrences.get(meal.day) ?? [];
+    labels.push(`meal ${index + 1}`);
+    occurrences.set(meal.day, labels);
+  });
+
+  const issues: ValidationIssue[] = [];
+  for (const [day, labels] of occurrences) {
+    if (labels.length > 1) {
+      issues.push(
+        `day="${day}" is assigned to more than one meal (${labels.join(", ")}); ` +
+          "each meal must be assigned a distinct day",
+      );
+    }
+  }
+  return issues;
+}
+
+/**
+ * Rule 5 (ADR-0005 D3, "prep ordering"): a make-ahead meal's placed
+ * `prep_date` (`WeekPlan.prep`, ADR-0004 D5's `PrepUnit`) must be STRICTLY
+ * before its serve `serve_date`. Defensive per the delivering task: `prep`
+ * is optional and its units' `prep_date` is nullable (not-yet-placed, or the
+ * ADR-0004 D6 degraded no-calendar path) — this checks ordering only for
+ * whatever units ARE present with a non-null `prep_date`; a plan with no
+ * `prep` (or none yet placed) trivially passes. ISO `YYYY-MM-DD` strings
+ * compare correctly with plain string comparison.
+ */
+function checkPrepOrdering(plan: WeekPlan): ValidationIssue[] {
+  const prepUnits = plan.prep ?? [];
+  const issues: ValidationIssue[] = [];
+
+  prepUnits.forEach((unit, index) => {
+    if (unit.prep_date === null) {
+      return;
+    }
+    if (unit.prep_date >= unit.serve_date) {
+      issues.push(
+        `prep unit ${index + 1} ("${unit.description}"): prep_date="${unit.prep_date}" ` +
+          `must be strictly before its serve day="${unit.serve_date}"`,
+      );
+    }
+  });
+
+  return issues;
 }
 
 /**
@@ -336,12 +584,20 @@ function checkSides(
 
 /**
  * Deterministic post-selection validation (ADR 0003 "What validate()
- * checks"): counts, pool membership (guards hallucinated ids), veg
- * consistency, no-dupes, flag sanity, and optional-side rules (8zs.8).
- * Returns an empty array when `plan` is fully valid; otherwise a list of
- * specific, human-readable `ValidationIssue`s, each naming the offending
- * meal/id — this list is fed straight into the repair prompt, so specificity
- * here is load-bearing.
+ * checks", extended by ADR-0005 D3 with 5 day rules): counts, pool
+ * membership (guards hallucinated ids), veg consistency, no-dupes, flag
+ * sanity, optional-side rules (8zs.8), and — when `input` is supplied — the
+ * day-assignment rules (valid-night, slot/weekday consistency, capacity fit,
+ * distinct days, prep ordering). Returns an empty array when `plan` is fully
+ * valid; otherwise a list of specific, human-readable `ValidationIssue`s,
+ * each naming the offending meal/id — this list is fed straight into the
+ * repair prompt, so specificity here is load-bearing.
+ *
+ * `input` is OPTIONAL (defaults `night_schedule` to `[]` when omitted) so
+ * every existing caller/test keeps compiling and behaving unchanged — the
+ * day rules simply have nothing to check against (and `cfg.calendarEnabled`
+ * defaults to `false`, so the non-null gate stays off) until a caller
+ * threads `PlannerInput` through.
  *
  * Pure and synchronous: makes no LLM call and never retries — that's
  * `selectValidatedPlan`'s job.
@@ -350,13 +606,21 @@ export function validateWeekPlan(
   plan: WeekPlan,
   pools: Pools,
   cfg: ValidatePlanConfig,
+  input?: PlannerInput,
 ): ValidationIssue[] {
+  const schedule = input?.night_schedule ?? [];
   return [
     ...checkCounts(plan.meals, cfg),
     ...checkMealsIndividually(plan.meals, pools),
     ...checkNoDuplicates(plan.meals),
     ...checkUntestedCount(plan.meals, pools),
     ...checkSides(plan.meals, pools, cfg),
+    ...checkDayNonNull(plan.meals, cfg),
+    ...checkValidNight(plan.meals, schedule),
+    ...checkSlotWeekdayConsistency(plan.meals, schedule),
+    ...checkCapacityFit(plan.meals, pools, schedule, cfg),
+    ...checkDistinctDays(plan.meals),
+    ...checkPrepOrdering(plan),
   ];
 }
 
@@ -617,7 +881,7 @@ export async function selectValidatedPlan(
       parseSelectionResponse(repairedText),
       pools,
     );
-    const repairIssues = validateWeekPlan(repairedPlan, pools, cfg);
+    const repairIssues = validateWeekPlan(repairedPlan, pools, cfg, input);
     if (repairIssues.length > 0) {
       throw new PlanValidationError(repairIssues);
     }
@@ -629,7 +893,7 @@ export async function selectValidatedPlan(
   // BEFORE validating, so a cosmetic flag omission/over-claim is auto-fixed
   // rather than burning the ONE repair budget or hard-failing the week.
   const normalizedPlan = normalizeUntestedFlags(plan, pools);
-  const issues = validateWeekPlan(normalizedPlan, pools, cfg);
+  const issues = validateWeekPlan(normalizedPlan, pools, cfg, input);
   if (issues.length === 0) {
     return normalizedPlan;
   }
@@ -639,7 +903,7 @@ export async function selectValidatedPlan(
     await llmSelectFromPrompt(repairPrompt, deps),
     pools,
   );
-  const repairIssues = validateWeekPlan(repairedPlan, pools, cfg);
+  const repairIssues = validateWeekPlan(repairedPlan, pools, cfg, input);
   if (repairIssues.length === 0) {
     return repairedPlan;
   }

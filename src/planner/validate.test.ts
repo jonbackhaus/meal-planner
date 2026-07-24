@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Night, NightSchedule } from "../calendar/night-schedule.js";
 import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { PlannerInput } from "./input.js";
 import type { Pools } from "./pools.js";
 import {
   PlanSelectionError,
+  type PrepUnit,
   type SelectedMeal,
   type WeekPlan,
 } from "./select.js";
@@ -108,6 +110,45 @@ function validPlan(): WeekPlan {
   return {
     week_key: "2026-W29",
     meals: [meal(), relaxedMeal()],
+  };
+}
+
+// ── ADR-0005 D3 day-rule fixtures ──
+
+function night(overrides: Partial<Night> = {}): Night {
+  return {
+    date: "2026-07-20",
+    weekday: "Monday",
+    capacity: "FULL",
+    blocking_events: [],
+    ...overrides,
+  };
+}
+
+/** A full Sun-Sat week: Mon-Fri weeknights, Sat/Sun weekend nights, all FULL. */
+function baseSchedule(): NightSchedule {
+  return [
+    night({ date: "2026-07-19", weekday: "Sunday" }),
+    night({ date: "2026-07-20", weekday: "Monday" }),
+    night({ date: "2026-07-21", weekday: "Tuesday" }),
+    night({ date: "2026-07-22", weekday: "Wednesday" }),
+    night({ date: "2026-07-23", weekday: "Thursday" }),
+    night({ date: "2026-07-24", weekday: "Friday" }),
+    night({ date: "2026-07-25", weekday: "Saturday" }),
+  ];
+}
+
+/** A `PlannerInput` carrying `baseSchedule()`, for day-rule tests. */
+function dayInput(overrides: Partial<PlannerInput> = {}): PlannerInput {
+  return plannerInput({ night_schedule: baseSchedule(), ...overrides });
+}
+
+/** A constrained meal on a Monday (weeknight) FULL night + a relaxed meal on
+ * a Saturday (weekend) night — a fully valid day-assigned plan. */
+function dayValidPlan(): WeekPlan {
+  return {
+    week_key: "2026-W29",
+    meals: [meal({ day: "2026-07-20" }), relaxedMeal({ day: "2026-07-25" })],
   };
 }
 
@@ -468,6 +509,270 @@ describe("validateWeekPlan", () => {
   });
 });
 
+describe("validateWeekPlan day rules (ADR-0005 D3)", () => {
+  it("passes a fully valid day-assigned plan (calendarEnabled, matching schedule)", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const issues = validateWeekPlan(
+      dayValidPlan(),
+      pools(),
+      dayCfg,
+      dayInput(),
+    );
+    expect(issues).toEqual([]);
+  });
+
+  // ── Non-null gating (D2/D3 nuance) ──
+  it("does NOT require a non-null day when calendarEnabled is omitted/false, even with a real schedule (degraded/legacy tolerance)", () => {
+    const issues = validateWeekPlan(validPlan(), pools(), cfg, dayInput());
+    expect(issues).toEqual([]);
+  });
+
+  it("requires a non-null day on every meal when calendarEnabled is true", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const issues = validateWeekPlan(validPlan(), pools(), dayCfg, dayInput());
+    expect(
+      issues.some((i) => /day is null/.test(i) && /calendarEnabled/.test(i)),
+    ).toBe(true);
+  });
+
+  // ── Rule 1: valid night ──
+  it("flags a day that isn't a night present in the schedule", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const plan = dayValidPlan();
+    plan.meals[0] = meal({ day: "2099-01-01" });
+    const issues = validateWeekPlan(plan, pools(), dayCfg, dayInput());
+    expect(
+      issues.some((i) => i.includes("2099-01-01") && /not a night/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags a day assigned to a NONE-capacity night", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const schedule = baseSchedule();
+    schedule[1] = night({
+      date: "2026-07-20",
+      weekday: "Monday",
+      capacity: "NONE",
+    });
+    const plan = dayValidPlan();
+    const issues = validateWeekPlan(
+      plan,
+      pools(),
+      dayCfg,
+      dayInput({ night_schedule: schedule }),
+    );
+    expect(issues.some((i) => i.includes("2026-07-20") && /NONE/.test(i))).toBe(
+      true,
+    );
+  });
+
+  it("accepts a day assigned to a non-NONE (FULL) night", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const issues = validateWeekPlan(
+      dayValidPlan(),
+      pools(),
+      dayCfg,
+      dayInput(),
+    );
+    expect(issues.some((i) => /not a night|NONE/i.test(i))).toBe(false);
+  });
+
+  // ── Rule 2: slot ↔ weekday consistency ──
+  it("flags a constrained meal assigned to a weekend date", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const plan = dayValidPlan();
+    plan.meals[0] = meal({ day: "2026-07-25" }); // Saturday
+    const issues = validateWeekPlan(plan, pools(), dayCfg, dayInput());
+    expect(
+      issues.some(
+        (i) =>
+          /constrained/.test(i) &&
+          /weekend/i.test(i) &&
+          i.includes("2026-07-25"),
+      ),
+    ).toBe(true);
+  });
+
+  it("flags a relaxed meal assigned to a weeknight date", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const plan = dayValidPlan();
+    plan.meals[1] = relaxedMeal({ day: "2026-07-20" }); // Monday
+    const issues = validateWeekPlan(plan, pools(), dayCfg, dayInput());
+    expect(
+      issues.some(
+        (i) =>
+          /relaxed/.test(i) && /weeknight/i.test(i) && i.includes("2026-07-20"),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a constrained meal on a weeknight and a relaxed meal on a weekend night", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const issues = validateWeekPlan(
+      dayValidPlan(),
+      pools(),
+      dayCfg,
+      dayInput(),
+    );
+    expect(issues.some((i) => /weeknight|weekend/i.test(i))).toBe(false);
+  });
+
+  // ── Rule 3: capacity fit ──
+  it("flags a meal on a QUICK night whose active time exceeds quickActiveMax and isn't do-ahead", () => {
+    const dayCfg: ValidatePlanConfig = {
+      ...cfg,
+      calendarEnabled: true,
+      quickActiveMax: 30,
+    };
+    const schedule = baseSchedule();
+    schedule[1] = night({
+      date: "2026-07-20",
+      weekday: "Monday",
+      capacity: "QUICK",
+    });
+    const widePools = pools();
+    widePools.weeknight.push(
+      candidate("wn-slow", {
+        veg_status: "vegetarian",
+        time: { active: 45, total: 60, prep: 10, confidence: 0.9 },
+      }),
+    );
+    const plan = dayValidPlan();
+    plan.meals[0] = meal({ day: "2026-07-20", recipe_id: "wn-slow" });
+    const issues = validateWeekPlan(
+      plan,
+      widePools,
+      dayCfg,
+      dayInput({ night_schedule: schedule }),
+    );
+    expect(
+      issues.some(
+        (i) =>
+          /QUICK/.test(i) && /quick ceiling/i.test(i) && i.includes("wn-slow"),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts a meal on a QUICK night flagged do-ahead even with a slow active time", () => {
+    const dayCfg: ValidatePlanConfig = {
+      ...cfg,
+      calendarEnabled: true,
+      quickActiveMax: 30,
+    };
+    const schedule = baseSchedule();
+    schedule[1] = night({
+      date: "2026-07-20",
+      weekday: "Monday",
+      capacity: "QUICK",
+    });
+    const widePools = pools();
+    widePools.weeknight.push(
+      candidate("wn-slow", {
+        veg_status: "vegetarian",
+        time: { active: 45, total: 60, prep: 10, confidence: 0.9 },
+      }),
+    );
+    const plan = dayValidPlan();
+    plan.meals[0] = meal({
+      day: "2026-07-20",
+      recipe_id: "wn-slow",
+      flags: ["do-ahead"],
+    });
+    const issues = validateWeekPlan(
+      plan,
+      widePools,
+      dayCfg,
+      dayInput({ night_schedule: schedule }),
+    );
+    expect(issues.some((i) => /quick ceiling/i.test(i))).toBe(false);
+  });
+
+  it("accepts a meal on a QUICK night whose active time is within quickActiveMax", () => {
+    const dayCfg: ValidatePlanConfig = {
+      ...cfg,
+      calendarEnabled: true,
+      quickActiveMax: 30,
+    };
+    const schedule = baseSchedule();
+    schedule[1] = night({
+      date: "2026-07-20",
+      weekday: "Monday",
+      capacity: "QUICK",
+    });
+    const issues = validateWeekPlan(
+      dayValidPlan(), // wn-veg has active: 20 (candidate() default)
+      pools(),
+      dayCfg,
+      dayInput({ night_schedule: schedule }),
+    );
+    expect(issues.some((i) => /quick ceiling/i.test(i))).toBe(false);
+  });
+
+  // ── Rule 4: distinct days ──
+  it("flags two meals sharing the same day", () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const plan = dayValidPlan();
+    plan.meals[1] = relaxedMeal({ day: "2026-07-20" }); // same as meals[0]
+    const issues = validateWeekPlan(plan, pools(), dayCfg, dayInput());
+    expect(
+      issues.some((i) => i.includes("2026-07-20") && /distinct day/i.test(i)),
+    ).toBe(true);
+  });
+
+  // ── Rule 5: prep ordering ──
+  function prepUnit(overrides: Partial<PrepUnit> = {}): PrepUnit {
+    return {
+      description: "marinate the chicken",
+      serve_date: "2026-07-22",
+      prep_date: "2026-07-20",
+      ...overrides,
+    };
+  }
+
+  it("flags a prep_date that is not strictly before its serve day", () => {
+    const plan: WeekPlan = {
+      ...validPlan(),
+      prep: [prepUnit({ prep_date: "2026-07-22", serve_date: "2026-07-22" })],
+    };
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(
+      issues.some((i) => /prep unit 1/.test(i) && /strictly before/i.test(i)),
+    ).toBe(true);
+  });
+
+  it("flags a prep_date that is AFTER its serve day", () => {
+    const plan: WeekPlan = {
+      ...validPlan(),
+      prep: [prepUnit({ prep_date: "2026-07-23", serve_date: "2026-07-22" })],
+    };
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(issues.some((i) => /strictly before/i.test(i))).toBe(true);
+  });
+
+  it("accepts a prep_date strictly before its serve day", () => {
+    const plan: WeekPlan = {
+      ...validPlan(),
+      prep: [prepUnit({ prep_date: "2026-07-20", serve_date: "2026-07-22" })],
+    };
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(issues).toEqual([]);
+  });
+
+  it("passes trivially when a prep unit's prep_date is null (not yet placed)", () => {
+    const plan: WeekPlan = {
+      ...validPlan(),
+      prep: [prepUnit({ prep_date: null })],
+    };
+    const issues = validateWeekPlan(plan, pools(), cfg);
+    expect(issues).toEqual([]);
+  });
+
+  it("passes trivially when a plan has no prep units at all", () => {
+    const issues = validateWeekPlan(validPlan(), pools(), cfg);
+    expect(issues).toEqual([]);
+  });
+});
+
 describe("normalizeUntestedFlags", () => {
   it("adds the untested flag when the own-pool candidate is untested and the flag is missing", () => {
     const plan: WeekPlan = {
@@ -613,6 +918,49 @@ describe("selectValidatedPlan", () => {
     });
 
     expect(plan).toEqual(goodPlan);
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("repairs a day-rule violation (ADR-0005 D3) via the SAME single-repair path", async () => {
+    // Bad: the constrained meal is assigned to a weekend date (rule 2,
+    // slot ↔ weekday). Good: repair reassigns it to a weeknight date.
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const input = dayInput();
+    const badPlan = dayValidPlan();
+    badPlan.meals[0] = meal({ day: "2026-07-25" }); // Saturday, weekend
+    const goodPlan = dayValidPlan();
+
+    const llm = makeFakeLlm(JSON.stringify(badPlan), JSON.stringify(goodPlan));
+
+    const plan = await selectValidatedPlan(input, pools(), dayCfg, { llm });
+
+    expect(plan).toEqual(goodPlan);
+    expect(llm.runQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws PlanValidationError after exactly 2 calls when a day-rule violation is NOT fixed by the repair", async () => {
+    const dayCfg: ValidatePlanConfig = { ...cfg, calendarEnabled: true };
+    const input = dayInput();
+    const badPlan = dayValidPlan();
+    badPlan.meals[0] = meal({ day: "2026-07-25" }); // weekend, wrong slot
+    const stillBadPlan = dayValidPlan();
+    stillBadPlan.meals[0] = meal({ day: "2026-07-19" }); // also weekend (Sunday)
+
+    const llm = makeFakeLlm(
+      JSON.stringify(badPlan),
+      JSON.stringify(stillBadPlan),
+    );
+
+    let caught: unknown;
+    try {
+      await selectValidatedPlan(input, pools(), dayCfg, { llm });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(PlanValidationError);
+    const error = caught as PlanValidationError;
+    expect(error.issues.some((i) => /weekend/i.test(i))).toBe(true);
     expect(llm.runQuery).toHaveBeenCalledTimes(2);
   });
 

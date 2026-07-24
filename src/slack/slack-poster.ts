@@ -1,5 +1,6 @@
 import { WebClient } from "@slack/web-api";
 import type { EnrichedWeekPlan } from "../planner/enrich.js";
+import { resolvePrepUnits } from "../planner/select.js";
 import { renderPlan } from "./render.js";
 
 /**
@@ -55,6 +56,12 @@ export class SlackPoster {
    * Renders `plan` via the pure `renderPlan` and posts it as a new top-level
    * mrkdwn message in `channelId`, returning `{ ts }` on success.
    *
+   * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (render
+   * context `buildPlan` attaches, see enrich.ts) and `resolvePrepUnits(plan)`
+   * into `renderPlan` so capacity/prep annotations reach the real post.
+   * `plan.nightSchedule` is `undefined` on a v1.0/degraded plan — `renderPlan`
+   * already falls back to the unordered render in that case.
+   *
    * Throws a plain `Error` (no bot token, no client, nothing secret) when the
    * call rejects, or the response is `ok:false`, or `ok:true` but missing a
    * `ts` -- `generateForWeek`'s failure path (transition to `failed` +
@@ -62,7 +69,10 @@ export class SlackPoster {
    * swallow it.
    */
   async post(plan: EnrichedWeekPlan): Promise<{ ts: string }> {
-    const text = renderPlan(plan);
+    const text = renderPlan(plan, {
+      nightSchedule: plan.nightSchedule,
+      prep: resolvePrepUnits(plan),
+    });
 
     let response: { ok?: boolean; ts?: string; error?: string };
     try {
