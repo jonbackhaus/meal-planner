@@ -4,6 +4,7 @@ import type {
   NightSchedule,
 } from "../calendar/night-schedule.js";
 import type { RecipeCandidate } from "../recipe-mcp/schema.js";
+import type { TemperatureBand } from "../weather/weather.js";
 import { DEFAULT_MAX_PAIRED_SIDES, type Pools } from "./pools.js";
 
 /**
@@ -56,6 +57,15 @@ export interface PlannerInput {
   household: string;
   /** Seasonality soft signal (v1.0 tag-based bias against `season_tags`). */
   current_season?: string;
+  /**
+   * Week-level live-weather soft signal (ADR-0003 A1, bd `bgb`): derived from
+   * the Open-Meteo forecast for the plan-week dates (no key). REFINES
+   * `current_season` — the prompt instructs the model not to double-count a
+   * dish via both its season tag and this live reading. Absent = Open-Meteo
+   * unavailable (or household location not configured) → plan seasonal-only
+   * (silent degrade — never an error, never alerted).
+   */
+  temperature_band?: TemperatureBand;
   /** Did retrieval (composePools) inject any `quality: "untested"` candidate this week? */
   untested_present: boolean;
   /**
@@ -75,6 +85,8 @@ export interface BuildPlannerInputArgs {
   /** Caller-supplied household prose — see `PlannerInput.household` doc above. */
   household: string;
   currentSeason?: string;
+  /** See `PlannerInput.temperature_band`'s doc above. */
+  temperatureBand?: TemperatureBand;
   /** Hard ceiling on paired sides this week (bd meal-planner-8zs.8); defaults to `DEFAULT_MAX_PAIRED_SIDES`. */
   maxPairedSides?: number;
 }
@@ -93,6 +105,7 @@ export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
     nightSchedule,
     household,
     currentSeason,
+    temperatureBand,
     maxPairedSides,
   } = args;
 
@@ -107,6 +120,9 @@ export function buildPlannerInput(args: BuildPlannerInputArgs): PlannerInput {
     night_schedule: nightSchedule,
     household,
     ...(currentSeason !== undefined ? { current_season: currentSeason } : {}),
+    ...(temperatureBand !== undefined
+      ? { temperature_band: temperatureBand }
+      : {}),
     untested_present: untestedPresent,
     ...(maxPairedSides !== undefined
       ? { max_paired_sides: maxPairedSides }
@@ -248,6 +264,16 @@ export function buildSelectionPrompt(input: PlannerInput): string {
     ruleLines.push(
       `- Respect the current season ("${input.current_season}"): prefer candidates whose ` +
         "season_tags include it.",
+    );
+  }
+  if (input.temperature_band !== undefined) {
+    ruleLines.push(
+      `- This week's live forecast trends "${input.temperature_band}": bias toward lighter, ` +
+        'cooler dishes for "hot" and heartier, warming dishes for "cold" ("mild" implies no ' +
+        "strong lean either way). This REFINES the season signal above — do NOT double-count " +
+        "it: a dish already penalized/rewarded for its season_tags should NOT ALSO be " +
+        "penalized/rewarded for this live reading; treat the two together as one seasonality " +
+        "judgment.",
     );
   }
   ruleLines.push(

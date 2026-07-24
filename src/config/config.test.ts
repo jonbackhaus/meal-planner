@@ -40,6 +40,7 @@ describe("loadConfig", () => {
         include: [],
         cookingWindow: { start: "16:30", end: "19:30" },
       },
+      weather: {},
     });
   });
 

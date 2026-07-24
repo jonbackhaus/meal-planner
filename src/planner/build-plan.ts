@@ -3,9 +3,10 @@ import type {
   CalendarReaderOptions,
 } from "../calendar/calendar-reader.js";
 import { getWeekNightSchedule } from "../calendar/week-night-schedule.js";
-import type { CalendarConfig } from "../config/config.js";
+import type { CalendarConfig, WeatherConfig } from "../config/config.js";
 import type { LlmClient } from "../llm/llm-client.js";
 import type { Recipe } from "../recipe-mcp/schema.js";
+import type { TemperatureBand } from "../weather/weather.js";
 import { deriveSlots } from "./derive-slots.js";
 import { type EnrichedWeekPlan, enrichPlan } from "./enrich.js";
 import { buildPlannerInput } from "./input.js";
@@ -60,6 +61,8 @@ export type BuildPlanConfig = PoolCompositionConfig & {
   timezone: string;
   calendar: CalendarConfig;
   quickActiveMax: number;
+  /** Household coordinates for the Open-Meteo `temperature_band` fetch (ADR-0003 A1). Unset lat/lon = weather skipped, seasonal-only. */
+  weather: WeatherConfig;
 };
 
 export interface BuildPlanDeps {
@@ -82,6 +85,20 @@ export interface BuildPlanDeps {
   alert: (message: string) => Promise<void>;
   /** Injectable for tests; defaults to `console` inside `getWeekNightSchedule`. */
   logger?: Pick<Console, "warn" | "error">;
+  /**
+   * Bound Open-Meteo fetch (ADR-0003 A1, bd `bgb`) — production wiring binds
+   * `getTemperatureBand` from `src/weather/weather.ts`; tests inject a stub so
+   * `buildPlan` never makes a live fetch. Degrades to `null` (seasonal-only)
+   * on ANY failure internally — SILENT: unlike `alert` above, no alert is
+   * ever fired for a weather miss (weather is advisory, ADR-0003 A1; this is
+   * not the calendar's alert-once degrade, ADR-0004 D6).
+   */
+  getTemperatureBand: (args: {
+    weekKey: string;
+    timezone: string;
+    latitude: number;
+    longitude: number;
+  }) => Promise<TemperatureBand | null>;
 }
 
 export interface BuildPlanArgs {
@@ -156,6 +173,21 @@ export async function buildPlan(
   // `generateForWeek`'s failed+alert path with an actionable, secret-free message.
   assertPoolsSufficient(pools, slots);
 
+  // ADR-0003 A1 (bd bgb): week-level temperature_band, fetched only when the
+  // household location is configured. Missing lat/lon is treated the same as
+  // any other degrade — proceed seasonal-only, no error, no alert — since
+  // `deps.getTemperatureBand` itself already silently maps a fetch failure to
+  // `null` (see its doc above).
+  const temperatureBand =
+    cfg.weather.latitude !== undefined && cfg.weather.longitude !== undefined
+      ? await deps.getTemperatureBand({
+          weekKey,
+          timezone: cfg.timezone,
+          latitude: cfg.weather.latitude,
+          longitude: cfg.weather.longitude,
+        })
+      : null;
+
   const input = buildPlannerInput({
     weekKey,
     slots,
@@ -163,6 +195,7 @@ export async function buildPlan(
     nightSchedule: schedule,
     household,
     currentSeason: cfg.season,
+    temperatureBand: temperatureBand ?? undefined,
     maxPairedSides: cfg.maxPairedSides,
   });
 

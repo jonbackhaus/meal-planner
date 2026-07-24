@@ -28,6 +28,9 @@ import { z } from "zod";
  *                                    config, not code)
  * - MP_CALENDAR_COOKING_WINDOW_START -> calendar.cookingWindow.start (ADR-0004 D3, HH:MM)
  * - MP_CALENDAR_COOKING_WINDOW_END   -> calendar.cookingWindow.end (ADR-0004 D3, HH:MM)
+ * - MP_WEATHER_LATITUDE              -> weather.latitude (ADR-0003 A1; OPTIONAL, household coords
+ *                                       for the keyless Open-Meteo fetch)
+ * - MP_WEATHER_LONGITUDE             -> weather.longitude (ADR-0003 A1; OPTIONAL, see above)
  *
  * `modelRates` is not env-configurable (it's a map); it is seeded here with
  * SPEC §9.3 intro-pricing values and can be edited in code when pricing changes.
@@ -292,6 +295,28 @@ const configSchema = z
     // ADR-0004 D2/D3/D6 — calendar config (schema only; independent of the
     // EventKit reader, sibling bead r0o.1).
     calendar: calendarSchema,
+    // ADR-0003 A1 (bd bgb) — household coordinates for the keyless Open-Meteo
+    // forecast fetch that derives `temperature_band`. OPTIONAL: household
+    // location isn't known here, so an unset lat/lon just means the weather
+    // signal is unavailable — `buildPlan` degrades to seasonal-only, silently
+    // (no alert), the same as any other Open-Meteo fetch failure (A1).
+    weather: z.preprocess(
+      (value) => value ?? {},
+      z
+        .object({
+          latitude: z
+            .number()
+            .min(-90, "weather.latitude must be between -90 and 90")
+            .max(90, "weather.latitude must be between -90 and 90")
+            .optional(),
+          longitude: z
+            .number()
+            .min(-180, "weather.longitude must be between -180 and 180")
+            .max(180, "weather.longitude must be between -180 and 180")
+            .optional(),
+        })
+        .strict(),
+    ),
   })
   .strict();
 
@@ -304,6 +329,7 @@ export type ModelRate = Config["modelRates"][string];
 export type CookNights = Config["cookNights"];
 export type CalendarConfig = Config["calendar"];
 export type CalendarRole = CalendarConfig["include"][number]["role"];
+export type WeatherConfig = Config["weather"];
 
 /** Loosely-typed candidate object accepted by validateConfig, prior to schema validation. */
 export type RawConfigInput = Record<string, unknown>;
@@ -397,6 +423,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         start: optionalString(env.MP_CALENDAR_COOKING_WINDOW_START),
         end: optionalString(env.MP_CALENDAR_COOKING_WINDOW_END),
       },
+    },
+    weather: {
+      latitude: optionalNumber(env.MP_WEATHER_LATITUDE),
+      longitude: optionalNumber(env.MP_WEATHER_LONGITUDE),
     },
   };
 

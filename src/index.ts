@@ -31,6 +31,7 @@ import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
 import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
+import { getTemperatureBand } from "./weather/weather.js";
 
 /**
  * Boot secret loading with a timeout (carried over from the secrets review,
@@ -545,6 +546,9 @@ export async function main(): Promise<void> {
         // selectValidatedPlan's ValidatePlanConfig.quickActiveMax so the
         // QUICK-night capacity-fit day rule actually fires in production.
         quickActiveMax: config.quickActiveMax,
+        // ADR-0003 A1 (bd bgb): household coords for the Open-Meteo
+        // temperature_band fetch; unset lat/lon = weather skipped entirely.
+        weather: config.weather,
       },
       household,
       deps: {
@@ -553,6 +557,7 @@ export async function main(): Promise<void> {
         getRecipe: getRecipeBound,
         readEvents: readCalendarEvents,
         alert,
+        getTemperatureBand,
       },
     });
 
