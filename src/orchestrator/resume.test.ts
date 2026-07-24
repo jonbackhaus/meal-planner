@@ -243,6 +243,93 @@ describe("resumeQuietly", () => {
     });
   });
 
+  it("lenient read (ADR 0004 D5, bd6.10): an OLD plan with no `prep` key at all still parses (resume back-compat)", () => {
+    store = makeStore();
+    const plan = makeValidWorkingPlan("2026-07-12");
+    expect((plan as Record<string, unknown>).prep).toBeUndefined();
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1234.5678",
+      working_plan: plan,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    const active = resumeQuietly(row);
+
+    expect(active).toEqual({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1234.5678",
+      working_plan: plan,
+    });
+    expect(
+      (active.working_plan as Record<string, unknown> | null)?.prep,
+    ).toBeUndefined();
+  });
+
+  it("lenient read (ADR 0004 D5): a plan carrying a `prep` array (placed and unplaced units) round-trips through resume", () => {
+    store = makeStore();
+    const plan = {
+      ...makeValidWorkingPlan("2026-07-12"),
+      prep: [
+        {
+          description: "Marinate the chicken",
+          serve_date: "2026-07-14",
+          prep_date: "2026-07-12",
+        },
+        {
+          description: "Soak the beans",
+          serve_date: "2026-07-16",
+          prep_date: null,
+        },
+      ],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1234.5678",
+      working_plan: plan,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    const active = resumeQuietly(row);
+
+    expect(active.working_plan).toMatchObject({ prep: plan.prep });
+  });
+
+  it("lenient read (ADR 0004 D5): a plan with a malformed `prep` entry throws ResumeError", () => {
+    store = makeStore();
+    const plan = {
+      ...makeValidWorkingPlan("2026-07-12"),
+      prep: [
+        {
+          description: "Marinate the chicken",
+          serve_date: "not-a-date",
+          prep_date: null,
+        },
+      ],
+    };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1234.5678",
+      working_plan: plan,
+      created_at: "2026-07-12T05:00:00.000Z",
+      updated_at: "2026-07-12T05:00:00.000Z",
+    });
+    const row = store.get("2026-07-12");
+    if (!row) throw new Error("test setup: row missing");
+
+    expect(() => resumeQuietly(row)).toThrow(ResumeError);
+  });
+
   it("lenient read (bd6.13): a meal with a STRING day (v2.0 day assignment) parses without throwing", () => {
     store = makeStore();
     const plan = makeValidWorkingPlan("2026-07-12") as {

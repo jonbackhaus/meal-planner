@@ -4,8 +4,11 @@ import type { PlannerInput } from "./input.js";
 import {
   llmSelect,
   PlanSelectionError,
+  PrepUnitSchema,
+  resolvePrepUnits,
   SelectedMealSchema,
   VegPathSchema,
+  type WeekPlan,
   WeekPlanSchema,
 } from "./select.js";
 
@@ -137,9 +140,35 @@ describe("SelectedMealSchema", () => {
     expect(SelectedMealSchema.safeParse(meal).success).toBe(false);
   });
 
-  it("rejects a meal where day is not null", () => {
+  it("accepts day: null (v1.0 back-compat / degraded no-calendar path)", () => {
+    expect(
+      SelectedMealSchema.safeParse(inherentMeal({ day: null })).success,
+    ).toBe(true);
+  });
+
+  it("accepts a valid ISO calendar date for day (ADR-0005 D2)", () => {
+    expect(
+      SelectedMealSchema.safeParse(inherentMeal({ day: "2026-07-28" })).success,
+    ).toBe(true);
+  });
+
+  it("rejects a weekday name for day", () => {
     expect(
       SelectedMealSchema.safeParse(inherentMeal({ day: "Monday" })).success,
+    ).toBe(false);
+  });
+
+  it("rejects a full datetime for day", () => {
+    expect(
+      SelectedMealSchema.safeParse(
+        inherentMeal({ day: "2026-07-28T00:00:00Z" }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("rejects a malformed date for day", () => {
+    expect(
+      SelectedMealSchema.safeParse(inherentMeal({ day: "2026/07/28" })).success,
     ).toBe(false);
   });
 });
@@ -160,6 +189,117 @@ describe("WeekPlanSchema", () => {
     const plan = validWeekPlan();
     plan.meals = [inherentMeal({ day: "Monday" })];
     expect(WeekPlanSchema.safeParse(plan).success).toBe(false);
+  });
+
+  it("accepts a plan without the optional prep field (old plan back-compat, ADR 0004 D5)", () => {
+    const plan = validWeekPlan();
+    expect((plan as Record<string, unknown>).prep).toBeUndefined();
+    expect(WeekPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
+  it("accepts a plan with a prep array (placed and unplaced units)", () => {
+    const plan = {
+      ...validWeekPlan(),
+      prep: [
+        {
+          description: "Marinate the chicken",
+          serve_date: "2026-07-28",
+          prep_date: "2026-07-26",
+        },
+        {
+          description: "Soak the beans",
+          serve_date: "2026-07-30",
+          prep_date: null,
+        },
+      ],
+    };
+    expect(WeekPlanSchema.safeParse(plan).success).toBe(true);
+  });
+
+  it("rejects a plan with a malformed prep unit", () => {
+    const plan = {
+      ...validWeekPlan(),
+      prep: [
+        {
+          description: "Marinate the chicken",
+          serve_date: "07/28/2026",
+          prep_date: null,
+        },
+      ],
+    };
+    expect(WeekPlanSchema.safeParse(plan).success).toBe(false);
+  });
+});
+
+describe("PrepUnitSchema", () => {
+  it("accepts a prep unit with a placed (non-null) prep_date", () => {
+    expect(
+      PrepUnitSchema.safeParse({
+        description: "Marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "2026-07-26",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("accepts a prep unit with an unplaced (null) prep_date", () => {
+    expect(
+      PrepUnitSchema.safeParse({
+        description: "Soak the beans",
+        serve_date: "2026-07-30",
+        prep_date: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects a malformed serve_date", () => {
+    expect(
+      PrepUnitSchema.safeParse({
+        description: "Marinate the chicken",
+        serve_date: "2026/07/28",
+        prep_date: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a malformed prep_date", () => {
+    expect(
+      PrepUnitSchema.safeParse({
+        description: "Marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "not-a-date",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing description", () => {
+    const unit: Record<string, unknown> = {
+      description: "Marinate the chicken",
+      serve_date: "2026-07-28",
+      prep_date: null,
+    };
+    delete unit.description;
+    expect(PrepUnitSchema.safeParse(unit).success).toBe(false);
+  });
+});
+
+describe("resolvePrepUnits (ADR 0004 D5 forward-migration read helper, bd6.13)", () => {
+  it("backfills an old plan (no prep key) to an empty array", () => {
+    const plan = validWeekPlan();
+    expect((plan as Record<string, unknown>).prep).toBeUndefined();
+    expect(resolvePrepUnits(plan as Pick<WeekPlan, "prep">)).toEqual([]);
+  });
+
+  it("returns the plan's prep array unchanged when present", () => {
+    const prep = [
+      {
+        description: "Marinate the chicken",
+        serve_date: "2026-07-28",
+        prep_date: "2026-07-26",
+      },
+    ];
+    const plan = { ...validWeekPlan(), prep };
+    expect(resolvePrepUnits(plan)).toEqual(prep);
   });
 });
 

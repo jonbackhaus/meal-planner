@@ -4,6 +4,7 @@ import {
   EnrichedMealSchema,
   EnrichedWeekPlanSchema,
 } from "../planner/enrich.js";
+import { PrepUnitSchema } from "../planner/select.js";
 import type { Session, SessionStatus } from "./session-store.js";
 
 /**
@@ -46,13 +47,19 @@ export interface ActiveSession {
  * `EnrichedWeekPlanSchema`, the single source of truth for what `enrichPlan`
  * produces — and this module DERIVES its read shape on top rather than
  * re-describing it (which would drift). The derivation layers exactly the
- * two read-leniencies bd6.13 introduced:
+ * read-leniencies bd6.13 introduced (plus ADR 0004 D5's `prep`, bd6.10):
  *
  *  1. `day: z.string().nullable().optional()` — tolerate the v2.0 nullable
  *     `day` (a weekday string) as well as v1.0's literal `null` or an absent
  *     field. v1.0 STORAGE still writes `day: null` (planner/select.ts) —
  *     only the read is widened here.
- *  2. `.passthrough()` (not `.strict()`) on both the meal and the plan so a
+ *  2. `prep: z.array(PrepUnitSchema).optional()` (ADR 0004 D5) — tolerate a
+ *     plan that predates prep-unit placement (bd meal-planner-468) and has no
+ *     `prep` key at all, same additive-optional pattern as `day` above. Left
+ *     genuinely absent (no default synthesized) rather than backfilled to
+ *     `[]` here, so an old stored plan round-trips byte-for-byte; a reader
+ *     wanting a plain array should call `resolvePrepUnits` (planner/select.ts).
+ *  3. `.passthrough()` (not `.strict()`) on both the meal and the plan so a
  *     blob grown by a FUTURE schema — extra top-level or per-meal fields
  *     (v2.0 calendar context, v3.0 Todoist ids) — still parses and is
  *     PRESERVED, instead of the live week's plan being lost.
@@ -66,6 +73,7 @@ const ResumedMealSchema = EnrichedMealSchema.extend({
 
 const ResumedWeekPlanSchema = EnrichedWeekPlanSchema.extend({
   meals: z.array(ResumedMealSchema),
+  prep: z.array(PrepUnitSchema).optional(),
 }).passthrough();
 
 /**
