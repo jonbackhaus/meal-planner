@@ -56,11 +56,12 @@ export class SlackPoster {
    * Renders `plan` via the pure `renderPlan` and posts it as a new top-level
    * mrkdwn message in `channelId`, returning `{ ts }` on success.
    *
-   * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (render
-   * context `buildPlan` attaches, see enrich.ts) and `resolvePrepUnits(plan)`
-   * into `renderPlan` so capacity/prep annotations reach the real post.
-   * `plan.nightSchedule` is `undefined` on a v1.0/degraded plan — `renderPlan`
-   * already falls back to the unordered render in that case.
+   * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (the
+   * COMPACT, PII-free render context `buildPlan` attaches, see enrich.ts;
+   * bd meal-planner-0v7.8) and `resolvePrepUnits(plan)` into `renderPlan` so
+   * capacity/prep annotations reach the real post. `plan.nightSchedule` is
+   * `undefined` on a v1.0/degraded plan — `renderPlan` already falls back to
+   * the unordered render in that case.
    *
    * Throws a plain `Error` (no bot token, no client, nothing secret) when the
    * call rejects, or the response is `ok:false`, or `ok:true` but missing a

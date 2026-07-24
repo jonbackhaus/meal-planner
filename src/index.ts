@@ -74,12 +74,13 @@ const DEFAULT_HOUSEHOLD =
  * `week_key`), so even if two dry-run posts fired for the same week they'd
  * share this ts by design — matching the single retained row for that week.
  *
- * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (render
- * context `buildPlan` attaches, see `planner/enrich.ts`) and
- * `resolvePrepUnits(plan)` into `renderPlan` so the dry-run log shows the
- * same capacity/prep annotations the real post would. `plan.nightSchedule` is
- * `undefined` on a v1.0/degraded plan — `renderPlan` already falls back to
- * the unordered render in that case.
+ * ADR 0005 D4 (bd meal-planner-0v7.7): passes `plan.nightSchedule` (the
+ * COMPACT, PII-free render context `buildPlan` attaches, see
+ * `planner/enrich.ts`; bd meal-planner-0v7.8) and `resolvePrepUnits(plan)`
+ * into `renderPlan` so the dry-run log shows the same capacity/prep
+ * annotations the real post would. `plan.nightSchedule` is `undefined` on a
+ * v1.0/degraded plan — `renderPlan` already falls back to the unordered
+ * render in that case.
  *
  * The real `chat.postMessage`-backed `PostFn` (E5 bj1.3, `SlackPoster`) is
  * wired in `main()` below when `profile.postMode === "post"`.

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { NightSchedule } from "../calendar/night-schedule.js";
+import type { NightCapacitySchedule } from "../calendar/night-schedule.js";
 import { type Recipe, RecipeSchema } from "../recipe-mcp/schema.js";
 import { PrepUnitSchema, SelectedMealSchema, type WeekPlan } from "./select.js";
 
@@ -56,9 +56,11 @@ export const EnrichedWeekPlanSchema = z.object({
 });
 
 /**
- * `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7) is deliberately NOT
- * part of `EnrichedWeekPlanSchema` above: it's a per-generation RENDER aid
- * (the week's `NightSchedule`, ADR 0004 D4) attached by `buildPlan`
+ * `nightSchedule` (ADR 0005 D4, bd meal-planner-0v7.7; compacted in bead
+ * meal-planner-0v7.8) is deliberately NOT part of `EnrichedWeekPlanSchema`
+ * above: it's a per-generation RENDER aid — the week's compact, PII-free
+ * `NightCapacitySchedule` (date/weekday/capacity only, no `blocking_events`
+ * event titles; see `calendar/night-schedule.ts`) — attached by `buildPlan`
  * (build-plan.ts) — not part of the plan's own canonical selection/
  * enrichment shape, and this module has no calendar dependency of its own.
  * It's threaded this way (as an optional field on the SAME object, rather
@@ -67,11 +69,15 @@ export const EnrichedWeekPlanSchema = z.object({
  * `BuildPlanFn`/`PostFn` contracts (`orchestrator/generate.ts`) — the same
  * `plan` object `generateForWeek` already threads through
  * `buildPlan -> post -> working_plan` (ADR 0002 write-before-post) simply
- * carries it along. Optional throughout: absent on any caller that hasn't
+ * carries it along. Because it's the COMPACT view, `working_plan` never
+ * carries raw calendar event titles (bead meal-planner-0v7.8) — the full
+ * `NightSchedule` (with `blocking_events`) is only ever passed to the
+ * planner/validator via `PlannerInput.night_schedule` (input.ts), which this
+ * type does not touch. Optional throughout: absent on any caller that hasn't
  * wired this yet, and unused by the v1.0 fallback render path (`day: null`).
  */
 export type EnrichedWeekPlan = z.infer<typeof EnrichedWeekPlanSchema> & {
-  nightSchedule?: NightSchedule;
+  nightSchedule?: NightCapacitySchedule;
 };
 
 export interface EnrichPlanDeps {

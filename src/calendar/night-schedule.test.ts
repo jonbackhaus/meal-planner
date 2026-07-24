@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CalendarConfig } from "../config/config.js";
 import type { CalendarEvent } from "./calendar-reader.js";
-import { assembleNightSchedule, type BlockingEvent } from "./night-schedule.js";
+import {
+  assembleNightSchedule,
+  type BlockingEvent,
+  toNightCapacitySchedule,
+} from "./night-schedule.js";
 
 /**
  * ADR-0004 D4 NightSchedule assembler tests (bead r0o.4).
@@ -256,5 +260,37 @@ describe("assembleNightSchedule", () => {
     expect(byDate.get("2026-11-01")?.capacity).toBe("NONE"); // transition day: covered
     expect(byDate.get("2026-11-02")?.weekday).toBe("Monday");
     expect(byDate.get("2026-11-02")?.capacity).toBe("FULL"); // day after: untouched
+  });
+});
+
+// bd meal-planner-0v7.8: the compact, PII-free projection attached onto the
+// plan/persisted as working_plan — date/weekday/capacity only, no
+// blocking_events / raw calendar event titles.
+describe("toNightCapacitySchedule", () => {
+  it("projects date/weekday/capacity and drops blocking_events for every night", () => {
+    const blockingEvent = event({ title: "Secret family therapy session" });
+    const schedule = assembleNightSchedule({
+      weekKey: "2026-08-02",
+      timezone: TIMEZONE,
+      calendarConfig: CALENDAR_CONFIG,
+      events: [blockingEvent],
+    });
+    // Sanity: the full schedule DOES carry the event title somewhere.
+    expect(JSON.stringify(schedule)).toContain("Secret family therapy session");
+
+    const compact = toNightCapacitySchedule(schedule);
+
+    expect(compact).toHaveLength(schedule.length);
+    for (const [i, night] of compact.entries()) {
+      expect(night).toEqual({
+        date: schedule[i].date,
+        weekday: schedule[i].weekday,
+        capacity: schedule[i].capacity,
+      });
+      expect(night).not.toHaveProperty("blocking_events");
+    }
+    expect(JSON.stringify(compact)).not.toContain(
+      "Secret family therapy session",
+    );
   });
 });

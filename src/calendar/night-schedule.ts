@@ -88,6 +88,39 @@ export interface Night {
 /** Exactly 7 nights (Sunday..Saturday of the anchored plan week). */
 export type NightSchedule = Night[];
 
+/**
+ * Compact, PII-free per-night capacity view (bead meal-planner-0v7.8):
+ * `date`/`weekday`/`capacity` only, deliberately omitting `blocking_events`
+ * (which carries raw calendar event titles). `Night` above is what the
+ * planner/validator reason over (via `PlannerInput.night_schedule`, unchanged
+ * by this type); `NightCapacity` is the render/persistence projection
+ * `buildPlan` attaches to the returned plan (`EnrichedWeekPlan.nightSchedule`)
+ * — the same object `generateForWeek` stores as `working_plan` (ADR 0002
+ * write-before-post) — so calendar event titles never reach the session DB.
+ */
+export interface NightCapacity {
+  date: string;
+  weekday: string;
+  capacity: Capacity;
+}
+
+/** Exactly 7 nights, compact form (see `NightCapacity`). */
+export type NightCapacitySchedule = NightCapacity[];
+
+/**
+ * Projects a full `NightSchedule` down to its compact, PII-free
+ * `NightCapacitySchedule` — drops `blocking_events` from every night.
+ */
+export function toNightCapacitySchedule(
+  schedule: NightSchedule,
+): NightCapacitySchedule {
+  return schedule.map(({ date, weekday, capacity }) => ({
+    date,
+    weekday,
+    capacity,
+  }));
+}
+
 export interface AssembleNightScheduleOptions {
   /**
    * The anchor Sunday (`orchestrator/week-key.ts`'s `WeekKey`) this schedule
