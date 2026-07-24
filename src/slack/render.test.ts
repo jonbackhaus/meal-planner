@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { NightSchedule } from "../calendar/night-schedule.js";
 import type { EnrichedMeal, EnrichedWeekPlan } from "../planner/enrich.js";
-import type { PrepUnit } from "../planner/select.js";
+import { placePrepUnits } from "../planner/place-prep.js";
+import type { PrepUnit, SelectedMeal } from "../planner/select.js";
 import type { Recipe } from "../recipe-mcp/schema.js";
 import { renderPlan } from "./render.js";
 
@@ -389,6 +390,72 @@ describe("renderPlan", () => {
       );
 
       expect(output).not.toContain("prep");
+    });
+
+    it("place-prep -> render end-to-end: a do-ahead meal's real placement shows a prep note under its serve night, and an unplaceable one shows none (bd meal-planner-468.2 + 468.3)", () => {
+      // Tuesday's do-ahead meal has two earlier nights (Sun, Mon); Sunday is
+      // the earliest weekend night, so placePrepUnits places prep there.
+      const tueDoAhead: SelectedMeal = {
+        slot_type: "constrained",
+        recipe_id: "tue-do-ahead",
+        title: "Tuesday Do-Ahead Chili",
+        day: TUE,
+        veg: { kind: "inherent" },
+        flags: ["do-ahead"],
+        rationale: "make-ahead comfort food",
+      };
+      // Sunday's do-ahead meal has NO earlier night in the schedule at all,
+      // so placePrepUnits leaves its prep_date null (unplaceable).
+      const sunDoAhead: SelectedMeal = {
+        slot_type: "constrained",
+        recipe_id: "sun-do-ahead",
+        title: "Sunday Do-Ahead Stew",
+        day: SUN,
+        veg: { kind: "inherent" },
+        flags: ["do-ahead"],
+        rationale: "make-ahead comfort food",
+      };
+
+      // Real placement (bd meal-planner-468.2) — not a hand-built PrepUnit.
+      const placedPrep = placePrepUnits(
+        [tueDoAhead, sunDoAhead],
+        fullWeekSchedule,
+      );
+
+      const enrichedPlan = plan([
+        meal({
+          recipe_id: "tue-do-ahead",
+          title: "Tuesday Do-Ahead Chili",
+          day: TUE,
+          flags: ["do-ahead"],
+          recipe: recipe("tue-do-ahead", { title: "Tuesday Do-Ahead Chili" }),
+        }),
+        meal({
+          recipe_id: "sun-do-ahead",
+          title: "Sunday Do-Ahead Stew",
+          day: SUN,
+          flags: ["do-ahead"],
+          recipe: recipe("sun-do-ahead", { title: "Sunday Do-Ahead Stew" }),
+        }),
+      ]);
+
+      const output = renderPlan(enrichedPlan, {
+        nightSchedule: fullWeekSchedule,
+        prep: placedPrep,
+      });
+
+      // Tuesday's placed prep note lands under the SERVE night (Tuesday),
+      // not the prep night (Sunday).
+      const tueIdx = output.indexOf("*Tuesday*");
+      const wedIdx = output.indexOf("*Wednesday*");
+      expect(output.slice(tueIdx, wedIdx)).toContain("prep Sun → serve Tue");
+
+      // Sunday's meal has no earlier night to place onto, so its prep unit
+      // stays unplaced (prep_date: null) and renders no prep note anywhere,
+      // including under its own serve night (last section, Monday->Sunday
+      // order means Sunday's section runs to the end of the output).
+      const sunIdx = output.indexOf("*Sunday*");
+      expect(output.slice(sunIdx)).not.toContain("↳");
     });
 
     it("falls back to the unordered v1.0 slot-typed render when every meal has day: null", () => {

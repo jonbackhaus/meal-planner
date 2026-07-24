@@ -531,6 +531,80 @@ describe("buildPlan attaches nightSchedule onto the returned plan", () => {
   });
 });
 
+// ── ADR-0004 D5: prep-unit placement wired into the pipeline (bd meal-planner-468.2) ──
+describe("buildPlan places prep units before enrich/return", () => {
+  it("attaches a placed PrepUnit for a do-ahead meal, reachable via result.prep", async () => {
+    const search = fakeSearch();
+    // baseCfg's D6 static fallback (weekKey 2026-08-02, cookNights 1+1)
+    // sizes the schedule to exactly Sun 2026-08-02 (relaxed/weekend) + Mon
+    // 2026-08-03 (constrained/weeknight), both FULL (see the nightSchedule
+    // describe block above) — Sunday is the only earlier night Monday's
+    // do-ahead meal can place onto.
+    const plan: WeekPlan = {
+      week_key: "2026-08-02",
+      meals: [
+        meal({
+          recipe_id: "wn-veg",
+          slot_type: "constrained",
+          day: "2026-08-03",
+          flags: ["do-ahead"],
+        }),
+        meal({
+          recipe_id: "we-veg",
+          slot_type: "relaxed",
+          day: "2026-08-02",
+        }),
+      ],
+    };
+    const llm = fakeLlm(JSON.stringify(plan));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+      },
+    });
+
+    expect(result.prep).toEqual([
+      {
+        description: "Prep: Recipe wn-veg",
+        serve_date: "2026-08-03",
+        prep_date: "2026-08-02",
+      },
+    ]);
+  });
+
+  it("attaches an empty prep array when no selected meal is flagged do-ahead", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+      },
+    });
+
+    expect(result.prep).toEqual([]);
+  });
+});
+
 // ── ADR-0004 D4/D6: slots derived from NightSchedule (bead r0o.5) ──
 describe("buildPlan derives slots from NightSchedule", () => {
   const ENABLED_CALENDAR: CalendarConfig = {
