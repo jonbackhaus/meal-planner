@@ -1,3 +1,4 @@
+import { readCalendarEvents } from "./calendar/calendar-reader.js";
 import { loadConfig } from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
@@ -525,9 +526,20 @@ export async function main(): Promise<void> {
         // gate). main() is the clock-owning composition root — cf. nowDate
         // below. Flows to both the hard search filter and the soft prompt bias.
         season: seasonForDate(new Date(), config.timezone),
+        // ADR-0004 D4/D6: fed to getWeekNightSchedule to derive slots from the
+        // week's NightSchedule (degrades to the static cookNights count when
+        // calendar.enabled is false or the live read fails).
+        timezone: config.timezone,
+        calendar: config.calendar,
       },
       household,
-      deps: { search, llm, getRecipe: getRecipeBound },
+      deps: {
+        search,
+        llm,
+        getRecipe: getRecipeBound,
+        readEvents: readCalendarEvents,
+        alert,
+      },
     });
 
   // Sync recipes from Apple Notes BEFORE selecting (SPEC weekly flow; bd

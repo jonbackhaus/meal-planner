@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import type {
+  CalendarEvent,
+  CalendarReaderOptions,
+} from "../calendar/calendar-reader.js";
+import type { CalendarConfig } from "../config/config.js";
 import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import type { Recipe, RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { SearchFilters } from "../recipe-mcp/search.js";
@@ -52,12 +57,25 @@ function llmResult(text: string): LlmResult {
   return { text, usage: { inputTokens: 1, outputTokens: 1 } };
 }
 
+// ADR-0004 D6: calendar.enabled: false makes getWeekNightSchedule return the
+// static fallback sized to cookNights (all-FULL), so deriveSlots reproduces
+// the OLD pre-r0o.5 static-config slots exactly for every test below that
+// doesn't itself test the enabled/live-calendar path (see the "derives slots
+// from a live NightSchedule" describe block further down).
+const DISABLED_CALENDAR: CalendarConfig = {
+  enabled: false,
+  include: [],
+  cookingWindow: { start: "16:30", end: "19:30" },
+};
+
 const baseCfg = {
   cookNights: { constrained: 1, relaxed: 1 },
   activeMaxMinutes: 60,
   fanoutMultiplier: 4,
   vegFloorK: 1,
   untestedRate: 0,
+  timezone: "America/Chicago",
+  calendar: DISABLED_CALENDAR,
 };
 
 function fakeSearch() {
@@ -67,9 +85,20 @@ function fakeSearch() {
   });
 }
 
+/** Never called in the disabled-calendar path; supplied for type-shape only. */
+function fakeReadEvents() {
+  return vi.fn(
+    async (_options: CalendarReaderOptions): Promise<CalendarEvent[]> => [],
+  );
+}
+
+function fakeAlert() {
+  return vi.fn(async (_message: string) => {});
+}
+
 function planJson(): WeekPlan {
   return {
-    week_key: "2026-W29",
+    week_key: "2026-08-02",
     meals: [
       meal({ recipe_id: "wn-veg", slot_type: "constrained" }),
       meal({ recipe_id: "we-veg", slot_type: "relaxed" }),
@@ -92,13 +121,19 @@ describe("buildPlan", () => {
     const getRecipe = fakeGetRecipe();
 
     const result = await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: baseCfg,
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
-    expect(result.week_key).toBe("2026-W29");
+    expect(result.week_key).toBe("2026-08-02");
     expect(result.meals).toHaveLength(2);
     expect(result.meals[0].recipe).toEqual(recipe("wn-veg"));
     expect(result.meals[1].recipe).toEqual(recipe("we-veg"));
@@ -112,10 +147,16 @@ describe("buildPlan", () => {
     const getRecipe = fakeGetRecipe();
 
     await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: baseCfg,
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
     for (const seed of DEFAULT_SEEDS) {
@@ -129,10 +170,16 @@ describe("buildPlan", () => {
     const getRecipe = fakeGetRecipe();
 
     await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: { ...baseCfg, seeds: ["custom seed a", "custom seed b"] },
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
     expect(search).toHaveBeenCalledWith("custom seed a", expect.anything());
@@ -145,10 +192,16 @@ describe("buildPlan", () => {
     const getRecipe = fakeGetRecipe();
 
     await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: { ...baseCfg, season: "summer" },
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
     // Hard: every search call carries the season predicate.
@@ -167,10 +220,16 @@ describe("buildPlan", () => {
     const getRecipe = fakeGetRecipe();
 
     await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: baseCfg,
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
     for (const call of search.mock.calls) {
@@ -188,7 +247,7 @@ describe("buildPlan", () => {
     // fails and selectValidatedPlan's PlanValidationError propagates from
     // buildPlan without being swallowed.
     const badPlan: WeekPlan = {
-      week_key: "2026-W29",
+      week_key: "2026-08-02",
       meals: [
         meal({ recipe_id: "ghost-id", slot_type: "constrained" }),
         meal({ recipe_id: "we-veg", slot_type: "relaxed" }),
@@ -201,10 +260,16 @@ describe("buildPlan", () => {
 
     await expect(
       buildPlan({
-        weekKey: "2026-W29",
+        weekKey: "2026-08-02",
         cfg: baseCfg,
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents: fakeReadEvents(),
+          alert: fakeAlert(),
+        },
       }),
     ).rejects.toThrow(/ghost-id/);
   });
@@ -237,10 +302,16 @@ describe("buildPlan pool-sufficiency pre-check", () => {
 
     await expect(
       buildPlan({
-        weekKey: "2026-W29",
+        weekKey: "2026-08-02",
         cfg: { ...baseCfg, cookNights: { constrained: 2, relaxed: 1 } },
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents: fakeReadEvents(),
+          alert: fakeAlert(),
+        },
       }),
     ).rejects.toThrow(InsufficientPoolError);
 
@@ -259,10 +330,16 @@ describe("buildPlan pool-sufficiency pre-check", () => {
 
     await expect(
       buildPlan({
-        weekKey: "2026-W29",
+        weekKey: "2026-08-02",
         cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 2 } },
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents: fakeReadEvents(),
+          alert: fakeAlert(),
+        },
       }),
     ).rejects.toThrow(InsufficientPoolError);
 
@@ -281,10 +358,16 @@ describe("buildPlan pool-sufficiency pre-check", () => {
 
     await expect(
       buildPlan({
-        weekKey: "2026-W29",
+        weekKey: "2026-08-02",
         cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 1 } },
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents: fakeReadEvents(),
+          alert: fakeAlert(),
+        },
       }),
     ).rejects.toThrow(InsufficientPoolError);
 
@@ -294,7 +377,7 @@ describe("buildPlan pool-sufficiency pre-check", () => {
   it("proceeds to the selection call when pools are exactly sufficient", async () => {
     const search = searchReturning([candidate("wn-a")], [candidate("we-a")]);
     const plan: WeekPlan = {
-      week_key: "2026-W29",
+      week_key: "2026-08-02",
       meals: [
         meal({ recipe_id: "wn-a", slot_type: "constrained" }),
         meal({ recipe_id: "we-a", slot_type: "relaxed" }),
@@ -304,13 +387,114 @@ describe("buildPlan pool-sufficiency pre-check", () => {
     const getRecipe = fakeGetRecipe();
 
     const result = await buildPlan({
-      weekKey: "2026-W29",
+      weekKey: "2026-08-02",
       cfg: { ...baseCfg, cookNights: { constrained: 1, relaxed: 1 } },
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
     });
 
     expect(llm.runQuery).toHaveBeenCalledTimes(1);
     expect(result.meals).toHaveLength(2);
+  });
+});
+
+// ── ADR-0004 D4/D6: slots derived from NightSchedule (bead r0o.5) ──
+describe("buildPlan derives slots from NightSchedule", () => {
+  const ENABLED_CALENDAR: CalendarConfig = {
+    enabled: true,
+    include: [{ name: "Jonathan", role: "cook" }],
+    cookingWindow: { start: "16:30", end: "19:30" },
+  };
+
+  function fullyBlockingEvent(start: string, end: string): CalendarEvent {
+    return {
+      calendarName: "Jonathan",
+      title: "Busy all evening",
+      start: new Date(start),
+      end: new Date(end),
+      allDay: false,
+      status: "confirmed",
+    };
+  }
+
+  it("disabled calendar: reproduces the OLD static cfg.cookNights slots exactly (v1.0-equivalence)", async () => {
+    // cookNights: 3 constrained + 2 relaxed, but the weeknight pool only has 2
+    // distinct candidates — insufficient ONLY if the static cookNights count
+    // (not some other derived value) is what's gating.
+    const search = searchReturning(
+      [candidate("wn-a"), candidate("wn-b")],
+      [candidate("we-a"), candidate("we-b")],
+    );
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const err: unknown = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: {
+        ...baseCfg,
+        cookNights: { constrained: 3, relaxed: 2 },
+        calendar: DISABLED_CALENDAR,
+      },
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+      },
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(InsufficientPoolError);
+    expect(
+      (err as InstanceType<typeof InsufficientPoolError>).constrainedSlots,
+    ).toBe(3);
+    expect(
+      (err as InstanceType<typeof InsufficientPoolError>).relaxedSlots,
+    ).toBe(2);
+    expect(llm.runQuery).not.toHaveBeenCalled();
+  });
+
+  it("enabled calendar: derives slots from the LIVE NightSchedule, not cfg.cookNights", async () => {
+    // Week anchored Sun 2026-08-02. Fully block Tuesday's (2026-08-04)
+    // cooking window -> that night classifies NONE. Remaining weeknights
+    // (Mon, Wed, Thu, Fri) = 4 constrained; weekend (Sun, Sat) = 2 relaxed —
+    // DIFFERENT from cfg.cookNights ({constrained:1, relaxed:1} below), so a
+    // pool sized only to cfg.cookNights proves slots came from the schedule.
+    const readEvents = vi.fn(async (_options: CalendarReaderOptions) => [
+      fullyBlockingEvent("2026-08-04T20:00:00Z", "2026-08-05T01:00:00Z"), // 15:00-20:00 CDT Tue
+    ]);
+    const search = searchReturning(
+      [candidate("wn-a")], // 1 distinct candidate: enough for cfg.cookNights.constrained(1), NOT for the derived 4
+      [candidate("we-a"), candidate("we-b")],
+    );
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const err: unknown = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: {
+        ...baseCfg,
+        cookNights: { constrained: 1, relaxed: 1 },
+        calendar: ENABLED_CALENDAR,
+      },
+      household: "Vegetarian daughter every night.",
+      deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+    }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(InsufficientPoolError);
+    expect(
+      (err as InstanceType<typeof InsufficientPoolError>).constrainedSlots,
+    ).toBe(4);
+    expect(
+      (err as InstanceType<typeof InsufficientPoolError>).relaxedSlots,
+    ).toBe(2);
+    expect(llm.runQuery).not.toHaveBeenCalled();
   });
 });
