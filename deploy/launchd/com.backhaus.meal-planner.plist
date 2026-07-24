@@ -65,6 +65,36 @@
 		<string>America/Chicago</string>
 		<key>MP_TRIGGER_TIME</key>
 		<string>06:00</string>
+
+		<!-- ===== v2.0 calendar capacity (OPTIONAL; runbook §8.1) =====
+		     OFF by default → daemon behaves exactly like v1.0. To enable, in
+		     your machine-local ~/Library/LaunchAgents copy: uncomment these,
+		     set MP_CALENDAR_ENABLED to true, list the family's REAL Calendar.app
+		     calendar names in MP_CALENDAR_INCLUDE (role "cook" = out/eating-out
+		     → NONE; role "logistics" = activity/drive → QUICK), AND grant the
+		     "Calendars" TCC to THIS plist's node binary (runbook §0.1 item 3).
+		     Without the grant the daemon silently degrades to the static
+		     schedule. Names must match Calendar.app exactly.
+		<key>MP_CALENDAR_ENABLED</key>
+		<string>true</string>
+		<key>MP_CALENDAR_INCLUDE</key>
+		<string>[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"},{"name":"TripIt","role":"cook"}]</string>
+		<key>MP_CALENDAR_COOKING_WINDOW_START</key>
+		<string>16:30</string>
+		<key>MP_CALENDAR_COOKING_WINDOW_END</key>
+		<string>19:30</string>
+		<key>MP_QUICK_ACTIVE_MAX</key>
+		<string>30</string>
+		===== end v2.0 calendar ===== -->
+
+		<!-- ===== v2.0 weather signal (OPTIONAL; runbook §8.1) =====
+		     Household lat/lon for the keyless Open-Meteo temperature_band soft
+		     signal. Unset = weather skipped (silent). Both must be set.
+		<key>MP_WEATHER_LATITUDE</key>
+		<string>41.29</string>
+		<key>MP_WEATHER_LONGITUDE</key>
+		<string>-73.09</string>
+		===== end v2.0 weather ===== -->
 	</dict>
 </dict>
 </plist>
