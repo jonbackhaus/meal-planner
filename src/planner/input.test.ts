@@ -145,6 +145,23 @@ describe("buildPlannerInput", () => {
     const withoutSeason = buildPlannerInput({ ...baseArgs, pools });
     expect(withoutSeason.current_season).toBeUndefined();
   });
+
+  it("carries temperature_band through when provided, and omits it when not (ADR-0003 A1)", () => {
+    const pools = {
+      weeknight: [candidate("wn-1")],
+      weekend: [candidate("we-1")],
+    };
+
+    const withBand = buildPlannerInput({
+      ...baseArgs,
+      pools,
+      temperatureBand: "hot",
+    });
+    expect(withBand.temperature_band).toBe("hot");
+
+    const withoutBand = buildPlannerInput({ ...baseArgs, pools });
+    expect(withoutBand.temperature_band).toBeUndefined();
+  });
 });
 
 describe("buildSelectionPrompt", () => {
@@ -325,6 +342,22 @@ describe("buildSelectionPrompt", () => {
     expect(withoutSeason.toLowerCase()).not.toMatch(
       /current.season|respect.*season/,
     );
+  });
+
+  it("includes the temperature_band SOFT clause + no-double-count instruction only when set (ADR-0003 A1)", () => {
+    const withBand = buildSelectionPrompt(
+      makeInput({ current_season: "summer", temperature_band: "hot" }),
+    );
+    expect(withBand).toContain('"hot"');
+    // The no-double-count instruction against the season signal.
+    expect(withBand.toLowerCase()).toMatch(/double.count/);
+    expect(withBand.toLowerCase()).toMatch(/refine/);
+
+    const withoutBand = buildSelectionPrompt(
+      makeInput({ current_season: "summer", temperature_band: undefined }),
+    );
+    expect(withoutBand.toLowerCase()).not.toMatch(/temperature_band|"hot"/);
+    expect(withoutBand.toLowerCase()).not.toMatch(/double.count/);
   });
 
   it("renders a Sides candidate sub-section, an optional-side RULES clause, and the side output field when pools.sides is non-empty (8zs.8)", () => {

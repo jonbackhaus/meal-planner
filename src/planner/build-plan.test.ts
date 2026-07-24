@@ -77,6 +77,10 @@ const baseCfg = {
   timezone: "America/Chicago",
   calendar: DISABLED_CALENDAR,
   quickActiveMax: 30,
+  // ADR-0003 A1 (bd bgb): no household lat/lon configured -> buildPlan skips
+  // the weather fetch entirely (see `getTemperatureBand`'s "never called"
+  // doc below), matching the fallback-cfg pattern.
+  weather: {},
 };
 
 function fakeSearch() {
@@ -95,6 +99,11 @@ function fakeReadEvents() {
 
 function fakeAlert() {
   return vi.fn(async (_message: string) => {});
+}
+
+/** Never called: baseCfg.weather has no lat/lon; supplied for type-shape only. */
+function fakeGetTemperatureBand() {
+  return vi.fn(async () => null);
 }
 
 function planJson(): WeekPlan {
@@ -131,6 +140,7 @@ describe("buildPlan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -157,6 +167,7 @@ describe("buildPlan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -180,6 +191,7 @@ describe("buildPlan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -202,6 +214,7 @@ describe("buildPlan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -230,6 +243,7 @@ describe("buildPlan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -270,6 +284,7 @@ describe("buildPlan", () => {
           getRecipe,
           readEvents: fakeReadEvents(),
           alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
         },
       }),
     ).rejects.toThrow(/ghost-id/);
@@ -312,6 +327,7 @@ describe("buildPlan pool-sufficiency pre-check", () => {
           getRecipe,
           readEvents: fakeReadEvents(),
           alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
         },
       }),
     ).rejects.toThrow(InsufficientPoolError);
@@ -340,6 +356,7 @@ describe("buildPlan pool-sufficiency pre-check", () => {
           getRecipe,
           readEvents: fakeReadEvents(),
           alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
         },
       }),
     ).rejects.toThrow(InsufficientPoolError);
@@ -368,6 +385,7 @@ describe("buildPlan pool-sufficiency pre-check", () => {
           getRecipe,
           readEvents: fakeReadEvents(),
           alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
         },
       }),
     ).rejects.toThrow(InsufficientPoolError);
@@ -397,6 +415,7 @@ describe("buildPlan pool-sufficiency pre-check", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -422,6 +441,7 @@ describe("buildPlan threads the NightSchedule into the selection prompt", () => 
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -467,6 +487,7 @@ describe("buildPlan threads the NightSchedule into the selection prompt", () => 
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -492,6 +513,7 @@ describe("buildPlan attaches nightSchedule onto the returned plan", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -553,6 +575,7 @@ describe("buildPlan derives slots from NightSchedule", () => {
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     }).catch((e) => e);
 
@@ -590,7 +613,14 @@ describe("buildPlan derives slots from NightSchedule", () => {
         calendar: ENABLED_CALENDAR,
       },
       household: "Vegetarian daughter every night.",
-      deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents,
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+      },
     }).catch((e) => e);
 
     expect(err).toBeInstanceOf(InsufficientPoolError);
@@ -665,7 +695,14 @@ describe("buildPlan threads calendarEnabled/quickActiveMax into day-rule validat
         weekKey: "2026-08-02",
         cfg: { ...baseCfg, calendar: ENABLED_CALENDAR, quickActiveMax: 30 },
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents,
+          alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
+        },
       }),
     ).rejects.toThrow(/day is null but a night schedule is available/);
   });
@@ -687,6 +724,7 @@ describe("buildPlan threads calendarEnabled/quickActiveMax into day-rule validat
         getRecipe,
         readEvents: fakeReadEvents(),
         alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
       },
     });
 
@@ -728,8 +766,104 @@ describe("buildPlan threads calendarEnabled/quickActiveMax into day-rule validat
         weekKey: "2026-08-02",
         cfg: { ...baseCfg, calendar: ENABLED_CALENDAR, quickActiveMax: 5 },
         household: "Vegetarian daughter every night.",
-        deps: { search, llm, getRecipe, readEvents, alert: fakeAlert() },
+        deps: {
+          search,
+          llm,
+          getRecipe,
+          readEvents,
+          alert: fakeAlert(),
+          getTemperatureBand: fakeGetTemperatureBand(),
+        },
       }),
     ).rejects.toThrow(/5-min quick ceiling/);
+  });
+});
+
+// ── ADR-0003 A1 (bd bgb): temperature_band fetched + threaded, silent degrade ──
+describe("buildPlan threads temperature_band (ADR-0003 A1, bd bgb)", () => {
+  it("fetches the band with the configured location + weekKey/timezone and threads it into the selection prompt", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+    const getTemperatureBand = vi.fn(async () => "hot" as const);
+
+    await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: { ...baseCfg, weather: { latitude: 41.88, longitude: -87.63 } },
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand,
+      },
+    });
+
+    expect(getTemperatureBand).toHaveBeenCalledWith({
+      weekKey: "2026-08-02",
+      timezone: "America/Chicago",
+      latitude: 41.88,
+      longitude: -87.63,
+    });
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt).toContain('"hot"');
+  });
+
+  it("skips the fetch entirely (never calls deps.getTemperatureBand) when weather lat/lon is unconfigured", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+    const getTemperatureBand = vi.fn(async () => "hot" as const);
+
+    await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg, // weather: {} — no lat/lon
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand,
+      },
+    });
+
+    expect(getTemperatureBand).not.toHaveBeenCalled();
+  });
+
+  it("SILENTLY degrades to seasonal-only (no alert call) when deps.getTemperatureBand resolves null", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+    const getTemperatureBand = vi.fn(async () => null);
+    const alert = fakeAlert();
+
+    await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: { ...baseCfg, weather: { latitude: 41.88, longitude: -87.63 } },
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert,
+        getTemperatureBand,
+      },
+    });
+
+    // baseCfg's DISABLED calendar has its OWN alert-once degrade (ADR-0004
+    // D6) — this asserts the WEATHER degrade path never adds an alert of its
+    // own on top of that, not that `alert` is never called at all.
+    for (const call of alert.mock.calls) {
+      expect(String(call[0]).toLowerCase()).not.toMatch(/weather|temperature/);
+    }
+    const prompt = (llm.runQuery as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      .prompt as string;
+    expect(prompt.toLowerCase()).not.toMatch(/temperature.*trends/);
   });
 });
