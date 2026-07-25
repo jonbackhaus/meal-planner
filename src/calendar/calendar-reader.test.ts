@@ -403,12 +403,12 @@ describe("readCalendarEvents", () => {
     });
   });
 
-  it("sets the osascript timeout to 90s (belt-and-suspenders over the ~17.5s measured allowlist-scoped read, bead swl)", async () => {
+  it("sets the osascript timeout to 25s (fast-degrade over the ~17.5s healthy read; a hanging read degrades to static fast rather than stalling the run)", async () => {
     mockOsascriptStdout("[]");
 
     await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
 
     const options = mockedExecFile.mock.calls[0][2] as { timeout?: number };
-    expect(options.timeout).toBe(90_000);
+    expect(options.timeout).toBe(25_000);
   });
 });

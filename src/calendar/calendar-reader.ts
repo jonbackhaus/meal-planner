@@ -98,11 +98,14 @@ interface RawCalendarEventJson {
  * indefinitely with no way to answer it under launchd — this bounds that so
  * a hang surfaces as a clear, actionable error instead of blocking the
  * daemon forever. A healthy allowlist-scoped read (bead swl) measured ~17.5s
- * — Apple Scripting-Bridge is fundamentally slow, not sub-second — so this is
- * set to 90s as belt-and-suspenders headroom for that variability, well
- * above the ~17s target and still bounded/retried by `MAX_READ_ATTEMPTS`.
+ * — Apple Scripting-Bridge is fundamentally slow, not sub-second. Set to 25s:
+ * enough headroom over the ~17s healthy read, but low enough that a hanging
+ * read (a subscribed iCloud calendar mid-refresh — observed 90s+) DEGRADES to
+ * the static schedule FAST rather than stalling the run for minutes. Reading
+ * the calendar is best-effort (ADR-0004 D6 degrade-don't-fail); a slow read is
+ * not worth blocking the Sunday post. Still bounded/retried by `MAX_READ_ATTEMPTS`.
  */
-const READ_TIMEOUT_MS = 90_000;
+const READ_TIMEOUT_MS = 25_000;
 
 /**
  * stdout buffer cap for the osascript call. A week's worth of events across
