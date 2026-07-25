@@ -1,18 +1,27 @@
 import type { Config } from "../config/config.js";
 import type { Secrets } from "../secrets/secrets.js";
+import {
+  openSocketModeConnection,
+  type SocketModeConnectionHandle,
+  type SocketModeConnectionOptions,
+} from "../slack/socket-connection.js";
 import { type OnTriggerHook, Scheduler } from "./scheduler.js";
 import { checkSystemSleepDisabled } from "./system-check.js";
 
 /**
  * Resident-daemon host (SPEC §3.2, §9.4). Wires config + secrets + the
  * in-process Scheduler together and owns the process lifecycle: runs the
- * injected startup catch-up hook once, starts the weekly Scheduler, and
- * handles graceful shutdown on SIGINT/SIGTERM.
+ * injected startup catch-up hook once, starts the weekly Scheduler, opens
+ * the v3.0 Socket Mode connection when `secrets.slackAppToken` is present
+ * (bd meal-planner-4u4.3), and handles graceful shutdown on SIGINT/SIGTERM.
  *
  * Scope boundary: the real plan-generation (`generateForWeek`) and
  * startup-catch-up decision logic belong to E3 (ADR 0002), not this module.
  * Both are injected here as `onTrigger` / `onStartup` so E3 can plug in
- * without changing this file.
+ * without changing this file. Likewise, Socket Mode CONNECTION LIFECYCLE is
+ * this file's concern; routing inbound events (bd meal-planner-4u4.4) is
+ * not -- `DaemonHandle.socketMode.client` is the attach seam for that
+ * follow-up.
  */
 
 /** Injected hook run once, before the Scheduler starts. E3 supplies the real startup catch-up decision logic later. */
@@ -36,6 +45,18 @@ export interface RunDaemonOptions {
   process?: NodeJS.Process;
   /** Injectable logger; defaults to `console`. */
   logger?: DaemonLogger;
+  /**
+   * Injectable Socket Mode connection opener (v3.0, bd meal-planner-4u4.3);
+   * defaults to the real `openSocketModeConnection`
+   * (`../slack/socket-connection.js`). Only invoked when
+   * `secrets.slackAppToken` is present -- v1.0/v2.0 boot paths (and dev
+   * without the app token) never attempt a connection, so existing
+   * generation flows are unaffected. Tests inject a fake here instead of
+   * letting the real implementation open a network connection.
+   */
+  openSocketMode?: (
+    opts: SocketModeConnectionOptions,
+  ) => Promise<SocketModeConnectionHandle>;
 }
 
 export interface DaemonHandle {
@@ -45,6 +66,16 @@ export interface DaemonHandle {
   triggerNow(): Promise<void>;
   /** Stops the scheduler and resolves `stopped`. Idempotent. Also invoked automatically by SIGINT/SIGTERM. */
   shutdown(): Promise<void>;
+  /**
+   * The v3.0 Socket Mode connection handle, present only when
+   * `secrets.slackAppToken` was set and the connection opened successfully.
+   * Exposes `.client` as the seam for the inbound event router (bd
+   * meal-planner-4u4.4, out of scope here) to attach handlers.
+   * `undefined` on v1.0/v2.0 boot paths, when the app token is unset, or if
+   * the boot-time connection attempt failed (logged, non-fatal -- see
+   * `runDaemon`).
+   */
+  readonly socketMode?: SocketModeConnectionHandle;
 }
 
 /**
@@ -64,6 +95,30 @@ export async function runDaemon(
       `checkSystemSleepDisabled: system sleep is not confirmed disabled (pmset -g: ${
         sleepStatus.raw ?? "unavailable"
       }); the in-process Scheduler requires this machine to stay awake (SPEC §9.4).`,
+    );
+  }
+
+  // v3.0 Socket Mode (bd meal-planner-4u4.3, SPEC §3.2/§9.2): gated on the
+  // app-level token's presence. A boot-time connection FAILURE is logged and
+  // treated as non-fatal (proceeds without Socket Mode) -- the weekly
+  // generate/post flow does not depend on it, and there is no inbound
+  // handling to lose yet (bd meal-planner-4u4.4 lands separately).
+  let socketMode: SocketModeConnectionHandle | undefined;
+  if (options.secrets.slackAppToken) {
+    const openSocketMode = options.openSocketMode ?? openSocketModeConnection;
+    try {
+      socketMode = await openSocketMode({
+        appToken: options.secrets.slackAppToken,
+        logger,
+      });
+    } catch (err) {
+      logger.error(
+        `[socket-mode] failed to open the Socket Mode connection at boot; continuing without it: ${String(err)}`,
+      );
+    }
+  } else {
+    logger.log(
+      "[socket-mode] slackAppToken not set; skipping Socket Mode connection (v1.0/v2.0 boot path)",
     );
   }
 
@@ -120,6 +175,15 @@ export async function runDaemon(
     }
     shuttingDown = true;
     scheduler.stop();
+    if (socketMode) {
+      try {
+        await socketMode.disconnect();
+      } catch (err) {
+        logger.error(
+          `[socket-mode] disconnect failed during shutdown: ${String(err)}`,
+        );
+      }
+    }
     resolveStopped();
     return stopped;
   }
@@ -134,5 +198,6 @@ export async function runDaemon(
     stopped,
     triggerNow: () => scheduler.triggerNow(),
     shutdown,
+    socketMode,
   };
 }
