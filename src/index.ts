@@ -1,5 +1,5 @@
 import { readCalendarEvents } from "./calendar/calendar-reader.js";
-import { loadConfig } from "./config/config.js";
+import { type Effort, loadConfig } from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
 import { meteredLlmClient } from "./cost/metered-llm-client.js";
@@ -14,6 +14,7 @@ import { appendLog } from "./ops/local-log.js";
 import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
 import { composeDaemon } from "./orchestrator/compose.js";
 import { resumeQuietly } from "./orchestrator/resume.js";
+import { createRevisionHandler } from "./orchestrator/revision.js";
 import { SessionStore } from "./orchestrator/session-store.js";
 import { buildPlan } from "./planner/build-plan.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
@@ -598,6 +599,21 @@ export async function main(): Promise<void> {
 
   const store = new SessionStore({ path: profile.sqlitePath });
 
+  // Revision (B1, bd meal-planner-3e2.2, ADR 0007 D1): its own
+  // `createLlmClient` instance, capped to `medium`/`low` effort (SPEC §9.3)
+  // regardless of the generation `config.effort` -- deliberately NOT wrapped
+  // in `meteredLlmClient`/`retryLlmClient`/`generationDollarCap` the way the
+  // generation `llm` above is; the shared per-thread cost budget (ADR 0007
+  // D5) is bd meal-planner-3e2.6 (B5), not built here.
+  const revisionEffort: Effort =
+    config.effort === "high" || config.effort === "xhigh"
+      ? "medium"
+      : config.effort;
+  const revisionHandler = createRevisionHandler({
+    sessionStore: store,
+    llm: createLlmClient({ ...config, effort: revisionEffort }),
+  });
+
   const post =
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
@@ -635,9 +651,10 @@ export async function main(): Promise<void> {
     alert,
     fireOnStart: process.env.MP_FIRE_ON_START === "1",
     // Lets runDaemon attach the inbound event router (bd meal-planner-4u4.4)
-    // to the Socket Mode connection once it opens. No `revisionHandler` yet
-    // (defaults to a no-op) -- B1 (bd meal-planner-3e2.2) wires the real one.
+    // to the Socket Mode connection once it opens, with the real B1
+    // `revisionHandler` (bd meal-planner-3e2.2) wired in above.
     sessionStore: store,
+    revisionHandler,
   });
 
   await handle.stopped;
