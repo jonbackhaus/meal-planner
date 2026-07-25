@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CalendarEvent, readCalendarEvents } from "./calendar-reader.js";
 
@@ -7,6 +8,10 @@ vi.mock("node:child_process", () => ({
 }));
 
 const mockedExecFile = vi.mocked(execFile);
+
+const EXPECTED_BINARY_PATH = fileURLToPath(
+  new URL("../../native/ekreader", import.meta.url),
+);
 
 type ExecFileCallback = (
   error: Error | null,
@@ -21,14 +26,14 @@ function lastArgCallback(args: unknown[]): ExecFileCallback {
   return args[args.length - 1] as ExecFileCallback;
 }
 
-function mockOsascriptStdout(stdout: string) {
+function mockEkreaderStdout(stdout: string) {
   mockedExecFile.mockImplementation(((...args: unknown[]) => {
     lastArgCallback(args)(null, stdout, "");
     return undefined;
   }) as unknown as typeof execFile);
 }
 
-function mockOsascriptFailure(
+function mockEkreaderFailure(
   message: string,
   extra: Record<string, unknown> = {},
 ) {
@@ -44,6 +49,7 @@ function mockOsascriptFailure(
 
 afterEach(() => {
   mockedExecFile.mockReset();
+  delete process.env.MP_EKREADER_PATH;
 });
 
 const WEEK_START = new Date("2026-08-02T00:00:00.000Z");
@@ -62,28 +68,21 @@ function rawEvent(overrides: Record<string, unknown> = {}) {
 }
 
 describe("readCalendarEvents", () => {
-  it("invokes osascript with JXA and the requested range as ISO strings", async () => {
-    mockOsascriptStdout("[]");
+  it("invokes the native/ekreader binary with the requested range as ISO strings", async () => {
+    mockEkreaderStdout("[]");
 
     await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
 
     expect(mockedExecFile).toHaveBeenCalledWith(
-      "osascript",
-      [
-        "-l",
-        "JavaScript",
-        "-e",
-        expect.any(String),
-        WEEK_START.toISOString(),
-        WEEK_END.toISOString(),
-      ],
+      EXPECTED_BINARY_PATH,
+      [WEEK_START.toISOString(), WEEK_END.toISOString()],
       expect.any(Object),
       expect.any(Function),
     );
   });
 
   it("bounds the read with a timeout and a generous maxBuffer", async () => {
-    mockOsascriptStdout("[]");
+    mockEkreaderStdout("[]");
 
     await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
 
@@ -95,6 +94,15 @@ describe("readCalendarEvents", () => {
     expect(options.maxBuffer).toBeGreaterThanOrEqual(1024 * 1024);
   });
 
+  it("sets the ekreader timeout to 20s (EventKit is ms-fast, generous headroom for a huge calendar)", async () => {
+    mockEkreaderStdout("[]");
+
+    await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
+
+    const options = mockedExecFile.mock.calls[0][2] as { timeout?: number };
+    expect(options.timeout).toBe(20_000);
+  });
+
   it("rejects a range where end is not after start", async () => {
     await expect(
       readCalendarEvents({ start: WEEK_END, end: WEEK_START }),
@@ -102,8 +110,8 @@ describe("readCalendarEvents", () => {
     expect(mockedExecFile).not.toHaveBeenCalled();
   });
 
-  it("surfaces an osascript timeout as a clear, actionable error mentioning Calendars permission", async () => {
-    mockOsascriptFailure("spawn osascript ETIMEDOUT", {
+  it("maps an ekreader timeout to a clear, actionable error", async () => {
+    mockEkreaderFailure("spawn ekreader ETIMEDOUT", {
       killed: true,
       signal: "SIGTERM",
     });
@@ -111,58 +119,34 @@ describe("readCalendarEvents", () => {
     await expect(
       readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
     ).rejects.toThrow(/timed out/i);
-    await expect(
-      readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
-    ).rejects.toThrow(/Calendars/);
   });
 
-  it("retries once after a cold-start timeout and returns events from the warm retry (bead r0o.8)", async () => {
-    let calls = 0;
-    mockedExecFile.mockImplementation(((...args: unknown[]) => {
-      calls++;
-      const cb = lastArgCallback(args);
-      if (calls === 1) {
-        cb(
-          Object.assign(new Error("spawn osascript ETIMEDOUT"), {
-            killed: true,
-            signal: "SIGTERM",
-          }),
-          "",
-          "",
-        );
-      } else {
-        cb(null, JSON.stringify([rawEvent()]), "");
-      }
-      return undefined;
-    }) as unknown as typeof execFile);
+  it("maps ekreader exit code 3 (TCC denial) to a clear, actionable error mentioning the grant, not a hang", async () => {
+    mockEkreaderFailure("Command failed with exit code 3", { code: 3 });
 
-    const events = await readCalendarEvents({
-      start: WEEK_START,
-      end: WEEK_END,
-    });
-
-    expect(events).toHaveLength(1);
-    expect(mockedExecFile).toHaveBeenCalledTimes(2);
+    await expect(
+      readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
+    ).rejects.toThrow(/Calendars access not granted/i);
   });
 
-  it("still throws the actionable timeout error once the bounded retry is exhausted (persistent cold failure)", async () => {
-    mockOsascriptFailure("spawn osascript ETIMEDOUT", {
-      killed: true,
-      signal: "SIGTERM",
-    });
+  it("maps ENOENT (binary not built) to a clear error pointing at pnpm build:native", async () => {
+    mockEkreaderFailure("spawn native/ekreader ENOENT", { code: "ENOENT" });
 
     await expect(
       readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
-    ).rejects.toThrow(/timed out/i);
+    ).rejects.toThrow(/pnpm build:native/i);
+  });
+
+  it("propagates a non-timeout, non-TCC, non-ENOENT ekreader failure as-is", async () => {
+    mockEkreaderFailure("Command failed with exit code 1");
+
     await expect(
       readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
-    ).rejects.toThrow(/Calendars/);
-    // 2 attempts per call (the bounded retry), across the 2 calls above.
-    expect(mockedExecFile).toHaveBeenCalledTimes(4);
+    ).rejects.toThrow(/exit code 1/i);
   });
 
   it("returns an empty array when there are no events", async () => {
-    mockOsascriptStdout("[]");
+    mockEkreaderStdout("[]");
 
     const events = await readCalendarEvents({
       start: WEEK_START,
@@ -173,7 +157,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("parses a single event into a typed CalendarEvent", async () => {
-    mockOsascriptStdout(JSON.stringify([rawEvent()]));
+    mockEkreaderStdout(JSON.stringify([rawEvent()]));
 
     const events = await readCalendarEvents({
       start: WEEK_START,
@@ -195,7 +179,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("parses events from multiple calendars", async () => {
-    mockOsascriptStdout(
+    mockEkreaderStdout(
       JSON.stringify([
         rawEvent({ calendarName: "Jonathan", title: "Dentist" }),
         rawEvent({ calendarName: "Kids", title: "Practice" }),
@@ -212,7 +196,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("marks all-day events with allDay: true", async () => {
-    mockOsascriptStdout(
+    mockEkreaderStdout(
       JSON.stringify([
         rawEvent({
           title: "Out of town",
@@ -232,7 +216,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("normalizes a tentative status", async () => {
-    mockOsascriptStdout(JSON.stringify([rawEvent({ status: "tentative" })]));
+    mockEkreaderStdout(JSON.stringify([rawEvent({ status: "tentative" })]));
 
     const events = await readCalendarEvents({
       start: WEEK_START,
@@ -243,7 +227,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("normalizes both cancelled and canceled spellings to canceled", async () => {
-    mockOsascriptStdout(
+    mockEkreaderStdout(
       JSON.stringify([
         rawEvent({ title: "A", status: "cancelled" }),
         rawEvent({ title: "B", status: "canceled" }),
@@ -259,7 +243,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("normalizes EventKit's no-RSVP 'none' status to confirmed (safe-conservative default)", async () => {
-    mockOsascriptStdout(JSON.stringify([rawEvent({ status: "none" })]));
+    mockEkreaderStdout(JSON.stringify([rawEvent({ status: "none" })]));
 
     const events = await readCalendarEvents({
       start: WEEK_START,
@@ -270,7 +254,7 @@ describe("readCalendarEvents", () => {
   });
 
   it("normalizes an unrecognized/future status string to confirmed (safe-conservative default)", async () => {
-    mockOsascriptStdout(
+    mockEkreaderStdout(
       JSON.stringify([rawEvent({ status: "some-future-enum-value" })]),
     );
 
@@ -282,32 +266,24 @@ describe("readCalendarEvents", () => {
     expect(events[0].status).toBe("confirmed");
   });
 
-  it("throws a clear error when osascript output is not valid JSON", async () => {
-    mockOsascriptStdout("execution error: Calendar got an error");
+  it("throws a clear error when ekreader output is not valid JSON", async () => {
+    mockEkreaderStdout("not json");
 
     await expect(
       readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
     ).rejects.toThrow(/could not parse/i);
   });
 
-  it("throws a clear error when osascript output is valid JSON but not an array", async () => {
-    mockOsascriptStdout(JSON.stringify({ not: "an array" }));
+  it("throws a clear error when ekreader output is valid JSON but not an array", async () => {
+    mockEkreaderStdout(JSON.stringify({ not: "an array" }));
 
     await expect(
       readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
     ).rejects.toThrow(/expected a JSON array/i);
   });
 
-  it("propagates an error when osascript itself fails (e.g. permission denied)", async () => {
-    mockOsascriptFailure("execFile: osascript exited with code 1");
-
-    await expect(
-      readCalendarEvents({ start: WEEK_START, end: WEEK_END }),
-    ).rejects.toThrow(/osascript/i);
-  });
-
   it("preserves special characters (quotes, unicode) in titles round-tripped through JSON", async () => {
-    mockOsascriptStdout(
+    mockEkreaderStdout(
       JSON.stringify([rawEvent({ title: 'Grandma\'s "birthday" party 🎂' })]),
     );
 
@@ -319,22 +295,23 @@ describe("readCalendarEvents", () => {
     expect(events[0].title).toBe('Grandma\'s "birthday" party 🎂');
   });
 
-  it("decodes HTML entities in event titles (Calendar.app's JXA bridge returns entity-encoded titles)", async () => {
-    mockOsascriptStdout(
-      JSON.stringify([rawEvent({ title: "Dinner &amp; Drinks &lt;3" })]),
+  it("respects MP_EKREADER_PATH to override the resolved binary path", async () => {
+    process.env.MP_EKREADER_PATH = "/custom/path/to/ekreader";
+    mockEkreaderStdout("[]");
+
+    await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
+
+    expect(mockedExecFile).toHaveBeenCalledWith(
+      "/custom/path/to/ekreader",
+      expect.any(Array),
+      expect.any(Object),
+      expect.any(Function),
     );
-
-    const events = await readCalendarEvents({
-      start: WEEK_START,
-      end: WEEK_END,
-    });
-
-    expect(events[0].title).toBe("Dinner & Drinks <3");
   });
 
   describe("calendarNames scoping (bead swl)", () => {
-    it("passes the calendar names through to osascript as a JSON-encoded arg", async () => {
-      mockOsascriptStdout("[]");
+    it("passes the calendar names through to ekreader as trailing args", async () => {
+      mockEkreaderStdout("[]");
 
       await readCalendarEvents({
         start: WEEK_START,
@@ -343,15 +320,12 @@ describe("readCalendarEvents", () => {
       });
 
       expect(mockedExecFile).toHaveBeenCalledWith(
-        "osascript",
+        EXPECTED_BINARY_PATH,
         [
-          "-l",
-          "JavaScript",
-          "-e",
-          expect.any(String),
           WEEK_START.toISOString(),
           WEEK_END.toISOString(),
-          JSON.stringify(["Family Schedule", "Appointments"]),
+          "Family Schedule",
+          "Appointments",
         ],
         expect.any(Object),
         expect.any(Function),
@@ -359,7 +333,7 @@ describe("readCalendarEvents", () => {
     });
 
     it("still parses events normally when calendarNames is provided", async () => {
-      mockOsascriptStdout(JSON.stringify([rawEvent()]));
+      mockEkreaderStdout(JSON.stringify([rawEvent()]));
 
       const events = await readCalendarEvents({
         start: WEEK_START,
@@ -371,7 +345,7 @@ describe("readCalendarEvents", () => {
       expect(events[0].calendarName).toBe("Family");
     });
 
-    it("an empty calendarNames array short-circuits to [] without invoking osascript", async () => {
+    it("an empty calendarNames array short-circuits to [] without invoking ekreader", async () => {
       const events = await readCalendarEvents({
         start: WEEK_START,
         end: WEEK_END,
@@ -382,33 +356,17 @@ describe("readCalendarEvents", () => {
       expect(mockedExecFile).not.toHaveBeenCalled();
     });
 
-    it("omitted calendarNames keeps the back-compat all-calendars invocation (no trailing arg)", async () => {
-      mockOsascriptStdout("[]");
+    it("omitted calendarNames keeps the back-compat all-calendars invocation (no trailing args)", async () => {
+      mockEkreaderStdout("[]");
 
       await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
 
       expect(mockedExecFile).toHaveBeenCalledWith(
-        "osascript",
-        [
-          "-l",
-          "JavaScript",
-          "-e",
-          expect.any(String),
-          WEEK_START.toISOString(),
-          WEEK_END.toISOString(),
-        ],
+        EXPECTED_BINARY_PATH,
+        [WEEK_START.toISOString(), WEEK_END.toISOString()],
         expect.any(Object),
         expect.any(Function),
       );
     });
-  });
-
-  it("sets the osascript timeout to 25s (fast-degrade over the ~17.5s healthy read; a hanging read degrades to static fast rather than stalling the run)", async () => {
-    mockOsascriptStdout("[]");
-
-    await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
-
-    const options = mockedExecFile.mock.calls[0][2] as { timeout?: number };
-    expect(options.timeout).toBe(25_000);
   });
 });
