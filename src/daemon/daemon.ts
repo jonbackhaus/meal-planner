@@ -1,5 +1,10 @@
 import type { Config } from "../config/config.js";
+import type { SessionStore } from "../orchestrator/session-store.js";
 import type { Secrets } from "../secrets/secrets.js";
+import {
+  attachEventRouter,
+  type RevisionHandler,
+} from "../slack/inbound-router.js";
 import {
   openSocketModeConnection,
   type SocketModeConnectionHandle,
@@ -13,15 +18,18 @@ import { checkSystemSleepDisabled } from "./system-check.js";
  * in-process Scheduler together and owns the process lifecycle: runs the
  * injected startup catch-up hook once, starts the weekly Scheduler, opens
  * the v3.0 Socket Mode connection when `secrets.slackAppToken` is present
- * (bd meal-planner-4u4.3), and handles graceful shutdown on SIGINT/SIGTERM.
+ * (bd meal-planner-4u4.3), attaches the inbound event router to it when a
+ * `sessionStore` is supplied (bd meal-planner-4u4.4), and handles graceful
+ * shutdown on SIGINT/SIGTERM.
  *
  * Scope boundary: the real plan-generation (`generateForWeek`) and
  * startup-catch-up decision logic belong to E3 (ADR 0002), not this module.
  * Both are injected here as `onTrigger` / `onStartup` so E3 can plug in
- * without changing this file. Likewise, Socket Mode CONNECTION LIFECYCLE is
- * this file's concern; routing inbound events (bd meal-planner-4u4.4) is
- * not -- `DaemonHandle.socketMode.client` is the attach seam for that
- * follow-up.
+ * without changing this file. Likewise, this file only ATTACHES the router
+ * (`../slack/inbound-router.js`) when the connection opens -- routing
+ * decisions live entirely in that module, and revision itself (B1, bd
+ * meal-planner-3e2.2) is injected as `revisionHandler` so it can plug in
+ * later without changing this file either.
  */
 
 /** Injected hook run once, before the Scheduler starts. E3 supplies the real startup catch-up decision logic later. */
@@ -57,6 +65,21 @@ export interface RunDaemonOptions {
   openSocketMode?: (
     opts: SocketModeConnectionOptions,
   ) => Promise<SocketModeConnectionHandle>;
+  /**
+   * Session store lookup the inbound event router needs (bd
+   * meal-planner-4u4.4). When a Socket Mode connection opens successfully
+   * AND this is supplied, `runDaemon` attaches the router to
+   * `socketMode.client` before returning. Omitting this (v1.0/v2.0 boot
+   * paths, or any test not exercising A4) leaves the connection with no
+   * inbound handlers attached, exactly as before this task.
+   */
+  sessionStore?: Pick<SessionStore, "getByThreadTs">;
+  /** Forwarded to the router as-is; defaults to a no-op (B1, bd meal-planner-3e2.2, supplies the real one later). */
+  revisionHandler?: RevisionHandler;
+  /** Injectable clock for the router (called fresh per inbound reply, not once at attach time); defaults to `() => new Date()`. */
+  now?: () => Date;
+  /** Injectable router attacher, for tests; defaults to the real `attachEventRouter` (`../slack/inbound-router.js`). */
+  attachEventRouter?: typeof attachEventRouter;
 }
 
 export interface DaemonHandle {
@@ -69,11 +92,11 @@ export interface DaemonHandle {
   /**
    * The v3.0 Socket Mode connection handle, present only when
    * `secrets.slackAppToken` was set and the connection opened successfully.
-   * Exposes `.client` as the seam for the inbound event router (bd
-   * meal-planner-4u4.4, out of scope here) to attach handlers.
-   * `undefined` on v1.0/v2.0 boot paths, when the app token is unset, or if
-   * the boot-time connection attempt failed (logged, non-fatal -- see
-   * `runDaemon`).
+   * Exposes `.client` -- the inbound event router (bd meal-planner-4u4.4) is
+   * attached to it automatically when `options.sessionStore` was supplied
+   * (see `runDaemon`). `undefined` on v1.0/v2.0 boot paths, when the app
+   * token is unset, or if the boot-time connection attempt failed (logged,
+   * non-fatal -- see `runDaemon`).
    */
   readonly socketMode?: SocketModeConnectionHandle;
 }
@@ -101,8 +124,7 @@ export async function runDaemon(
   // v3.0 Socket Mode (bd meal-planner-4u4.3, SPEC §3.2/§9.2): gated on the
   // app-level token's presence. A boot-time connection FAILURE is logged and
   // treated as non-fatal (proceeds without Socket Mode) -- the weekly
-  // generate/post flow does not depend on it, and there is no inbound
-  // handling to lose yet (bd meal-planner-4u4.4 lands separately).
+  // generate/post flow does not depend on it.
   let socketMode: SocketModeConnectionHandle | undefined;
   if (options.secrets.slackAppToken) {
     const openSocketMode = options.openSocketMode ?? openSocketModeConnection;
@@ -120,6 +142,21 @@ export async function runDaemon(
     logger.log(
       "[socket-mode] slackAppToken not set; skipping Socket Mode connection (v1.0/v2.0 boot path)",
     );
+  }
+
+  // Inbound event router (bd meal-planner-4u4.4): only attached when the
+  // connection actually opened AND a sessionStore was supplied -- callers
+  // (tests, and any future boot path) that don't pass sessionStore get the
+  // exact same connection-with-no-handlers behavior as before this task.
+  if (socketMode && options.sessionStore) {
+    const attach = options.attachEventRouter ?? attachEventRouter;
+    attach(socketMode.client, {
+      sessionStore: options.sessionStore,
+      weekKeyConfig: options.config,
+      revisionHandler: options.revisionHandler,
+      now: options.now,
+      logger,
+    });
   }
 
   await options.onStartup();

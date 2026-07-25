@@ -634,6 +634,10 @@ export async function main(): Promise<void> {
     // + the local log (bd meal-planner-bd6.11).
     alert,
     fireOnStart: process.env.MP_FIRE_ON_START === "1",
+    // Lets runDaemon attach the inbound event router (bd meal-planner-4u4.4)
+    // to the Socket Mode connection once it opens. No `revisionHandler` yet
+    // (defaults to a no-op) -- B1 (bd meal-planner-3e2.2) wires the real one.
+    sessionStore: store,
   });
 
   await handle.stopped;

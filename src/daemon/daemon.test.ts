@@ -296,6 +296,11 @@ describe("runDaemon", () => {
         sqlitePath: ":memory:",
         forceRegenerate: true,
         postMode: "dry-run",
+        todoist: {
+          projectId: "",
+          titleTemplate: "{title}",
+          recipeLinkFormat: "",
+        },
         ...overrides,
       };
     }
@@ -432,6 +437,84 @@ describe("runDaemon", () => {
       await handle.shutdown();
 
       expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    describe("inbound event router wiring (bd meal-planner-4u4.4)", () => {
+      it("attaches the event router to the opened socket's client when sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = { getByThreadTs: vi.fn(() => null) };
+        const attach = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: attach,
+        });
+
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(attach).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ sessionStore }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the event router when no sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const openSocketMode = vi.fn(async () => fakeSocketModeHandle());
+        const attach = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          attachEventRouter: attach,
+        });
+
+        expect(attach).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the event router when the socket never opened (no app token), even with sessionStore supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const sessionStore = { getByThreadTs: vi.fn(() => null) };
+        const attach = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecrets(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          sessionStore,
+          attachEventRouter: attach,
+        });
+
+        expect(attach).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
     });
 
     it("logs and continues (does not crash boot) when opening the Socket Mode connection fails", async () => {

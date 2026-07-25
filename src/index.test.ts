@@ -45,6 +45,7 @@ function fakeProfile(
     sqlitePath: "./data/meal-planner.dev.sqlite",
     forceRegenerate: true,
     postMode: "dry-run",
+    todoist: { projectId: "", titleTemplate: "{title}", recipeLinkFormat: "" },
     ...overrides,
   };
 }

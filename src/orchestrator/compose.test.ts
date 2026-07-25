@@ -65,6 +65,7 @@ function makeProfile(
     sqlitePath: ":memory:",
     forceRegenerate: false,
     postMode: "dry-run",
+    todoist: { projectId: "", titleTemplate: "{title}", recipeLinkFormat: "" },
     ...overrides,
   };
 }
