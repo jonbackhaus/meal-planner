@@ -430,4 +430,10 @@ describe("buildSelectionPrompt", () => {
     expect(prompt.toLowerCase()).toContain("week_plan");
     expect(prompt.toLowerCase()).toMatch(/no.{0,20}envelope|do not wrap/);
   });
+
+  it("pins the exact do-ahead flag token (bd meal-planner-600)", () => {
+    const prompt = buildSelectionPrompt(makeInput());
+
+    expect(prompt).toContain('"do-ahead"');
+  });
 });

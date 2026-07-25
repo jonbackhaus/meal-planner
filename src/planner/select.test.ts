@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LlmClient, LlmResult } from "../llm/llm-client.js";
 import type { PlannerInput } from "./input.js";
+import { placePrepUnits } from "./place-prep.js";
 import {
   llmSelect,
   PlanSelectionError,
   PrepUnitSchema,
   resolvePrepUnits,
   SelectedMealSchema,
+  sanitizeFlag,
   VegPathSchema,
   type WeekPlan,
   WeekPlanSchema,
@@ -123,6 +125,35 @@ describe("VegPathSchema", () => {
   });
 });
 
+describe("sanitizeFlag (bd meal-planner-600)", () => {
+  it("converts underscores to a hyphen", () => {
+    expect(sanitizeFlag("do_ahead")).toBe("do-ahead");
+    expect(sanitizeFlag("try_this")).toBe("try-this");
+  });
+
+  it("lowercases mixed-case and hyphenated input", () => {
+    expect(sanitizeFlag("DO-AHEAD")).toBe("do-ahead");
+    expect(sanitizeFlag("Do Ahead")).toBe("do-ahead");
+  });
+
+  it("trims surrounding whitespace and collapses internal whitespace runs", () => {
+    expect(sanitizeFlag("  do ahead ")).toBe("do-ahead");
+  });
+
+  it("leaves an already-canonical token unchanged", () => {
+    expect(sanitizeFlag("do-ahead")).toBe("do-ahead");
+  });
+
+  it("collapses repeated hyphens and strips leading/trailing hyphens", () => {
+    expect(sanitizeFlag("--do--ahead--")).toBe("do-ahead");
+  });
+
+  it("returns an empty string for empty input", () => {
+    expect(sanitizeFlag("")).toBe("");
+    expect(sanitizeFlag("   ")).toBe("");
+  });
+});
+
 describe("SelectedMealSchema", () => {
   it("accepts a well-formed meal", () => {
     expect(SelectedMealSchema.safeParse(inherentMeal()).success).toBe(true);
@@ -171,6 +202,47 @@ describe("SelectedMealSchema", () => {
     expect(
       SelectedMealSchema.safeParse(inherentMeal({ day: "2026/07/28" })).success,
     ).toBe(false);
+  });
+
+  it("normalizes an underscored 'do_ahead' flag to 'do-ahead' on parse (bd meal-planner-600 regression)", () => {
+    const parsed = SelectedMealSchema.parse(
+      inherentMeal({ flags: ["do_ahead"] }),
+    );
+    expect(parsed.flags).toEqual(["do-ahead"]);
+  });
+
+  it("dedupes flags that normalize to the same token", () => {
+    const parsed = SelectedMealSchema.parse(
+      inherentMeal({ flags: ["do_ahead", "do-ahead", "DO AHEAD"] }),
+    );
+    expect(parsed.flags).toEqual(["do-ahead"]);
+  });
+
+  it("normalizing a plan's flags at the parse boundary makes place-prep fire (bd meal-planner-600 end-to-end)", () => {
+    const parsed = SelectedMealSchema.parse(
+      separableMeal({ flags: ["do_ahead"], day: "2026-08-03" }),
+    );
+    expect(parsed.flags.includes("do-ahead")).toBe(true);
+
+    const units = placePrepUnits(
+      [parsed],
+      [
+        {
+          date: "2026-08-01",
+          weekday: "Saturday",
+          capacity: "FULL",
+          blocking_events: [],
+        },
+        {
+          date: "2026-08-03",
+          weekday: "Monday",
+          capacity: "FULL",
+          blocking_events: [],
+        },
+      ],
+    );
+    expect(units).toHaveLength(1);
+    expect(units[0]?.serve_date).toBe("2026-08-03");
   });
 });
 

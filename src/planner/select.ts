@@ -44,6 +44,28 @@ export const VegPathSchema = z.discriminatedUnion("kind", [
 export type VegPath = z.infer<typeof VegPathSchema>;
 
 /**
+ * Normalizes a single LLM-emitted flag token to its canonical hyphenated
+ * lowercase form (bd meal-planner-600): the prompt asks for exact tokens
+ * like `"do-ahead"`, but the model has been observed drifting to
+ * underscore/mixed-case variants (`"do_ahead"`, `"Do Ahead"`). Code that
+ * matches flags downstream (`place-prep.ts`, `validate.ts`) does an exact
+ * literal comparison against `"do-ahead"`, so normalizing here — once, at
+ * the parse boundary — makes that matching robust to formatting drift
+ * without needing a synonym map (there is no other flag the code branches
+ * on). Pure string transform: lowercases, collapses any run of whitespace
+ * or underscores into a single hyphen, collapses repeated hyphens, and
+ * trims leading/trailing hyphens.
+ */
+export function sanitizeFlag(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
  * One selected meal. `recipe_id` MUST be a member of the matching pool —
  * that pool-membership check (along with counts/veg-consistency/no-dupes)
  * is the semantic `validate()` in 8zs.4, NOT enforced by this shape schema.
@@ -74,7 +96,9 @@ export const SelectedMealSchema = z
       .regex(/^\d{4}-\d{2}-\d{2}$/)
       .nullable(),
     veg: VegPathSchema,
-    flags: z.array(z.string()),
+    flags: z
+      .array(z.string())
+      .transform((flags) => [...new Set(flags.map(sanitizeFlag))]),
     rationale: z.string(),
     side: z
       .object({ recipe_id: z.string(), title: z.string() })

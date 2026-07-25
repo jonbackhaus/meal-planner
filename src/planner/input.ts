@@ -300,7 +300,7 @@ export function buildSelectionPrompt(input: PlannerInput): string {
     );
   }
   ruleLines.push(
-    "- Flag any selected meal that is a do-ahead (can be prepped in advance).",
+    '- Flag any make-ahead meal with the exact tag "do-ahead" (lowercase, hyphenated) in its flags array.',
   );
 
   sections.push(`RULES\n${ruleLines.join("\n")}`);
