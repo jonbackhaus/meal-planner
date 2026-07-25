@@ -103,6 +103,7 @@ Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context co
 - **macOS has no `timeout`** — bound a hangable command (`op`, sync, the daemon) with a background sleep-kill watchdog (`cmd & p=$!; (sleep N; kill -9 $p) & wait $p`), not `timeout`.
 - **A full recipe re-sync is expensive** — a note-reader/hash change invalidates the index, so the whole corpus re-processes and exceeds the default `MP_GENERATION_DOLLAR_CAP=2`. Use the **`/resync-recipes`** skill (`.claude/skills/resync-recipes/`), which raises the cap for the one-off out-of-band `pnpm sync` and runs it under a watchdog (RUNBOOK §6; bead a9e).
 - **launchd plist gotchas** — `PATH` must include `/opt/homebrew/bin` (else `op` isn't found → boot crash-loop), and it needs the *real* `OP_SERVICE_ACCOUNT_TOKEN` (not the template placeholder); the daemon's `node` needs Full Disk Access + Automation→Notes (TCC keys on the binary — re-grant after node/OS upgrades). RUNBOOK §0.1/§7.
+- **Prod's calendar read is `native/ekreader` (EventKit), not node** (bead ob8) — built by `pnpm build:native` (macOS-only, NOT part of `pnpm build`/CI, so it never runs there); it needs its own **Calendars** TCC grant separate from node's Automation/FDA grants, and recompiling it (`pnpm build:native`) invalidates that grant (ad-hoc signature changes per build) — re-grant after every rebuild, same spirit as re-granting node after an upgrade. RUNBOOK §0.1 item 3/§8.1.
 
 ## Architecture Overview
 

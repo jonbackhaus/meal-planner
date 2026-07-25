@@ -10,6 +10,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Compiled native helper binaries (source is committed; build with `pnpm build:native`)
+native/ekreader
+
 # Tool caches
 .biome-cache/
 .vitest-cache/
