@@ -16,7 +16,8 @@
     "sync": "tsx --env-file-if-exists=.env src/sync-cli.ts",
     "lint": "biome check .",
     "format": "biome format --write .",
-    "dev": "tsx watch --env-file-if-exists=.env src/index.ts"
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "build:native": "swiftc -O -framework EventKit -o native/ekreader native/ekreader.swift"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
