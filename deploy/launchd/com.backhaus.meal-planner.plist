@@ -74,11 +74,14 @@
 		     → NONE; role "logistics" = activity/drive → QUICK), AND grant the
 		     "Calendars" TCC to THIS plist's node binary (runbook §0.1 item 3).
 		     Without the grant the daemon silently degrades to the static
-		     schedule. Names must match Calendar.app exactly.
+		     schedule. Names must match Calendar.app exactly. Exclude noisy
+		     calendars: "Siri Suggestions" (duplicates) and travel calendars like
+		     "TripIt" (multi-day all-day trip banners as role "cook" zero out
+		     every night of the trip — cf. bd swl).
 		<key>MP_CALENDAR_ENABLED</key>
 		<string>true</string>
 		<key>MP_CALENDAR_INCLUDE</key>
-		<string>[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"},{"name":"TripIt","role":"cook"}]</string>
+		<string>[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"}]</string>
 		<key>MP_CALENDAR_COOKING_WINDOW_START</key>
 		<string>16:30</string>
 		<key>MP_CALENDAR_COOKING_WINDOW_END</key>

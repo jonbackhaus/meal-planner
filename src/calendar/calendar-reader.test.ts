@@ -331,4 +331,84 @@ describe("readCalendarEvents", () => {
 
     expect(events[0].title).toBe("Dinner & Drinks <3");
   });
+
+  describe("calendarNames scoping (bead swl)", () => {
+    it("passes the calendar names through to osascript as a JSON-encoded arg", async () => {
+      mockOsascriptStdout("[]");
+
+      await readCalendarEvents({
+        start: WEEK_START,
+        end: WEEK_END,
+        calendarNames: ["Family Schedule", "Appointments"],
+      });
+
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          expect.any(String),
+          WEEK_START.toISOString(),
+          WEEK_END.toISOString(),
+          JSON.stringify(["Family Schedule", "Appointments"]),
+        ],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+
+    it("still parses events normally when calendarNames is provided", async () => {
+      mockOsascriptStdout(JSON.stringify([rawEvent()]));
+
+      const events = await readCalendarEvents({
+        start: WEEK_START,
+        end: WEEK_END,
+        calendarNames: ["Family Schedule"],
+      });
+
+      expect(events).toHaveLength(1);
+      expect(events[0].calendarName).toBe("Family");
+    });
+
+    it("an empty calendarNames array short-circuits to [] without invoking osascript", async () => {
+      const events = await readCalendarEvents({
+        start: WEEK_START,
+        end: WEEK_END,
+        calendarNames: [],
+      });
+
+      expect(events).toEqual([]);
+      expect(mockedExecFile).not.toHaveBeenCalled();
+    });
+
+    it("omitted calendarNames keeps the back-compat all-calendars invocation (no trailing arg)", async () => {
+      mockOsascriptStdout("[]");
+
+      await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
+
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          expect.any(String),
+          WEEK_START.toISOString(),
+          WEEK_END.toISOString(),
+        ],
+        expect.any(Object),
+        expect.any(Function),
+      );
+    });
+  });
+
+  it("sets the osascript timeout to 90s (belt-and-suspenders over the ~17.5s measured allowlist-scoped read, bead swl)", async () => {
+    mockOsascriptStdout("[]");
+
+    await readCalendarEvents({ start: WEEK_START, end: WEEK_END });
+
+    const options = mockedExecFile.mock.calls[0][2] as { timeout?: number };
+    expect(options.timeout).toBe(90_000);
+  });
 });

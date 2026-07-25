@@ -519,11 +519,17 @@ deliberately, and **grant the TCC first** or it silently degrades.
      - `logistics` — **any** overlap pulls a cook away → the night is **QUICK**.
        Use for kids' activities, drives, appointments.
      - Example (adapt to your calendars):
-       `[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"},{"name":"TripIt","role":"cook"}]`
-     - Tip: **exclude `Siri Suggestions`** — it mirrors events already on other
-       calendars and would double-count. An **empty** allowlist means nothing
-       marks a night busy → every night stays FULL (you get day *ordering* but
-       no real capacity signal), so a non-empty list is what makes it worthwhile.
+       `[{"name":"Family Schedule","role":"logistics"},{"name":"Appointments","role":"cook"}]`
+     - Tip: **exclude noisy calendars.** `Siri Suggestions` mirrors events
+       already on other calendars (double-counts). **Travel calendars like
+       `TripIt` are a trap as role `cook`** — a trip shows as a *multi-day
+       all-day* banner, and an all-day cook event zeros out **every** night it
+       spans (even if whoever's home can still cook), so a vacation week comes
+       back as mostly "no cook — leftovers" (cf. `bd swl`). Prefer calendars
+       whose events genuinely constrain *this week's* cooking. An **empty**
+       allowlist means nothing marks a night busy → every night stays FULL (you
+       get day *ordering* but no capacity signal), so a non-empty list is what
+       makes it worthwhile.
    - `MP_CALENDAR_COOKING_WINDOW_START` / `_END` → the dinner-prep window an
      event must overlap to affect a night (defaults `16:30`/`19:30`).
    - `MP_QUICK_ACTIVE_MAX` → minutes; a meal placed on a QUICK night must be
