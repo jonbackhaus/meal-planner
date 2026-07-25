@@ -128,7 +128,13 @@ async function createOneTask(
   };
 }
 
-function prepUnitsForMeal(
+/**
+ * Exported so `persist.ts` (bd meal-planner-iu7.4, C3) can reconstruct the
+ * exact same meal->prep-unit matching/order when writing `todoist_task_id`s
+ * back onto `plan.prep[]` from a `MealCommitOutcome.prepTasks` array — a
+ * second, drifting copy of this filter would risk mismatching ids to units.
+ */
+export function prepUnitsForMeal(
   meal: SelectedMeal,
   prepUnits: PrepUnit[],
 ): PrepUnit[] {

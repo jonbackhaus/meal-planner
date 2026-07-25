@@ -446,8 +446,12 @@ describe("runDaemon", () => {
         const proc = new FakeProcess();
         const fakeHandle = fakeSocketModeHandle();
         const openSocketMode = vi.fn(async () => fakeHandle);
-        const sessionStore = { getByThreadTs: vi.fn(() => null) };
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
         const attach = vi.fn();
+        const attachSlash = vi.fn();
 
         const handle = await runDaemon({
           config: fakeConfig(),
@@ -459,6 +463,7 @@ describe("runDaemon", () => {
           openSocketMode,
           sessionStore,
           attachEventRouter: attach,
+          attachSlashCommandRouter: attachSlash,
         });
 
         expect(attach).toHaveBeenCalledTimes(1);
@@ -497,7 +502,10 @@ describe("runDaemon", () => {
         const onStartup = vi.fn(async () => {});
         const onTrigger = vi.fn(async () => {});
         const proc = new FakeProcess();
-        const sessionStore = { getByThreadTs: vi.fn(() => null) };
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
         const attach = vi.fn();
 
         const handle = await runDaemon({
@@ -512,6 +520,66 @@ describe("runDaemon", () => {
         });
 
         expect(attach).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
+    });
+
+    describe("slash-command router wiring (bd meal-planner-4u4.6)", () => {
+      it("attaches the slash-command router to the opened socket's client when sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attachSlash = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+        });
+
+        expect(attachSlash).toHaveBeenCalledTimes(1);
+        expect(attachSlash).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ sessionStore }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the slash-command router when no sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const openSocketMode = vi.fn(async () => fakeSocketModeHandle());
+        const attachSlash = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+        });
+
+        expect(attachSlash).not.toHaveBeenCalled();
 
         await handle.shutdown();
       });

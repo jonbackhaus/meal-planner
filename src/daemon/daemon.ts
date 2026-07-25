@@ -6,6 +6,10 @@ import {
   type RevisionHandler,
 } from "../slack/inbound-router.js";
 import {
+  type ApprovalHandler,
+  attachSlashCommandRouter,
+} from "../slack/slash-commands.js";
+import {
   openSocketModeConnection,
   type SocketModeConnectionHandle,
   type SocketModeConnectionOptions,
@@ -73,13 +77,17 @@ export interface RunDaemonOptions {
    * paths, or any test not exercising A4) leaves the connection with no
    * inbound handlers attached, exactly as before this task.
    */
-  sessionStore?: Pick<SessionStore, "getByThreadTs">;
+  sessionStore?: Pick<SessionStore, "getByThreadTs" | "get">;
   /** Forwarded to the router as-is; defaults to a no-op (B1, bd meal-planner-3e2.2, supplies the real one later). */
   revisionHandler?: RevisionHandler;
+  /** Forwarded to the slash-command router as-is (bd meal-planner-4u4.6); defaults to a no-op (C1, bd meal-planner-iu7.2, supplies the real commit handler later). */
+  approvalHandler?: ApprovalHandler;
   /** Injectable clock for the router (called fresh per inbound reply, not once at attach time); defaults to `() => new Date()`. */
   now?: () => Date;
   /** Injectable router attacher, for tests; defaults to the real `attachEventRouter` (`../slack/inbound-router.js`). */
   attachEventRouter?: typeof attachEventRouter;
+  /** Injectable slash-command router attacher, for tests; defaults to the real `attachSlashCommandRouter` (`../slack/slash-commands.js`). */
+  attachSlashCommandRouter?: typeof attachSlashCommandRouter;
 }
 
 export interface DaemonHandle {
@@ -154,6 +162,19 @@ export async function runDaemon(
       sessionStore: options.sessionStore,
       weekKeyConfig: options.config,
       revisionHandler: options.revisionHandler,
+      now: options.now,
+      logger,
+    });
+
+    // Slash-command transport (bd meal-planner-4u4.6): attached alongside
+    // the A4 router above, on the same connection -- gated identically (only
+    // once the socket is open AND a sessionStore is supplied).
+    const attachSlash =
+      options.attachSlashCommandRouter ?? attachSlashCommandRouter;
+    attachSlash(socketMode.client, {
+      sessionStore: options.sessionStore,
+      weekKeyConfig: options.config,
+      approvalHandler: options.approvalHandler,
       now: options.now,
       logger,
     });

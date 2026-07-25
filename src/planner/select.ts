@@ -38,6 +38,12 @@ export const VegPathSchema = z.discriminatedUnion("kind", [
       kind: z.literal("second_dish"),
       recipe_id: z.string(),
       title: z.string(),
+      /**
+       * Set at v3.0 commit time (ADR 0006 D4) once the second-dish task is
+       * created. Additive/optional exactly like `SelectedMeal.todoist_task_id`
+       * below — absent on any plan predating commit (bd meal-planner-iu7.4).
+       */
+      todoist_task_id: z.string().optional(),
     })
     .strict(),
 ]);
@@ -85,6 +91,13 @@ export function sanitizeFlag(raw: string): string {
  * must be a member of the sides pool and vegetarian, and paired sides are
  * capped week-wide — all enforced by the semantic `validate()`, not this
  * shape schema.
+ *
+ * `todoist_task_id` (ADR 0006 D4, bd meal-planner-iu7.4) is an OPTIONAL id
+ * for this meal's Todoist task, set by the v3.0 commit and persisted back
+ * into the stored `working_plan` — additive/resume-safe exactly like `day`
+ * (ADR 0005 D5): absent on any plan predating commit, and a legacy row
+ * without it keeps parsing. Re-commit reads it to update-in-place rather than
+ * creating a duplicate task; a meal with no stored id is created fresh.
  */
 export const SelectedMealSchema = z
   .object({
@@ -104,6 +117,7 @@ export const SelectedMealSchema = z
       .object({ recipe_id: z.string(), title: z.string() })
       .strict()
       .optional(),
+    todoist_task_id: z.string().optional(),
   })
   .strict();
 export type SelectedMeal = z.infer<typeof SelectedMealSchema>;
@@ -119,6 +133,10 @@ export type SelectedMeal = z.infer<typeof SelectedMealSchema>;
  * additive plan-schema evolution to carry a NESTED (object) value rather
  * than a flat scalar like `day` — hence its own reusable schema here rather
  * than inlining three fields onto `WeekPlanSchema`.
+ *
+ * `todoist_task_id` (ADR 0006 D4, bd meal-planner-iu7.4) mirrors
+ * `SelectedMeal.todoist_task_id` for this prep unit's own task — optional,
+ * set at commit, absent on any plan predating commit.
  */
 export const PrepUnitSchema = z
   .object({
@@ -128,6 +146,7 @@ export const PrepUnitSchema = z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
       .nullable(),
+    todoist_task_id: z.string().optional(),
   })
   .strict();
 export type PrepUnit = z.infer<typeof PrepUnitSchema>;

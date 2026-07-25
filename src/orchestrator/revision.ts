@@ -26,10 +26,12 @@ import type { SessionStore } from "./session-store.js";
  * Deliberately OUT of scope here (left as explicit seams below, NOT
  * implemented):
  *  - re-validating the mutated plan (ADR 0003 D5) and re-posting it as a new
- *    thread message (ADR 0007 D2) — bd meal-planner-3e2.3 (B2). This module
- *    only produces the revised `WeekPlan` and hands it to the injected
- *    `onRevised` callback; it never touches Slack or the session row's
- *    `working_plan` itself.
+ *    thread message (ADR 0007 D2) — bd meal-planner-3e2.3 (B2), now built as
+ *    `createRevisionPostHandler` in `./revision-post.js`, which produces a
+ *    real `onRevised` callback for a caller to inject here. This module
+ *    itself only produces the revised `WeekPlan` and hands it to the
+ *    injected `onRevised` callback; it never touches Slack or the session
+ *    row's `working_plan` itself.
  *  - debouncing rapid replies into one call per burst (ADR 0007 D3) — bd
  *    meal-planner-3e2.4 (B3). `mutateWorkingPlan` already accepts an array of
  *    `messages` so B3 can batch multiple pending replies into one call
@@ -198,10 +200,14 @@ export interface RevisionHandlerDeps {
   llm: LlmClient;
   /**
    * Seam for B2 (bd meal-planner-3e2.3): invoked once a mutation succeeds.
-   * B2 re-validates `result.revisedPlan` (ADR 0003 D5) and re-posts it as a
-   * new thread message, then updates the session row's `working_plan` — none
-   * of which this handler does. Defaults to a log-only no-op so this handler
-   * is usable standalone before B2 lands.
+   * The real implementation — re-validate `result.revisedPlan` (ADR 0003 D5)
+   * and re-post it as a new thread message — is `createRevisionPostHandler`
+   * (`./revision-post.js`); a caller assembling the daemon injects its
+   * returned function here. B4 (bd meal-planner-3e2.5) still owns updating
+   * the session row's `working_plan` / `under_revision` transition, which
+   * neither this handler nor `revision-post.js` does. Defaults to a
+   * log-only no-op so this handler is usable standalone without that
+   * wiring.
    */
   onRevised?: (result: RevisionResult) => Promise<void> | void;
   logger?: Pick<Console, "log" | "warn" | "error">;
