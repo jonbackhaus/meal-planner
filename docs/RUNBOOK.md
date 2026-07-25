@@ -48,19 +48,35 @@ you run `pnpm sync` / `pnpm dev` by hand:
    hashtag read works, `q95.13`). System Settings → **Privacy & Security → Full
    Disk Access** → **＋** → add the daemon's `node` binary (⌘⇧G to type the
    absolute path) → enable its toggle.
-3. **Calendars** (v2.0+, only if `calendar.enabled=true`) — `osascript`/JXA
-   controlling Calendar.app (how `readCalendarEvents`,
-   `src/calendar/calendar-reader.ts`, reads events for ADR-0004's calendar
-   capacity classification). Unlike the two grants above, this shows up under
-   its own **Calendars** category (not Automation) because Calendar.app's
-   scripting bridge is itself EventKit-backed — System Settings →
-   **Privacy & Security → Calendars** → find the daemon's `node` binary →
-   enable its toggle. Same TCC-keys-on-the-binary rule as Notes/FDA above
-   applies. Degrade-safe: with `calendar.enabled=false` (the default) or an
-   ungranted/failed read, the daemon falls back to the static v1.0 cook-night
-   count and alerts `#agent-alerts` once (ADR-0004 D6) — it never fails the
-   Sunday post, so this grant is only needed once you opt a deployment into
-   the v2.0 calendar feature.
+3. **Calendars** (v2.0+, only if `calendar.enabled=true`) — the compiled
+   **native EventKit** helper (`native/ekreader`, built by `pnpm build:native`;
+   how `readCalendarEvents`, `src/calendar/calendar-reader.ts`, reads events
+   for ADR-0004's calendar capacity classification; bead ob8 replaced the
+   original `osascript`/JXA backend). This grant targets **`native/ekreader`
+   itself, not the daemon's `node` binary**. To grant it, **run the binary
+   once from a foreground session** — `native/ekreader "$(date -u +%FT%TZ)"
+   "$(date -u -v+7d +%FT%TZ)" "Family Schedule" "Appointments"` — which raises
+   the "…would like to access your Calendars" prompt (its embedded
+   `Info.plist` `NSCalendarsFullAccessUsageDescription` is what makes a bare
+   CLI promptable at all — without it macOS auto-denies silently); click
+   **Allow**. It then prints the events as JSON. (It will also appear under
+   System Settings → **Privacy & Security → Calendars** where it can be
+   toggled, but the run-once prompt is the reliable trigger for a bare binary.)
+   **The grant carries to the headless launchd daemon** and **survives
+   rebuilds**: `pnpm build:native` signs the binary with a stable Apple
+   Development certificate (`--identifier com.backhaus.meal-planner.ekreader`,
+   overridable via `MP_EKREADER_SIGN_IDENTITY`), so TCC keys on the stable
+   designated requirement (identifier + team), not a per-build ad-hoc hash —
+   **no re-grant after a recompile** (verified 2026-07-25: bead ob8/12p — grant
+   granted once interactively then read the live calendar under a launchd
+   LaunchAgent, both direct-exec and via `node`). Node itself needs no
+   Calendars grant.
+   Degrade-safe: with `calendar.enabled=false` (the default) or an
+   ungranted/failed read (native EventKit denies **fast**, no hang), the
+   daemon falls back to the static v1.0 cook-night count and alerts
+   `#agent-alerts` once (ADR-0004 D6) — it never fails the Sunday post, so
+   this grant is only needed once you opt a deployment into the v2.0 calendar
+   feature.
 
 **Why this must happen before/at first run, not lazily:** the very first
 `osascript` Notes access raises a **one-time permission dialog**, and **launchd
@@ -100,12 +116,13 @@ pnpm sync            # should read your recipe corpus and print total>0
 - Re-confirm both toggles in System Settings are still enabled for the daemon's
   current `node` binary; re-run the foreground `pnpm sync` to re-trigger the
   prompt if a grant was dropped.
-- If `calendar.enabled=true` (v2.0+), the same re-grant risk applies to the
-  **Calendars** toggle from §0.1 item 3 — a dropped grant degrades to the
-  static cook-night count + a one-time `#agent-alerts` alert (ADR-0004 D6)
-  rather than a hang or failed post, but re-confirm the toggle and re-trigger
-  the permission prompt in the foreground the same way after any OS/node
-  upgrade.
+- If `calendar.enabled=true` (v2.0+), the **Calendars** grant from §0.1 item 3
+  (on `native/ekreader`, not `node`) can still be dropped by an **OS upgrade** —
+  a dropped grant degrades to the static cook-night count + a one-time
+  `#agent-alerts` alert (ADR-0004 D6) rather than a hang or failed post; re-grant
+  by re-triggering the prompt in the foreground (run the binary once, §0.1 item
+  3). A `pnpm build:native` recompile does **not** drop it — the stable-cert
+  signature keeps the same designated requirement across rebuilds (bead ob8/12p).
 
 ### 0.3 Apple-schema-change risk  · `bd fkg.7`
 
@@ -426,10 +443,11 @@ boot-launch + restart-on-crash.
      `StandardErrorPath`) and `pnpm build` first so `dist/index.js` exists.
    - Replace `/usr/local/bin/node` with the output of `which node` if different
      (launchd does not use your shell `PATH`). This exact binary path is what
-     needs the Automation/Full Disk Access grants from §0.1 — and, if
-     `calendar.enabled=true`, the **Calendars** grant too (§0.1 item 3): TCC
-     keys on the binary, so a `node` upgrade that moves this path needs all
-     three re-granted, not just re-verified.
+     needs the Automation/Full Disk Access grants from §0.1: TCC keys on the
+     binary, so a `node` upgrade that moves this path needs both re-granted,
+     not just re-verified. If `calendar.enabled=true`, the **Calendars** grant
+     (§0.1 item 3) targets `native/ekreader` instead (granted once, stable
+     across rebuilds via the cert signature — not tied to the `node` path).
    - Fill in real secret/config values under `EnvironmentVariables` (or set
      `OP_SERVICE_ACCOUNT_TOKEN` and rely on the 1Password source — see §3).
      **Never commit the filled-in copy back to git.**
@@ -493,20 +511,29 @@ deliberately, and **grant the TCC first** or it silently degrades.
 
 **Ordered checklist:**
 
-1. **Grant the "Calendars" TCC to the daemon's `node` binary — do this first.**
-   TCC keys on the exact binary (`which node` that the plist's `ProgramArguments`
-   uses), same as the Notes Full-Disk-Access/Automation grants (§0.1 item 3).
-   Trigger the prompt with a foreground read from the checkout, click **Allow**
-   (or enable it under **System Settings → Privacy & Security → Calendars**):
+1. **Build and grant the "Calendars" TCC to `native/ekreader` — do this first.**
+   ```bash
+   pnpm build && pnpm build:native
+   ```
+   TCC keys on the exact `native/ekreader` binary (bead ob8 — this grant no
+   longer targets `node`), same rule as the Notes Full-Disk-Access/Automation
+   grants (§0.1 item 3). Trigger the prompt with a foreground read from the
+   checkout, click **Allow** (or enable it under
+   **System Settings → Privacy & Security → Calendars**):
    ```bash
    set -a; source ./meal-planner.env; set +a          # or your env source
    node -e 'import("./dist/calendar/calendar-reader.js").then(async m => { \
      const s=new Date(), e=new Date(s.getTime()+7*864e5); \
      console.log((await m.readCalendarEvents({start:s,end:e})).length, "events"); })'
    ```
-   A count (not a 60s timeout / permission error) means the grant is in place.
-   ⚠️ If the daemon runs a **different** `node` than your shell, grant that exact
-   binary too — a `node`/OS upgrade that moves the path needs a re-grant.
+   A count returned in well under a second (not a permission-denied error)
+   means the grant is in place — native EventKit is millisecond-fast and
+   fails closed immediately on denial, unlike the retired JXA backend's
+   60s+ hang. The grant **carries to the headless launchd daemon** (verified
+   bead ob8/12p, 2026-07-25) and **survives rebuilds** — `pnpm build:native`
+   signs with a stable cert (designated requirement = identifier + team), so a
+   recompile keeps the same TCC identity. Only an **OS upgrade** can drop it;
+   re-trigger the prompt the same way if so.
 
 2. **Set the calendar vars in the plist** (uncomment the v2.0 block in your
    local copy):
