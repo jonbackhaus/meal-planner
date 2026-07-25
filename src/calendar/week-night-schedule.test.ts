@@ -104,6 +104,19 @@ describe("getWeekNightSchedule", () => {
     expect(range.end.toISOString()).toBe("2026-08-09T05:00:00.000Z"); // 2026-08-09 00:00 CDT
   });
 
+  it("scopes readEvents to the CalendarConfig.include allowlist names (bead swl)", async () => {
+    const readEvents = vi.fn(
+      async (_options: CalendarReaderOptions): Promise<CalendarEvent[]> => [],
+    );
+    const deps = makeDeps({ readEvents });
+
+    await getWeekNightSchedule(deps);
+
+    expect(readEvents).toHaveBeenCalledTimes(1);
+    const options = readEvents.mock.calls[0]?.[0] as CalendarReaderOptions;
+    expect(options.calendarNames).toEqual(["Jonathan", "Family", "Kids"]);
+  });
+
   it("a genuinely free week (successful read, zero events): returns a real all-FULL 7-night schedule, never alerts", async () => {
     const alert = vi.fn(async () => {});
     const deps = makeDeps({ readEvents: vi.fn(async () => []), alert });

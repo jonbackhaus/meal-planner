@@ -17,14 +17,16 @@ import { execFile as execFileCallback } from "node:child_process";
  * ADR-0004 D1, more specific) permission surface. See RUNBOOK §0.1/§7 for the
  * grant procedure.
  *
- * **Scope — all calendars, unfiltered (ADR-0004 D1):** "one query spans all
- * subscribed/shared iCloud calendars" — unlike the Notes reader (scoped to a
- * single named folder), this reader does NOT filter by calendar name. It
- * returns every event, from every calendar Calendar.app aggregates, that
- * overlaps the requested range. Filtering to the household's allow-listed
- * `cook`/`logistics` calendars (`CalendarConfig.include`, bead r0o.2) and
- * classifying capacity (ADR-0004 D3) are downstream concerns owned by the
- * classifier (bead r0o.3) — this module only reads and types raw events.
+ * **Scope — allowlist-scoped by default caller, all-calendars if omitted
+ * (ADR-0004 D1, amended bead swl):** callers pass `calendarNames`
+ * (`CalendarConfig.include[].name`) to scope the JXA query to only those
+ * calendars — Apple Scripting-Bridge `.whose()` date queries are slow, and
+ * unscoped reads across every subscribed/shared iCloud calendar intermittently
+ * exceed the read timeout (bead swl). When `calendarNames` is omitted, this
+ * reader falls back to the original read-ALL-calendars behavior (back-compat
+ * for any direct caller that hasn't opted in). Classifying capacity
+ * (ADR-0004 D3) remains a downstream concern owned by the classifier (bead
+ * r0o.3) — this module only reads and types raw events.
  */
 
 /**
@@ -70,6 +72,15 @@ export interface CalendarReaderOptions {
   start: Date;
   /** Exclusive upper bound of the query range. */
   end: Date;
+  /**
+   * Scope the read to only these calendar names (`CalendarConfig.include[].name`,
+   * bead swl). When omitted/undefined, reads every calendar Calendar.app
+   * aggregates (the original, slower ADR-0004 D1 behavior — kept for
+   * back-compat). An empty array queries nothing and short-circuits to `[]`
+   * without invoking `osascript`, consistent with "empty allowlist marks no
+   * night busy".
+   */
+  calendarNames?: string[];
 }
 
 interface RawCalendarEventJson {
@@ -83,13 +94,15 @@ interface RawCalendarEventJson {
 
 /**
  * Read timeout for the osascript call. Mirrors `notes-reader.ts`'s reasoning:
- * a healthy read of a week's events is fast (well under a second), but a
- * first-run "Calendars" permission prompt can stall `osascript` indefinitely
- * with no way to answer it under launchd — this bounds that so a hang
- * surfaces as a clear, actionable error instead of blocking the daemon
- * forever.
+ * a first-run "Calendars" permission prompt can stall `osascript`
+ * indefinitely with no way to answer it under launchd — this bounds that so
+ * a hang surfaces as a clear, actionable error instead of blocking the
+ * daemon forever. A healthy allowlist-scoped read (bead swl) measured ~17.5s
+ * — Apple Scripting-Bridge is fundamentally slow, not sub-second — so this is
+ * set to 90s as belt-and-suspenders headroom for that variability, well
+ * above the ~17s target and still bounded/retried by `MAX_READ_ATTEMPTS`.
  */
-const READ_TIMEOUT_MS = 60_000;
+const READ_TIMEOUT_MS = 90_000;
 
 /**
  * stdout buffer cap for the osascript call. A week's worth of events across
@@ -143,40 +156,48 @@ function execFile(
 
 /**
  * The JXA source executed by `osascript -l JavaScript`. Receives the range's
- * start/end as ISO-8601 strings in `argv[0]`/`argv[1]` and prints a JSON
- * array of `{calendarName, title, start, end, allDay, status}` to stdout.
+ * start/end as ISO-8601 strings in `argv[0]`/`argv[1]`, an optional
+ * JSON-encoded array of calendar names to scope to in `argv[2]` (bead swl),
+ * and prints a JSON array of `{calendarName, title, start, end, allDay,
+ * status}` to stdout.
  *
- * Iterates every calendar Calendar.app exposes (the aggregation across
- * accounts + shares that motivates ADR-0004 D1) and, within each, every event
- * overlapping the requested range. Each calendar's and each event's property
- * reads are wrapped individually so one mis-behaving calendar/event (a
- * degenerate recurrence, a share with a transient read error) can't fail the
- * whole read — it's just skipped, mirroring the Notes reader's
- * per-note-property defensiveness.
+ * When `argv[2]` names calendars, they're fetched directly via
+ * `Calendar.calendars.byName(name)` (wrapped in try/catch so a
+ * configured-but-absent calendar is skipped, not thrown) — NOT by
+ * enumerating every calendar and filtering by `.name()`, which is a large
+ * part of what makes an unscoped read slow. When `argv[2]` is absent/empty,
+ * this falls back to enumerating every calendar Calendar.app exposes (the
+ * original ADR-0004 D1 all-calendars behavior). Each calendar's and each
+ * event's property reads are wrapped individually so one mis-behaving
+ * calendar/event (a degenerate recurrence, a share with a transient read
+ * error) can't fail the whole read — it's just skipped, mirroring the Notes
+ * reader's per-note-property defensiveness.
  */
 export const CALENDAR_READER_SCRIPT = `
 function run(argv) {
   var rangeStart = new Date(String(argv[0]));
   var rangeEnd = new Date(String(argv[1]));
 
+  var names = null;
+  if (argv.length > 2 && String(argv[2]).length > 0) {
+    try { names = JSON.parse(String(argv[2])); } catch (eNames) { names = null; }
+  }
+
   var Calendar = Application("Calendar");
   Calendar.includeStandardAdditions = true;
 
-  var calendars = Calendar.calendars();
   var result = [];
-  for (var c = 0; c < calendars.length; c++) {
-    var calName;
-    try { calName = String(calendars[c].name()); } catch (e) { continue; }
 
+  function readCalendar(cal, calName) {
     var events;
     try {
-      events = calendars[c].events.whose({
+      events = cal.events.whose({
         _and: [
           { startDate: { _lessThan: rangeEnd } },
           { endDate: { _greaterThan: rangeStart } }
         ]
       })();
-    } catch (e2) { continue; }
+    } catch (e2) { return; }
 
     for (var i = 0; i < events.length; i++) {
       var ev = events[i];
@@ -203,6 +224,25 @@ function run(argv) {
       });
     }
   }
+
+  if (names) {
+    for (var n = 0; n < names.length; n++) {
+      var cal, calName;
+      try {
+        cal = Calendar.calendars.byName(String(names[n]));
+        calName = String(cal.name());
+      } catch (eByName) { continue; }
+      readCalendar(cal, calName);
+    }
+  } else {
+    var calendars = Calendar.calendars();
+    for (var c = 0; c < calendars.length; c++) {
+      var calNameAll;
+      try { calNameAll = String(calendars[c].name()); } catch (e) { continue; }
+      readCalendar(calendars[c], calNameAll);
+    }
+  }
+
   return JSON.stringify(result);
 }
 `;
@@ -289,37 +329,56 @@ function normalizeStatus(raw: string): CalendarEventStatus {
 }
 
 /**
- * Reads calendar events across every calendar Calendar.app aggregates
- * (ADR-0004 D1), scoped to `[options.start, options.end)`, via
- * `osascript -l JavaScript`. Returns typed, unfiltered `CalendarEvent[]` —
- * allow-listing by calendar name/role and capacity classification are the
- * downstream classifier's job (ADR-0004 D3, bead r0o.3).
+ * Reads calendar events scoped to `[options.start, options.end)`, via
+ * `osascript -l JavaScript`. When `options.calendarNames` is given (bead
+ * swl), the JXA queries only those calendars — a large speedup and
+ * reliability fix over reading every calendar Calendar.app aggregates
+ * (ADR-0004 D1's original, unscoped behavior, still the fallback when
+ * `calendarNames` is omitted). An empty `calendarNames` array queries
+ * nothing and returns `[]` without invoking `osascript`. Returns typed
+ * `CalendarEvent[]` — capacity classification remains the downstream
+ * classifier's job (ADR-0004 D3, bead r0o.3).
  */
 export async function readCalendarEvents(
   options: CalendarReaderOptions,
 ): Promise<CalendarEvent[]> {
-  const { start, end } = options;
+  const { start, end, calendarNames } = options;
   if (!(end.getTime() > start.getTime())) {
     throw new Error(
       `calendar-reader: options.end (${end.toISOString()}) must be after options.start (${start.toISOString()})`,
     );
   }
+  if (calendarNames !== undefined && calendarNames.length === 0) {
+    return [];
+  }
 
-  let stdout: string | undefined;
-  for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
-    try {
-      ({ stdout } = await execFile(
-        "osascript",
-        [
+  const scriptArgs =
+    calendarNames !== undefined
+      ? [
           "-l",
           "JavaScript",
           "-e",
           CALENDAR_READER_SCRIPT,
           start.toISOString(),
           end.toISOString(),
-        ],
-        { timeout: READ_TIMEOUT_MS, maxBuffer: MAX_BUFFER_BYTES },
-      ));
+          JSON.stringify(calendarNames),
+        ]
+      : [
+          "-l",
+          "JavaScript",
+          "-e",
+          CALENDAR_READER_SCRIPT,
+          start.toISOString(),
+          end.toISOString(),
+        ];
+
+  let stdout: string | undefined;
+  for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+    try {
+      ({ stdout } = await execFile("osascript", scriptArgs, {
+        timeout: READ_TIMEOUT_MS,
+        maxBuffer: MAX_BUFFER_BYTES,
+      }));
       break;
     } catch (error) {
       const err = error as NodeJS.ErrnoException & { killed?: boolean };

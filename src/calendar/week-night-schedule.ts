@@ -171,7 +171,11 @@ export async function getWeekNightSchedule(
   let events: CalendarEvent[];
   try {
     const { start, end } = planWeekRange(weekKey, config.timezone);
-    events = await readEvents({ start, end });
+    events = await readEvents({
+      start,
+      end,
+      calendarNames: config.calendar.include.map((entry) => entry.name),
+    });
   } catch (err) {
     return degradeToStatic(deps, `calendar read failed: ${String(err)}`);
   }
