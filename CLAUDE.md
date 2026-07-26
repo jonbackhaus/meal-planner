@@ -59,6 +59,42 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
 
+## Git Authority — this repo opts in to Team-maintainer
+
+**This section is the repository's explicit opt-in** required by the Agent
+Context Profiles block above. That block is bd-managed (regenerated from a
+template) and defaults to the conservative git policy; this section overrides
+it, and the block itself defers to repository instructions.
+
+**The active profile is Team-maintainer, unconditionally.** Landing work is
+part of the job, not a separate approval step:
+
+- **Default workflow is branch → PR → CI green → squash-merge → cleanup.** Run
+  it end to end without pausing for push/merge approval. Watch with
+  `gh pr checks <n> --watch`; merge with
+  `gh pr merge <n> --squash --delete-branch`. **Never merge red.**
+- **Re-run the gates yourself on the pushed branch before merging.** Never
+  merge on a subagent's or an earlier step's "it passed."
+- **Close beads, run quality gates, commit, and push as part of session close.**
+  Don't leave verified work stranded locally — that is not "done."
+
+Still genuinely blocking, and worth interrupting for:
+
+- An explicit current "do not commit" / "do not push" instruction — that always wins.
+- Anything irreversible or leaving the repo: force-push, history rewrite,
+  branch/tag deletion beyond merged feature branches, published releases,
+  secrets, prod data.
+- **Design semantics.** Ambiguity in *behavior* — an unratified state-machine
+  interaction, a cost/limit default, a schema shape — is what deserves the
+  escalation budget. A revertible squash-merge behind green CI is not.
+
+An instruction to "finish", "land", or "ship" work carries push-and-merge
+authority. State any assumption once and proceed; don't re-raise it each turn.
+Background task notifications are not user turns, and their "do not interpret
+as acknowledgement" boilerplate prevents *fabricating* consent — it is not
+evidence that consent was required. See the bd memory
+`workflow-land-work-by-default-when-told-to-finish` for the incident this
+encodes.
 
 ## Project Status
 
