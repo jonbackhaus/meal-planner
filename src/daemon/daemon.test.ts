@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { SocketModeClient } from "@slack/socket-mode";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../config/config.js";
 import type { ProfileSettings } from "../config/profile.js";
@@ -35,6 +36,9 @@ function fakeConfig(): Config {
     untestedRate: 0.15,
     maxPairedSides: 2,
     generationDollarCap: 2,
+    revisionCycleTokenCap: 150_000,
+    revisionThreadTurnCap: 25,
+    revisionThreadDollarCap: 5,
     staleSyncThreshold: 50,
     triggerTimeoutMs: 2_700_000,
     llmCallTimeoutMs: 240_000,
@@ -295,6 +299,11 @@ describe("runDaemon", () => {
         sqlitePath: ":memory:",
         forceRegenerate: true,
         postMode: "dry-run",
+        todoist: {
+          projectId: "",
+          titleTemplate: "{title}",
+          recipeLinkFormat: "",
+        },
         ...overrides,
       };
     }
@@ -346,6 +355,301 @@ describe("runDaemon", () => {
 
       await handle.shutdown();
       store.close();
+    });
+  });
+
+  describe("Socket Mode connection lifecycle (bd meal-planner-4u4.3)", () => {
+    function fakeSecretsWithAppToken(): Secrets {
+      return { ...fakeSecrets(), slackAppToken: "xapp-fake" };
+    }
+
+    function fakeSocketModeHandle(disconnect = vi.fn(async () => {})) {
+      return {
+        client: {} as unknown as SocketModeClient,
+        disconnect,
+      };
+    }
+
+    it("opens the Socket Mode connection at boot when slackAppToken is present, via the injected opener (no real network connection)", async () => {
+      const onStartup = vi.fn(async () => {});
+      const onTrigger = vi.fn(async () => {});
+      const proc = new FakeProcess();
+      const fakeHandle = fakeSocketModeHandle();
+      const openSocketMode = vi.fn(async () => fakeHandle);
+
+      const handle = await runDaemon({
+        config: fakeConfig(),
+        secrets: fakeSecretsWithAppToken(),
+        onStartup,
+        onTrigger,
+        alert: vi.fn(async () => {}),
+        process: proc as unknown as NodeJS.Process,
+        openSocketMode,
+      });
+
+      expect(openSocketMode).toHaveBeenCalledTimes(1);
+      expect(openSocketMode).toHaveBeenCalledWith(
+        expect.objectContaining({ appToken: "xapp-fake" }),
+      );
+      expect(handle.socketMode).toBe(fakeHandle);
+
+      await handle.shutdown();
+    });
+
+    it("skips opening Socket Mode when slackAppToken is absent (v1.0/v2.0 boot path) -- the injected opener is never called", async () => {
+      const onStartup = vi.fn(async () => {});
+      const onTrigger = vi.fn(async () => {});
+      const proc = new FakeProcess();
+      const openSocketMode = vi.fn(async () => fakeSocketModeHandle());
+
+      const handle = await runDaemon({
+        config: fakeConfig(),
+        secrets: fakeSecrets(),
+        onStartup,
+        onTrigger,
+        alert: vi.fn(async () => {}),
+        process: proc as unknown as NodeJS.Process,
+        openSocketMode,
+      });
+
+      expect(openSocketMode).not.toHaveBeenCalled();
+      expect(handle.socketMode).toBeUndefined();
+
+      await handle.shutdown();
+    });
+
+    it("disconnects the Socket Mode connection during shutdown()", async () => {
+      const onStartup = vi.fn(async () => {});
+      const onTrigger = vi.fn(async () => {});
+      const proc = new FakeProcess();
+      const disconnect = vi.fn(async () => {});
+      const openSocketMode = vi.fn(async () =>
+        fakeSocketModeHandle(disconnect),
+      );
+
+      const handle = await runDaemon({
+        config: fakeConfig(),
+        secrets: fakeSecretsWithAppToken(),
+        onStartup,
+        onTrigger,
+        alert: vi.fn(async () => {}),
+        process: proc as unknown as NodeJS.Process,
+        openSocketMode,
+      });
+
+      await handle.shutdown();
+
+      expect(disconnect).toHaveBeenCalledTimes(1);
+    });
+
+    describe("inbound event router wiring (bd meal-planner-4u4.4)", () => {
+      it("attaches the event router to the opened socket's client when sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attach = vi.fn();
+        const attachSlash = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: attach,
+          attachSlashCommandRouter: attachSlash,
+        });
+
+        expect(attach).toHaveBeenCalledTimes(1);
+        expect(attach).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ sessionStore }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("forwards the redirect dep to attachEventRouter as-is (bd meal-planner-uo1, A5)", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attach = vi.fn();
+        const redirect = {
+          slack: { chat: { postMessage: vi.fn() } },
+          channelId: "C_MEAL_PLAN",
+        };
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: attach,
+          attachSlashCommandRouter: vi.fn(),
+          redirect,
+        });
+
+        expect(attach).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ redirect }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the event router when no sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const openSocketMode = vi.fn(async () => fakeSocketModeHandle());
+        const attach = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          attachEventRouter: attach,
+        });
+
+        expect(attach).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the event router when the socket never opened (no app token), even with sessionStore supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attach = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecrets(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          sessionStore,
+          attachEventRouter: attach,
+        });
+
+        expect(attach).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
+    });
+
+    describe("slash-command router wiring (bd meal-planner-4u4.6)", () => {
+      it("attaches the slash-command router to the opened socket's client when sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attachSlash = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+        });
+
+        expect(attachSlash).toHaveBeenCalledTimes(1);
+        expect(attachSlash).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ sessionStore }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("does NOT attach the slash-command router when no sessionStore is supplied", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const openSocketMode = vi.fn(async () => fakeSocketModeHandle());
+        const attachSlash = vi.fn();
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+        });
+
+        expect(attachSlash).not.toHaveBeenCalled();
+
+        await handle.shutdown();
+      });
+    });
+
+    it("logs and continues (does not crash boot) when opening the Socket Mode connection fails", async () => {
+      const onStartup = vi.fn(async () => {});
+      const onTrigger = vi.fn(async () => {});
+      const proc = new FakeProcess();
+      const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const openSocketMode = vi.fn(async () => {
+        throw new Error("apps.connections.open failed: invalid_auth");
+      });
+
+      const handle = await runDaemon({
+        config: fakeConfig(),
+        secrets: fakeSecretsWithAppToken(),
+        onStartup,
+        onTrigger,
+        alert: vi.fn(async () => {}),
+        process: proc as unknown as NodeJS.Process,
+        logger,
+        openSocketMode,
+      });
+
+      expect(logger.error).toHaveBeenCalled();
+      expect(handle.socketMode).toBeUndefined();
+
+      await handle.shutdown();
     });
   });
 });

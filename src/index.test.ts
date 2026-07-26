@@ -7,15 +7,24 @@ import type { ProfileSettings } from "./config/profile.js";
 import {
   applySecretsToEnv,
   buildAlert,
+  buildApprovalHandler,
   buildDryRunPost,
+  buildRecencyReader,
+  buildRevisionSystem,
   DEFAULT_LOG_PATH,
   makeBuildPlanWithSync,
   makeFatalHandler,
 } from "./index.js";
+import type { LlmClient, LlmResult } from "./llm/llm-client.js";
+import { createRevisionCoordinator } from "./orchestrator/revision-coordinator.js";
+import type { RevisionSlackClient } from "./orchestrator/revision-post.js";
+import type { Session, SessionStore } from "./orchestrator/session-store.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
-import type { PrepUnit } from "./planner/select.js";
+import type { PrepUnit, SelectedMeal, WeekPlan } from "./planner/select.js";
+import type { Recipe } from "./recipe-mcp/schema.js";
 import type { StaleCount, SyncResult } from "./recipe-mcp/sync.js";
 import type { Secrets } from "./secrets/secrets.js";
+import type { InboundThreadReply } from "./slack/inbound-router.js";
 import { renderPlan } from "./slack/render.js";
 
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
@@ -45,6 +54,7 @@ function fakeProfile(
     sqlitePath: "./data/meal-planner.dev.sqlite",
     forceRegenerate: true,
     postMode: "dry-run",
+    todoist: { projectId: "", titleTemplate: "{title}", recipeLinkFormat: "" },
     ...overrides,
   };
 }
@@ -594,5 +604,340 @@ describe("makeBuildPlanWithSync", () => {
       expect(runSync).toHaveBeenCalledTimes(1);
       expect(alert).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * v3.0 boot-assembly integration tests (bd meal-planner-uo1): asserts the
+ * COMPOSED revision chain (B1-B5) and the shared `RevisionCoordinator`
+ * actually wire together end-to-end at the `index.ts` seam -- exercising
+ * `buildRevisionSystem`/`buildApprovalHandler` directly with fakes, never a
+ * real Slack/Anthropic/Todoist network call. Per-piece behavior (validation
+ * repair, debounce windowing edge cases, cost-cap math, etc.) is already
+ * covered by each wrapper's own test file; these tests only check that the
+ * pieces are wired in the right order and share the right instances.
+ */
+describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function llmResult(text: string): LlmResult {
+    return { text, usage: { inputTokens: 10, outputTokens: 10 } };
+  }
+
+  function makeFakeLlm(...responses: string[]): LlmClient {
+    const runQuery = vi.fn();
+    for (const response of responses) {
+      runQuery.mockResolvedValueOnce(llmResult(response));
+    }
+    return { runQuery };
+  }
+
+  function meal(overrides: Partial<SelectedMeal> = {}): SelectedMeal {
+    return {
+      slot_type: "constrained",
+      recipe_id: "recipe-1",
+      title: "Veggie Chili",
+      day: null,
+      veg: { kind: "inherent" },
+      flags: [],
+      rationale: "Quick, vegetarian, high quality.",
+      ...overrides,
+    };
+  }
+
+  function weekPlan(meals: SelectedMeal[] = [meal()]): WeekPlan {
+    return { week_key: "2026-07-12", meals, summary: "A tasty week." };
+  }
+
+  function recipe(id: string, overrides: Partial<Recipe> = {}): Recipe {
+    return {
+      id,
+      title: `Recipe ${id}`,
+      time: { active: 20, total: 30, prep: 10, confidence: 0.9 },
+      effort_tags: [],
+      season_tags: [],
+      veg_status: "vegetarian",
+      ingredients: [],
+      body: "body text",
+      source_note_id: id,
+      ...overrides,
+    };
+  }
+
+  function session(overrides: Partial<Session> = {}): Session {
+    return {
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1000.0001",
+      working_plan: weekPlan(),
+      turn_count: 0,
+      token_spend: 0,
+      cost_usd: 0,
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  function fakeSessionStore(rows: Record<string, Session>) {
+    const table = new Map(Object.entries(rows));
+    const update = vi.fn((weekKey: string, patch: Partial<Session>) => {
+      const row = table.get(weekKey);
+      if (!row) {
+        return;
+      }
+      table.set(weekKey, { ...row, ...patch });
+    });
+    return {
+      store: {
+        get: (weekKey: string) => table.get(weekKey) ?? null,
+        update,
+      } as Pick<SessionStore, "get" | "update">,
+      table,
+      update,
+    };
+  }
+
+  function fakeSlack(
+    response: { ok?: boolean; ts?: string; error?: string } = {
+      ok: true,
+      ts: "2000.0001",
+    },
+  ): { slack: RevisionSlackClient; postMessage: ReturnType<typeof vi.fn> } {
+    const postMessage = vi.fn().mockResolvedValue(response);
+    return { slack: { chat: { postMessage } }, postMessage };
+  }
+
+  function threadReply(
+    overrides: Partial<InboundThreadReply> = {},
+  ): InboundThreadReply {
+    return {
+      weekKey: "2026-07-12",
+      threadTs: "1000.0001",
+      event: {
+        type: "message",
+        channel: "C123",
+        user: "U123",
+        ts: "1000.0002",
+        thread_ts: "1000.0001",
+        text: "swap the chili for tacos",
+      },
+      ...overrides,
+    };
+  }
+
+  function generousCaps() {
+    return {
+      cycleTokenCap: 1_000_000,
+      threadTurnCap: 25,
+      threadDollarCap: 100,
+    };
+  }
+
+  it("composes debounce ⊃ serialize ⊃ cost-guard ⊃ B1/onRevised=guardOnRevised(B2): a reply mutates the plan, posts a NEW thread reply, writes working_plan back, and folds cost-guard spend onto the SAME row (B1-B5, one RevisionHandler)", async () => {
+    vi.useFakeTimers();
+
+    const revised = weekPlan([meal({ title: "Bean Tacos" })]);
+    const { store, table } = fakeSessionStore({
+      "2026-07-12": session(),
+    });
+    const coordinator = createRevisionCoordinator();
+    const llm = makeFakeLlm(JSON.stringify(revised));
+    const { slack, postMessage } = fakeSlack();
+    const getRecipe = async (id: string) =>
+      id === "recipe-1" ? recipe("recipe-1") : null;
+
+    const system = buildRevisionSystem({
+      sessionStore: store,
+      coordinator,
+      llm,
+      getRecipe,
+      validateConfig: { slots: { constrained: 1, relaxed: 0 } },
+      slack,
+      channelId: "C_MEAL_PLAN",
+      caps: generousCaps(),
+      rate: { inputPerMTok: 1, outputPerMTok: 0 },
+      alert: vi.fn(async () => {}),
+    });
+
+    system.revisionHandler.onReply(threadReply());
+    // Debounce (B3) is outermost: nothing downstream runs until the window
+    // elapses.
+    expect(llm.runQuery).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(postMessage).toHaveBeenCalledTimes(1));
+
+    // B1: the mutation call ran.
+    expect(llm.runQuery).toHaveBeenCalledTimes(1);
+    // B2/guardOnRevised (B4): validated + posted as a NEW thread reply, and
+    // the revised working_plan landed back on the SAME session row.
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ thread_ts: "1000.0001" }),
+    );
+    expect(table.get("2026-07-12")?.working_plan).toEqual(revised);
+    // B5: the cost guard's per-cycle spend folded onto the SAME row.
+    expect(table.get("2026-07-12")?.turn_count).toBe(1);
+    expect(table.get("2026-07-12")?.token_spend).toBeGreaterThan(0);
+    // B4/serializeRevisionHandler: status round-tripped back to `suggested`
+    // (never left stuck `under_revision`).
+    expect(table.get("2026-07-12")?.status).toBe("suggested");
+  });
+
+  it("the SAME RevisionCoordinator drives BOTH the revision chain's supersede check AND the approval handler's supersede call (B4/D4): approving before the debounce window flushes drops the in-flight revision", async () => {
+    vi.useFakeTimers();
+
+    const { store, table } = fakeSessionStore({
+      "2026-07-12": session(),
+    });
+    const coordinator = createRevisionCoordinator();
+    const llm = makeFakeLlm(JSON.stringify(weekPlan()));
+    const { slack, postMessage } = fakeSlack();
+
+    const system = buildRevisionSystem({
+      sessionStore: store,
+      coordinator,
+      llm,
+      getRecipe: async (id) => recipe(id),
+      validateConfig: { slots: { constrained: 1, relaxed: 0 } },
+      slack,
+      channelId: "C_MEAL_PLAN",
+      caps: generousCaps(),
+      rate: { inputPerMTok: 1, outputPerMTok: 0 },
+      alert: vi.fn(async () => {}),
+    });
+
+    // The approval handler is built with the SAME coordinator instance
+    // (mirrors index.ts's main() wiring, bd meal-planner-uo1).
+    const approvalHandler = buildApprovalHandler(
+      { channelId: "C_MEAL_PLAN", todoist: {} } as never,
+      { slackBotToken: "xoxb-fake", todoistApiToken: "fake-token" } as never,
+      store,
+      coordinator,
+    );
+
+    system.revisionHandler.onReply(threadReply());
+
+    // Approval lands (and supersedes) BEFORE the debounce window flushes.
+    // The real onApprove would go on to hit Todoist/Slack; skip that by
+    // dropping the row's working_plan so it degrades to a safe no-op after
+    // the supersede call -- the assertion only cares that supersede fired.
+    await approvalHandler?.onApprove({
+      weekKey: "2026-07-12",
+      threadTs: "1000.0001",
+      command: { command: "/mealplan-approved" },
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => expect(llm.runQuery).toHaveBeenCalledTimes(0));
+
+    // serializeRevisionHandler (B4) saw the coordinator already superseded
+    // and skipped the downstream mutation entirely -- proving the approval
+    // handler's `.supersede()` call and the revision chain's
+    // `.isSuperseded()` check share the SAME coordinator instance.
+    expect(llm.runQuery).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(table.get("2026-07-12")?.working_plan).toEqual(
+      session().working_plan,
+    );
+  });
+
+  it("resetPause (B5, ADR-0007 D6) clears a paused_cost row on the guard this revisionSystem was built with", () => {
+    const { store, table } = fakeSessionStore({
+      "2026-07-12": session({
+        status: "paused_cost",
+        turn_count: 4,
+        token_spend: 5_000_000,
+        cost_usd: 5.2,
+      }),
+    });
+    const coordinator = createRevisionCoordinator();
+
+    const system = buildRevisionSystem({
+      sessionStore: store,
+      coordinator,
+      llm: makeFakeLlm(),
+      getRecipe: async () => null,
+      validateConfig: { slots: { constrained: 1, relaxed: 0 } },
+      slack: fakeSlack().slack,
+      channelId: "C_MEAL_PLAN",
+      caps: generousCaps(),
+      rate: { inputPerMTok: 1, outputPerMTok: 0 },
+      alert: vi.fn(async () => {}),
+    });
+
+    system.resetPause("2026-07-12");
+
+    const row = table.get("2026-07-12");
+    expect(row?.status).toBe("suggested");
+    expect(row?.turn_count).toBe(0);
+    expect(row?.token_spend).toBe(0);
+    expect(row?.cost_usd).toBe(0);
+  });
+
+  it("buildApprovalHandler passes the injected RevisionCoordinator through to onApprove's supersede call", async () => {
+    const { store } = fakeSessionStore({
+      // No working_plan -- onApprove degrades to a safe no-op after
+      // supersede, so this never touches a real Todoist/Slack client.
+      "2026-07-12": session({ working_plan: null }),
+    });
+    const supersede = vi.fn();
+    const coordinator = { supersede };
+
+    const approvalHandler = buildApprovalHandler(
+      { channelId: "C_MEAL_PLAN", todoist: {} } as never,
+      { slackBotToken: "xoxb-fake", todoistApiToken: "fake-token" } as never,
+      store,
+      coordinator,
+    );
+
+    await approvalHandler?.onApprove({
+      weekKey: "2026-07-12",
+      threadTs: "1000.0001",
+      command: { command: "/mealplan-approved" },
+    });
+
+    expect(supersede).toHaveBeenCalledWith("2026-07-12");
+  });
+
+  it("buildApprovalHandler returns undefined (no coordinator wiring needed) when Todoist isn't configured", () => {
+    const { store } = fakeSessionStore({});
+    const coordinator = { supersede: vi.fn() };
+
+    const approvalHandler = buildApprovalHandler(
+      { channelId: "C_MEAL_PLAN", todoist: {} } as never,
+      { slackBotToken: "xoxb-fake" } as never,
+      store,
+      coordinator,
+    );
+
+    expect(approvalHandler).toBeUndefined();
+  });
+
+  it("buildRecencyReader returns undefined (no client assembled) when Todoist isn't configured", () => {
+    const reader = buildRecencyReader(
+      { channelId: "C_MEAL_PLAN", todoist: {} } as never,
+      { slackBotToken: "xoxb-fake" } as never,
+    );
+
+    expect(reader).toBeUndefined();
+  });
+
+  it("buildRecencyReader returns a bound reader function when Todoist IS configured", () => {
+    const reader = buildRecencyReader(
+      {
+        channelId: "C_MEAL_PLAN",
+        todoist: {
+          projectId: "",
+          titleTemplate: "{title}",
+          recipeLinkFormat: "",
+        },
+      } as never,
+      { slackBotToken: "xoxb-fake", todoistApiToken: "fake-token" } as never,
+    );
+
+    expect(reader).toBeTypeOf("function");
   });
 });

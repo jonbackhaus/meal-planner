@@ -6,7 +6,7 @@ import { toNightCapacitySchedule } from "../calendar/night-schedule.js";
 import { getWeekNightSchedule } from "../calendar/week-night-schedule.js";
 import type { CalendarConfig, WeatherConfig } from "../config/config.js";
 import type { LlmClient } from "../llm/llm-client.js";
-import type { Recipe } from "../recipe-mcp/schema.js";
+import type { Recipe, RecipeCandidate } from "../recipe-mcp/schema.js";
 import type { TemperatureBand } from "../weather/weather.js";
 import { deriveSlots } from "./derive-slots.js";
 import { type EnrichedWeekPlan, enrichPlan } from "./enrich.js";
@@ -16,7 +16,9 @@ import {
   type ComposePoolsDeps,
   composePools,
   type PoolCompositionConfig,
+  type Pools,
 } from "./pools.js";
+import { applyRecencyDedup } from "./recency-dedup.js";
 import { assertPoolsSufficient, selectValidatedPlan } from "./validate.js";
 
 /**
@@ -101,6 +103,29 @@ export interface BuildPlanDeps {
     latitude: number;
     longitude: number;
   }) => Promise<TemperatureBand | null>;
+  /**
+   * Recency read (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3) — resolves the
+   * recent (Todoist-completed) recipe ids to dedup against. Optional: absent
+   * (v2.0-style boot, no Todoist token configured) means "recency not wired
+   * this run" and `buildPlan` behaves exactly as before (no dedup). Bound in
+   * production from `readRecentRecipeIds` + an assembled `TodoistClient` (see
+   * `src/index.ts`'s `buildRecencyReader`, mirroring `buildApprovalHandler`'s
+   * client assembly); tests inject a plain fake so no real Todoist is needed.
+   *
+   * DEGRADE SILENTLY (SPEC §6.3, the load-bearing requirement): `buildPlan`
+   * itself catches a throw from this (missing/expired token, network/timeout,
+   * a malformed response) and proceeds with an EMPTY recent set — recency
+   * must never fail or block the weekly generation.
+   */
+  getRecentRecipeIds?: () => Promise<string[]>;
+  /**
+   * Embedding lookup for the §6.3 semantic penalty (`recency-dedup.ts`'s
+   * `RecencyDedupDeps.getEmbedding`) — production binds `VectorStore.getEmbedding`.
+   * Only consulted when `getRecentRecipeIds` resolves a non-empty recent set;
+   * omitting it (while `getRecentRecipeIds` is present) simply skips the
+   * semantic-penalty reorder — exact `exclude_ids` exclusion still applies.
+   */
+  getEmbedding?: (recipeId: string) => number[] | null;
 }
 
 export interface BuildPlanArgs {
@@ -153,7 +178,45 @@ export async function buildPlan(
   const { weekKey, cfg, household, deps } = args;
   const seeds = cfg.seeds ?? DEFAULT_SEEDS;
 
-  const pools = await composePools(seeds, cfg, { search: deps.search });
+  // Recency read (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3) — BEFORE pool
+  // composition, so recent recipes are excluded at retrieval, not filtered
+  // after the fact. `deps.getRecentRecipeIds` is optional (pre-v3.x boot, no
+  // Todoist token) AND degrades silently on ANY failure: SPEC §6.3 requires
+  // recency to NEVER fail or block the week, so a throw here (expired token,
+  // network/timeout, malformed response) is caught, logged, and treated
+  // exactly like "no recent ids" rather than propagating.
+  let recentRecipeIds: string[] = [];
+  if (deps.getRecentRecipeIds) {
+    try {
+      recentRecipeIds = await deps.getRecentRecipeIds();
+    } catch (e) {
+      (deps.logger ?? console).warn(
+        `recency read failed before generating week ${weekKey}; proceeding with no dedup: ${String(e)}`,
+      );
+    }
+  }
+
+  // Exact exclusion (ADR-0006 D2): fold the resolved recent ids into every
+  // search call's `exclude_ids` (already wired, `search.ts`/`vector-store.ts`)
+  // via a thin wrapper around `deps.search` — a no-op when there are none.
+  const searchDeps: ComposePoolsDeps["search"] =
+    recentRecipeIds.length === 0
+      ? deps.search
+      : (query, filters) =>
+          deps.search(query, {
+            ...filters,
+            exclude_ids: [...(filters?.exclude_ids ?? []), ...recentRecipeIds],
+          });
+
+  let pools = await composePools(seeds, cfg, { search: searchDeps });
+
+  // Semantic penalty (ADR-0006 D2, SPEC §6.3): re-rank each pool by closeness
+  // to the recently-eaten recipes' embeddings (soft bias, exact repeats are
+  // already hard-excluded above). Skipped when there's nothing to penalize
+  // against, or no embedding lookup was supplied.
+  if (recentRecipeIds.length > 0 && deps.getEmbedding) {
+    pools = rerankPoolsByRecency(pools, recentRecipeIds, deps.getEmbedding);
+  }
 
   // ADR-0004 D4: slots are DERIVED from the week's NightSchedule, not static
   // config — non-NONE weeknights -> constrained, non-NONE weekend nights ->
@@ -246,4 +309,30 @@ export async function buildPlan(
   // `EnrichedWeekPlan.nightSchedule` doc for why this rides the plan object
   // rather than a separate return value.
   return { ...enriched, nightSchedule: toNightCapacitySchedule(schedule) };
+}
+
+/**
+ * Applies `recency-dedup.ts`'s `applyRecencyDedup` to each pool independently
+ * (bd meal-planner-v9v.3, ADR-0006 D2, SPEC §6.3) — the ranking penalty is
+ * per-pool, and `Pools.sides` is optional, so each is handled on its own.
+ * Recent ids should already be absent from every pool (excluded at search
+ * time, see `searchDeps` above), so `excludeIds` filtering here is a
+ * defense-in-depth no-op; the real effect is the ascending-penalty reorder
+ * (least recent-like first).
+ */
+function rerankPoolsByRecency(
+  pools: Pools,
+  recentRecipeIds: string[],
+  getEmbedding: (recipeId: string) => number[] | null,
+): Pools {
+  const rerank = (candidates: RecipeCandidate[]) =>
+    applyRecencyDedup(recentRecipeIds, candidates, { getEmbedding }).ranked.map(
+      (r) => r.candidate,
+    );
+
+  return {
+    weeknight: rerank(pools.weeknight),
+    weekend: rerank(pools.weekend),
+    sides: pools.sides ? rerank(pools.sides) : pools.sides,
+  };
 }

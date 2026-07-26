@@ -16,6 +16,11 @@ import { z } from "zod";
  * - MP_UNTESTED_RATE              -> untestedRate
  * - MP_MAX_PAIRED_SIDES          -> maxPairedSides
  * - MP_GENERATION_DOLLAR_CAP      -> generationDollarCap
+ * - MP_REVISION_CYCLE_TOKEN_CAP   -> revisionCycleTokenCap (ADR-0007 D5/D6, SPEC §9.3)
+ * - MP_REVISION_THREAD_TURN_CAP   -> revisionThreadTurnCap (ADR-0007 D5/D6, SPEC §9.3)
+ * - MP_REVISION_THREAD_DOLLAR_CAP -> revisionThreadDollarCap (ADR-0007 D5/D6, SPEC §9.3;
+ *                                    SHARES the per-thread pool with generationDollarCap's
+ *                                    spend, see src/cost/revision-cost-guard.ts)
  * - MP_STALE_SYNC_THRESHOLD       -> staleSyncThreshold
  * - MP_TRIGGER_TIMEOUT_MS         -> triggerTimeoutMs
  * - MP_LLM_CALL_TIMEOUT_MS        -> llmCallTimeoutMs
@@ -221,6 +226,26 @@ const configSchema = z
       .number()
       .positive("generationDollarCap must be a positive number")
       .default(2),
+    // v3.0 revision-loop guards (ADR-0007 D5/D6, SPEC §9.3 "three nested
+    // guards") -- config values, not hardcoded, mirroring generationDollarCap
+    // above. `revisionThreadDollarCap` SHARES its pool with generation spend
+    // (ADR-0007 D5: one budget per thread, not a separate generation +
+    // revision allowance) -- see src/cost/revision-cost-guard.ts, which reads
+    // and extends the same session row `token_spend`/`cost_usd` fields
+    // `generationDollarCap` (via CostMeter/generateForWeek) already writes.
+    revisionCycleTokenCap: z
+      .number()
+      .positive("revisionCycleTokenCap must be a positive number")
+      .default(150_000),
+    revisionThreadTurnCap: z
+      .number()
+      .int("revisionThreadTurnCap must be a positive integer")
+      .positive("revisionThreadTurnCap must be a positive integer")
+      .default(25),
+    revisionThreadDollarCap: z
+      .number()
+      .positive("revisionThreadDollarCap must be a positive number")
+      .default(5),
     // Threshold (count of stale notes) above which the daemon SKIPS its inline
     // pre-generation recipe sync in favor of alerting + planning against the
     // existing index (bd meal-planner-a9e). Sync is normally hash-gated and
@@ -410,6 +435,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     untestedRate: optionalNumber(env.MP_UNTESTED_RATE),
     maxPairedSides: optionalNumber(env.MP_MAX_PAIRED_SIDES),
     generationDollarCap: optionalNumber(env.MP_GENERATION_DOLLAR_CAP),
+    revisionCycleTokenCap: optionalNumber(env.MP_REVISION_CYCLE_TOKEN_CAP),
+    revisionThreadTurnCap: optionalNumber(env.MP_REVISION_THREAD_TURN_CAP),
+    revisionThreadDollarCap: optionalNumber(env.MP_REVISION_THREAD_DOLLAR_CAP),
     staleSyncThreshold: optionalNumber(env.MP_STALE_SYNC_THRESHOLD),
     triggerTimeoutMs: optionalNumber(env.MP_TRIGGER_TIMEOUT_MS),
     llmCallTimeoutMs: optionalNumber(env.MP_LLM_CALL_TIMEOUT_MS),

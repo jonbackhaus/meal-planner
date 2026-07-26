@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Config } from "./config.js";
-import { resolveProfile } from "./profile.js";
+import {
+  composeTodoistRidMarker,
+  parseTodoistRidMarker,
+  resolveProfile,
+  TODOIST_RID_MARKER_PREFIX,
+  TODOIST_RID_MARKER_REGEX,
+} from "./profile.js";
 
 function baseConfig(profile: "dev" | "prod"): Config {
   return {
@@ -19,6 +25,9 @@ function baseConfig(profile: "dev" | "prod"): Config {
     untestedRate: 0.15,
     maxPairedSides: 2,
     generationDollarCap: 2,
+    revisionCycleTokenCap: 150_000,
+    revisionThreadTurnCap: 25,
+    revisionThreadDollarCap: 5,
     staleSyncThreshold: 50,
     triggerTimeoutMs: 2_700_000,
     llmCallTimeoutMs: 240_000,
@@ -53,6 +62,11 @@ describe("resolveProfile", () => {
       sqlitePath: "./data/meal-planner.dev.sqlite",
       forceRegenerate: true,
       postMode: "post",
+      todoist: {
+        projectId: "",
+        titleTemplate: "{title}",
+        recipeLinkFormat: "",
+      },
     });
   });
 
@@ -65,6 +79,11 @@ describe("resolveProfile", () => {
       sqlitePath: "./data/meal-planner.prod.sqlite",
       forceRegenerate: false,
       postMode: "post",
+      todoist: {
+        projectId: "",
+        titleTemplate: "{title}",
+        recipeLinkFormat: "",
+      },
     });
   });
 
@@ -186,5 +205,95 @@ describe("resolveProfile", () => {
       expect(message).toMatch(/channelId/i);
       expect(message).toMatch(/postMode/i);
     }
+  });
+
+  describe("todoist config", () => {
+    it("defaults to an empty projectId, '{title}' titleTemplate, and empty recipeLinkFormat on both profiles", () => {
+      const devSettings = resolveProfile(baseConfig("dev"), baseEnv());
+      const prodSettings = resolveProfile(baseConfig("prod"), baseEnv());
+
+      expect(devSettings.todoist).toEqual({
+        projectId: "",
+        titleTemplate: "{title}",
+        recipeLinkFormat: "",
+      });
+      expect(prodSettings.todoist).toEqual({
+        projectId: "",
+        titleTemplate: "{title}",
+        recipeLinkFormat: "",
+      });
+    });
+
+    it("resolves per-profile projectId from MP_TODOIST_PROJECT_ID_DEV / MP_TODOIST_PROJECT_ID_PROD, and dev/prod may differ", () => {
+      const env = baseEnv({
+        MP_TODOIST_PROJECT_ID_DEV: "2222222222",
+        MP_TODOIST_PROJECT_ID_PROD: "1111111111",
+      });
+
+      const devSettings = resolveProfile(baseConfig("dev"), env);
+      const prodSettings = resolveProfile(baseConfig("prod"), env);
+
+      expect(devSettings.todoist.projectId).toBe("2222222222");
+      expect(prodSettings.todoist.projectId).toBe("1111111111");
+    });
+
+    it("does not fall back to the other profile's project id when the active one is unset", () => {
+      const env = baseEnv({ MP_TODOIST_PROJECT_ID_PROD: "1111111111" });
+
+      const devSettings = resolveProfile(baseConfig("dev"), env);
+
+      expect(devSettings.todoist.projectId).toBe("");
+    });
+
+    it("applies MP_TODOIST_TITLE_TEMPLATE and MP_TODOIST_RECIPE_LINK_FORMAT overrides", () => {
+      const env = baseEnv({
+        MP_TODOIST_TITLE_TEMPLATE: "Cook: {title}",
+        MP_TODOIST_RECIPE_LINK_FORMAT:
+          "https://example.com/recipes/{recipe_id}",
+      });
+
+      const settings = resolveProfile(baseConfig("dev"), env);
+
+      expect(settings.todoist.titleTemplate).toBe("Cook: {title}");
+      expect(settings.todoist.recipeLinkFormat).toBe(
+        "https://example.com/recipes/{recipe_id}",
+      );
+    });
+
+    it("does not require Todoist config to resolve a valid profile (config is currently optional/unconsumed)", () => {
+      expect(() => resolveProfile(baseConfig("dev"), baseEnv())).not.toThrow();
+    });
+  });
+});
+
+describe("mp:rid marker", () => {
+  it("composes the mp:rid=<id> marker with the shared prefix", () => {
+    expect(composeTodoistRidMarker("abc123")).toBe(
+      `${TODOIST_RID_MARKER_PREFIX}abc123`,
+    );
+    expect(composeTodoistRidMarker("abc123")).toBe("mp:rid=abc123");
+  });
+
+  it("round-trips compose -> parse for a variety of id shapes", () => {
+    for (const id of ["abc123", "Recipe_ID-42", "A1", "a-b_c-1"]) {
+      const description = `Some notes\n${composeTodoistRidMarker(id)}\nmore notes`;
+      expect(parseTodoistRidMarker(description)).toBe(id);
+    }
+  });
+
+  it("returns undefined when no marker is present", () => {
+    expect(parseTodoistRidMarker("just some description")).toBeUndefined();
+  });
+
+  it("matches the ADR-0006 interface-sketch regex exactly", () => {
+    expect(TODOIST_RID_MARKER_REGEX.source).toBe(
+      /\bmp:rid=([A-Za-z0-9_-]+)\b/.source,
+    );
+  });
+
+  it("parses the marker from anywhere in a multi-line description, ignoring an optional link line", () => {
+    const description = "https://example.com/recipes/abc123\nmp:rid=abc123";
+
+    expect(parseTodoistRidMarker(description)).toBe("abc123");
   });
 });

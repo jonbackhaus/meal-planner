@@ -175,6 +175,50 @@ describe("VectorStore", () => {
     });
   });
 
+  describe("getEmbedding (ADR-0006 D2, SPEC §6.3 semantic penalty lookup)", () => {
+    it("returns null for an id that has never been upserted", () => {
+      store = makeStore();
+      expect(store.getEmbedding("missing")).toBeNull();
+    });
+
+    it("round-trips the exact vector passed to upsert", () => {
+      store = makeStore();
+      store.upsert("note-a", [0.5, 0.5, Math.SQRT1_2], {
+        title: "A",
+        body: "body",
+        hash: "hash-a",
+        modifiedAt: new Date(),
+      });
+
+      const embedding = store.getEmbedding("note-a");
+      expect(embedding).not.toBeNull();
+      expect(embedding).toHaveLength(3);
+      expect(embedding?.[0]).toBeCloseTo(0.5, 5);
+      expect(embedding?.[1]).toBeCloseTo(0.5, 5);
+      expect(embedding?.[2]).toBeCloseTo(Math.SQRT1_2, 4);
+    });
+
+    it("reflects the latest vector after an upsert on an existing id", () => {
+      store = makeStore();
+      store.upsert("note-a", [1, 0, 0], {
+        title: "A",
+        body: "body",
+        hash: "hash-1",
+        modifiedAt: new Date(),
+      });
+      store.upsert("note-a", [0, 1, 0], {
+        title: "A",
+        body: "body",
+        hash: "hash-2",
+        modifiedAt: new Date(),
+      });
+
+      const embedding = store.getEmbedding("note-a");
+      expect(embedding?.[0]).toBeCloseTo(0, 5);
+      expect(embedding?.[1]).toBeCloseTo(1, 5);
+    });
+  });
+
   describe("listIds / deleteMany (stale-recipe reconciliation, q95.14)", () => {
     it("listIds returns every stored note id (empty when none)", () => {
       store = makeStore();

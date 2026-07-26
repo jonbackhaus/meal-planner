@@ -42,6 +42,9 @@ function makeConfig(): Config {
     untestedRate: 0.15,
     maxPairedSides: 2,
     generationDollarCap: 2,
+    revisionCycleTokenCap: 150_000,
+    revisionThreadTurnCap: 25,
+    revisionThreadDollarCap: 5,
     staleSyncThreshold: 50,
     triggerTimeoutMs: 2_700_000,
     llmCallTimeoutMs: 240_000,
@@ -65,6 +68,7 @@ function makeProfile(
     sqlitePath: ":memory:",
     forceRegenerate: false,
     postMode: "dry-run",
+    todoist: { projectId: "", titleTemplate: "{title}", recipeLinkFormat: "" },
     ...overrides,
   };
 }

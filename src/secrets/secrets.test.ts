@@ -239,4 +239,190 @@ describe("loadSecrets", () => {
       loadSecrets({ source: "1password", env: baseOpEnv() }),
     ).rejects.toThrow(/slackBotToken/i);
   });
+
+  it("omits slackAppToken on the 1Password path when its ref env var is unset", async () => {
+    mockOpSuccess({
+      "op://vault/slack-item/token": "xoxb-abc123\n",
+      "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+    });
+
+    const secrets = await loadSecrets({
+      source: "1password",
+      env: baseOpEnv(),
+    });
+
+    expect(secrets.slackAppToken).toBeUndefined();
+    expect(mockedExecFile).not.toHaveBeenCalledWith(
+      "op",
+      expect.arrayContaining([expect.stringContaining("app-token")]),
+      expect.anything(),
+      expect.any(Function),
+    );
+  });
+
+  it("reads slackAppToken on the 1Password path when its ref env var is set", async () => {
+    mockOpSuccess({
+      "op://vault/slack-item/token": "xoxb-abc123\n",
+      "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+      "op://vault/slack-item/app-token": "xapp-abc123\n",
+    });
+
+    const secrets = await loadSecrets({
+      source: "1password",
+      env: baseOpEnv({
+        MP_OP_SLACK_APP_TOKEN_REF: "op://vault/slack-item/app-token",
+      }),
+    });
+
+    expect(secrets).toEqual({
+      slackBotToken: "xoxb-abc123",
+      anthropicApiKey: "sk-ant-xyz789",
+      slackAppToken: "xapp-abc123",
+    });
+  });
+
+  it("throws naming slackAppToken when its ref is set but op read fails", async () => {
+    mockedExecFile.mockImplementation(((
+      _file: string,
+      args: readonly string[],
+      _options: unknown,
+      callback: ExecFileCallback,
+    ) => {
+      const ref = args[1] as string;
+      if (ref === "op://vault/slack-item/app-token") {
+        callback(new Error("boom"), "", "boom");
+        return undefined;
+      }
+      const responses: Record<string, string> = {
+        "op://vault/slack-item/token": "xoxb-abc123\n",
+        "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+      };
+      callback(null, responses[ref] as string, "");
+      return undefined;
+    }) as unknown as typeof execFile);
+
+    await expect(
+      loadSecrets({
+        source: "1password",
+        env: baseOpEnv({
+          MP_OP_SLACK_APP_TOKEN_REF: "op://vault/slack-item/app-token",
+        }),
+      }),
+    ).rejects.toThrow(/slackAppToken/i);
+  });
+
+  it("omits slackAppToken on the env fallback path when MP_SLACK_APP_TOKEN is unset", async () => {
+    const secrets = await loadSecrets({
+      source: "env",
+      env: baseEnvFallback(),
+    });
+
+    expect(secrets.slackAppToken).toBeUndefined();
+  });
+
+  it("reads slackAppToken on the env fallback path when MP_SLACK_APP_TOKEN is set", async () => {
+    const secrets = await loadSecrets({
+      source: "env",
+      env: baseEnvFallback({ MP_SLACK_APP_TOKEN: "xapp-real-token" }),
+    });
+
+    expect(secrets).toEqual({
+      slackBotToken: "xoxb-real-slack-token",
+      anthropicApiKey: "sk-ant-real-anthropic-key",
+      slackAppToken: "xapp-real-token",
+    });
+  });
+
+  it("omits todoistApiToken on the 1Password path when its ref env var is unset", async () => {
+    mockOpSuccess({
+      "op://vault/slack-item/token": "xoxb-abc123\n",
+      "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+    });
+
+    const secrets = await loadSecrets({
+      source: "1password",
+      env: baseOpEnv(),
+    });
+
+    expect(secrets.todoistApiToken).toBeUndefined();
+    expect(mockedExecFile).not.toHaveBeenCalledWith(
+      "op",
+      expect.arrayContaining([expect.stringContaining("todoist")]),
+      expect.anything(),
+      expect.any(Function),
+    );
+  });
+
+  it("reads todoistApiToken on the 1Password path when its ref env var is set", async () => {
+    mockOpSuccess({
+      "op://vault/slack-item/token": "xoxb-abc123\n",
+      "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+      "op://vault/todoist-item/token": "todoist-abc123\n",
+    });
+
+    const secrets = await loadSecrets({
+      source: "1password",
+      env: baseOpEnv({
+        MP_OP_TODOIST_TOKEN_REF: "op://vault/todoist-item/token",
+      }),
+    });
+
+    expect(secrets).toEqual({
+      slackBotToken: "xoxb-abc123",
+      anthropicApiKey: "sk-ant-xyz789",
+      todoistApiToken: "todoist-abc123",
+    });
+  });
+
+  it("throws naming todoistApiToken when its ref is set but op read fails", async () => {
+    mockedExecFile.mockImplementation(((
+      _file: string,
+      args: readonly string[],
+      _options: unknown,
+      callback: ExecFileCallback,
+    ) => {
+      const ref = args[1] as string;
+      if (ref === "op://vault/todoist-item/token") {
+        callback(new Error("boom"), "", "boom");
+        return undefined;
+      }
+      const responses: Record<string, string> = {
+        "op://vault/slack-item/token": "xoxb-abc123\n",
+        "op://vault/anthropic-item/key": "sk-ant-xyz789\n",
+      };
+      callback(null, responses[ref] as string, "");
+      return undefined;
+    }) as unknown as typeof execFile);
+
+    await expect(
+      loadSecrets({
+        source: "1password",
+        env: baseOpEnv({
+          MP_OP_TODOIST_TOKEN_REF: "op://vault/todoist-item/token",
+        }),
+      }),
+    ).rejects.toThrow(/todoistApiToken/i);
+  });
+
+  it("omits todoistApiToken on the env fallback path when MP_TODOIST_API_TOKEN is unset", async () => {
+    const secrets = await loadSecrets({
+      source: "env",
+      env: baseEnvFallback(),
+    });
+
+    expect(secrets.todoistApiToken).toBeUndefined();
+  });
+
+  it("reads todoistApiToken on the env fallback path when MP_TODOIST_API_TOKEN is set", async () => {
+    const secrets = await loadSecrets({
+      source: "env",
+      env: baseEnvFallback({ MP_TODOIST_API_TOKEN: "todoist-real-token" }),
+    });
+
+    expect(secrets).toEqual({
+      slackBotToken: "xoxb-real-slack-token",
+      anthropicApiKey: "sk-ant-real-anthropic-key",
+      todoistApiToken: "todoist-real-token",
+    });
+  });
 });

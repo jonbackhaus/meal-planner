@@ -1,5 +1,6 @@
+import { WebClient } from "@slack/web-api";
 import { readCalendarEvents } from "./calendar/calendar-reader.js";
-import { loadConfig } from "./config/config.js";
+import { type Effort, loadConfig, type ModelRate } from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
 import { meteredLlmClient } from "./cost/metered-llm-client.js";
@@ -8,29 +9,54 @@ import { makeHeartbeat } from "./daemon/heartbeat.js";
 import { withTimeout } from "./daemon/with-timeout.js";
 import { getScaffoldVersion } from "./lib/version.js";
 import { createLlmClient } from "./llm/agent-sdk-client.js";
+import type { LlmClient } from "./llm/llm-client.js";
 import { retryLlmClient } from "./llm/retry-llm-client.js";
 import { makeAlert } from "./ops/alerter.js";
 import { appendLog } from "./ops/local-log.js";
 import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
 import { composeDaemon } from "./orchestrator/compose.js";
+import type { AlertFn } from "./orchestrator/generate.js";
 import { resumeQuietly } from "./orchestrator/resume.js";
+import { createRevisionHandler } from "./orchestrator/revision.js";
+import {
+  createRevisionCoordinator,
+  guardOnRevised,
+  type RevisionCoordinator,
+  serializeRevisionHandler,
+} from "./orchestrator/revision-coordinator.js";
+import {
+  createRevisionCostGuard,
+  type RevisionCostCaps,
+} from "./orchestrator/revision-cost-guard.js";
+import { createDebouncedRevisionHandler } from "./orchestrator/revision-debounce.js";
+import {
+  createRevisionPostHandler,
+  type RevisionSlackClient,
+} from "./orchestrator/revision-post.js";
 import { SessionStore } from "./orchestrator/session-store.js";
 import { buildPlan } from "./planner/build-plan.js";
 import type { EnrichedWeekPlan } from "./planner/enrich.js";
 import { seasonForDate } from "./planner/season.js";
 import { resolvePrepUnits } from "./planner/select.js";
+import type { ValidatePlanConfig } from "./planner/validate.js";
 import { TransformersEmbedder } from "./recipe-mcp/embedder.js";
 import { getRecipe } from "./recipe-mcp/get-recipe.js";
 import { readNotes } from "./recipe-mcp/notes-reader.js";
+import type { Recipe } from "./recipe-mcp/schema.js";
 import { searchRecipes } from "./recipe-mcp/search.js";
 import { StructuredStore } from "./recipe-mcp/structured-store.js";
 import type { StaleCount, SyncResult } from "./recipe-mcp/sync.js";
 import { countStale, runSync } from "./recipe-mcp/sync-runner.js";
 import { VectorStore } from "./recipe-mcp/vector-store.js";
 import { loadSecrets, type Secrets } from "./secrets/secrets.js";
+import type { RevisionHandler } from "./slack/inbound-router.js";
 import { renderPlan } from "./slack/render.js";
 import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
+import type { ApprovalHandler } from "./slack/slash-commands.js";
+import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
+import { readRecentRecipeIds } from "./todoist-commit/recency.js";
+import { TodoistClient } from "./todoist-mcp/todoist-client.js";
 import { getTemperatureBand } from "./weather/weather.js";
 
 /**
@@ -122,6 +148,184 @@ function buildSlackPost(
     logger.log(`[Slack post] channel=${profile.channelId} ts=${result.ts}`);
     return result;
   };
+}
+
+/**
+ * Builds the real `ApprovalHandler` (C1, bd meal-planner-iu7.2, SPEC §7 /
+ * ADR-0006): commits `/mealplan-approved`'s resolved plan to Todoist (C2/C3)
+ * and posts a confirmation reply in the session thread. Assembles C0's
+ * `TodoistClient` from `secrets.todoistApiToken` and C5's resolved
+ * `profile.todoist` config -- both already built, reused here as-is.
+ *
+ * Returns `undefined` when `secrets.todoistApiToken` isn't set (Todoist not
+ * yet configured for this profile) -- `runDaemon`'s `approvalHandler` option
+ * already defaults to a no-op in that case (`slash-commands.ts`), so
+ * omitting this wiring is a safe, silent no-op rather than a boot-time
+ * error, mirroring how Socket Mode itself is gated on `secrets.slackAppToken`
+ * above.
+ */
+export function buildApprovalHandler(
+  profile: ProfileSettings,
+  secrets: Secrets,
+  sessionStore: Pick<SessionStore, "get" | "update">,
+  revisionCoordinator?: Pick<RevisionCoordinator, "supersede">,
+): ApprovalHandler | undefined {
+  if (!secrets.todoistApiToken) {
+    return undefined;
+  }
+  return createTodoistApprovalHandler({
+    sessionStore,
+    todoistClient: new TodoistClient({ apiToken: secrets.todoistApiToken }),
+    todoistConfig: profile.todoist,
+    slack: new WebClient(secrets.slackBotToken),
+    channelId: profile.channelId,
+    // B4/D4 (bd meal-planner-3e2.5, ADR 0007 D4): the SAME RevisionCoordinator
+    // instance the revision chain below is built with, so `/mealplan-approved`
+    // always supersedes an in-flight revision on the same week.
+    revisionCoordinator,
+  });
+}
+
+/**
+ * Builds the real recency-read function `buildPlan` consumes (D3, bd
+ * meal-planner-v9v.3, ADR-0006, SPEC §6.3): assembles a `TodoistClient` from
+ * `secrets.todoistApiToken` exactly like {@link buildApprovalHandler} does,
+ * then binds D1's `readRecentRecipeIds` against it, scoped to
+ * `profile.todoist.projectId` when configured.
+ *
+ * Returns `undefined` when `secrets.todoistApiToken` isn't set -- mirroring
+ * `buildApprovalHandler`'s gate -- so a pre-v3.x boot (no Todoist token) never
+ * even attempts a recency read; `buildPlan`'s `getRecentRecipeIds` is optional
+ * for exactly this case. When present, the returned function may still THROW
+ * (an expired token, a network failure, a malformed response) -- that is
+ * intentional: `buildPlan` itself is what catches it and degrades silently
+ * (SPEC §6.3, the load-bearing requirement), not this assembly step.
+ */
+export function buildRecencyReader(
+  profile: ProfileSettings,
+  secrets: Secrets,
+): (() => Promise<string[]>) | undefined {
+  if (!secrets.todoistApiToken) {
+    return undefined;
+  }
+  const client = new TodoistClient({ apiToken: secrets.todoistApiToken });
+  return async () => {
+    const { recipeIds } = await readRecentRecipeIds(client, {
+      ...(profile.todoist.projectId
+        ? { projectId: profile.todoist.projectId }
+        : {}),
+    });
+    return recipeIds;
+  };
+}
+
+/**
+ * uo1 (bd meal-planner-uo1): the composed v3.0 revision-loop deps this module
+ * assembles for {@link buildRevisionSystem}, pre-narrowed to only what the
+ * B1-B5 wrappers actually need -- keeps that function decoupled from the full
+ * `Config` shape.
+ */
+export interface RevisionSystemDeps {
+  sessionStore: Pick<SessionStore, "get" | "update">;
+  coordinator: RevisionCoordinator;
+  /** The revision-effort-capped `LlmClient` (SPEC §9.3) -- the SAME base client B1's mutation call and B2's one-shot repair both use per cycle. */
+  llm: LlmClient;
+  getRecipe: (id: string) => Promise<Recipe | null>;
+  /** The SAME deterministic slot/day/paired-side validation config generation validates against (`../planner/validate.js`). */
+  validateConfig: ValidatePlanConfig;
+  slack: RevisionSlackClient;
+  channelId: string;
+  /** The three nested cost-cap guards (B5, ADR-0007 D5/D6/D7, SPEC §9.3). */
+  caps: RevisionCostCaps;
+  rate: ModelRate;
+  alert: AlertFn;
+  now?: () => Date;
+  logger?: Pick<Console, "log" | "warn" | "error">;
+}
+
+export interface RevisionSystem {
+  /** The fully-composed `RevisionHandler` for the A4 router seam. */
+  revisionHandler: RevisionHandler;
+  /** B5's operator-only pause reset (D6), bound to this run's cost guard instance. */
+  resetPause: (weekKey: string) => void;
+}
+
+/**
+ * Composes the v3.0 revision loop (bd meal-planner-uo1, the coordinator-owned
+ * integration point every B1-B5 wrapper's doc comment explicitly deferred
+ * here): wires the tested, standalone pieces together at the A4 router seam
+ * WITHOUT reimplementing any of their logic.
+ *
+ * Composition order (outermost first), per the wrapper authors' doc comments:
+ *
+ *   `createDebouncedRevisionHandler` (B3)
+ *     ⊃ `serializeRevisionHandler` (B4)
+ *       ⊃ `createRevisionCostGuard.wrapRevisionHandler` (B5)
+ *         ⊃ a per-cycle `createRevisionHandler` (B1) whose `onRevised` is
+ *           `guardOnRevised` (B4) wrapping `createRevisionPostHandler` (B2)
+ *
+ * Debounce is OUTERMOST so a burst of rapid replies coalesces into ONE
+ * downstream call BEFORE it reaches B4's mutex/`under_revision` transition or
+ * B5's turn-cap counting -- exactly the rationale `revision-debounce.ts`'s own
+ * doc comment gives ("per-message dispatch would burn per-thread turn-cap
+ * budget ... and risk two revisions racing the same session row"). Serialize
+ * wraps the cost guard, and the cost guard wraps a per-cycle `buildHandler`
+ * factory (a fresh per-cycle `llm` per B5's `wrapRevisionHandler` contract),
+ * matching `revision-cost-guard.ts`'s own documented recommendation
+ * ("serializeRevisionHandler (B4) ⊃ this guard ⊃ buildHandler ⊃ B1/B2").
+ */
+export function buildRevisionSystem(deps: RevisionSystemDeps): RevisionSystem {
+  const buildHandler = (llm: LlmClient): RevisionHandler =>
+    createRevisionHandler({
+      sessionStore: deps.sessionStore,
+      llm,
+      logger: deps.logger,
+      onRevised: guardOnRevised(
+        createRevisionPostHandler({
+          getRecipe: deps.getRecipe,
+          llm,
+          validateConfig: deps.validateConfig,
+          slack: deps.slack,
+          channelId: deps.channelId,
+          logger: deps.logger,
+        }),
+        {
+          sessionStore: deps.sessionStore,
+          coordinator: deps.coordinator,
+          now: deps.now,
+          logger: deps.logger,
+        },
+      ),
+    });
+
+  const costGuard = createRevisionCostGuard({
+    sessionStore: deps.sessionStore,
+    caps: deps.caps,
+    rate: deps.rate,
+    alert: deps.alert,
+    slack: deps.slack,
+    channelId: deps.channelId,
+    now: deps.now,
+    logger: deps.logger,
+  });
+
+  const costGuardedHandler = costGuard.wrapRevisionHandler(
+    buildHandler,
+    deps.llm,
+  );
+
+  const serializedHandler = serializeRevisionHandler(costGuardedHandler, {
+    sessionStore: deps.sessionStore,
+    coordinator: deps.coordinator,
+    now: deps.now,
+    logger: deps.logger,
+  });
+
+  const revisionHandler = createDebouncedRevisionHandler(serializedHandler, {
+    logger: deps.logger,
+  });
+
+  return { revisionHandler, resetPause: costGuard.resetPause };
 }
 
 /**
@@ -435,6 +639,20 @@ export function makeBuildPlanWithSync(
   };
 }
 
+/**
+ * B5 operator-only pause reset (bd meal-planner-3e2.6/uo1, ADR-0007 D6): set
+ * by `main()` once the v3.0 revision system is composed (see
+ * {@link buildRevisionSystem}). No admin command surface (Slack slash
+ * command, CLI) exists yet to bind this to -- that scope was explicitly left
+ * to this boot-assembly task -- so this module-level export is the minimal
+ * REACHABLE binding: an operator attached to the running process (e.g. a
+ * `node --inspect` REPL, or a future admin command that imports this module)
+ * can call `resetRevisionPause(weekKey)` directly to clear a `paused_cost`
+ * thread. Stays `undefined` until `main()` runs (or when the app token is
+ * absent, so the v3.0 revision loop was never composed).
+ */
+export let resetRevisionPause: ((weekKey: string) => void) | undefined;
+
 export async function main(): Promise<void> {
   console.log(`meal-planner daemon starting (version ${getScaffoldVersion()})`);
 
@@ -559,6 +777,11 @@ export async function main(): Promise<void> {
         readEvents: readCalendarEvents,
         alert,
         getTemperatureBand,
+        // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3): `undefined` until
+        // MP_TODOIST_API_TOKEN is configured (pre-v3.x boot), matching
+        // `approvalHandler`'s own gate -- see `buildRecencyReader`'s doc.
+        getRecentRecipeIds: buildRecencyReader(profile, secrets),
+        getEmbedding: (id: string) => vectorStore.getEmbedding(id),
       },
     });
 
@@ -598,6 +821,68 @@ export async function main(): Promise<void> {
 
   const store = new SessionStore({ path: profile.sqlitePath });
 
+  // B4 (bd meal-planner-3e2.5, ADR 0007 D4): ONE RevisionCoordinator
+  // instance, shared between the composed revision chain below and the
+  // approval handler, so `/mealplan-approved` always supersedes an
+  // in-flight revision on the same week.
+  const revisionCoordinator = createRevisionCoordinator();
+
+  // C1 (bd meal-planner-iu7.2): the real /mealplan-approved commit handler,
+  // wired into the slash-command router below via runDaemon's
+  // approvalHandler option. `undefined` (a safe no-op) until
+  // MP_TODOIST_API_TOKEN is configured.
+  const approvalHandler = buildApprovalHandler(
+    profile,
+    secrets,
+    store,
+    revisionCoordinator,
+  );
+
+  // v3.0 revision loop (bd meal-planner-uo1, composing B1-B5): its own
+  // `createLlmClient` instance, capped to `medium`/`low` effort (SPEC §9.3)
+  // regardless of the generation `config.effort` -- deliberately NOT wrapped
+  // in `meteredLlmClient`/`retryLlmClient`/`generationDollarCap` the way the
+  // generation `llm` above is; B5's cost guard (below) is the revision
+  // loop's own budget enforcement (ADR 0007 D5).
+  const revisionEffort: Effort =
+    config.effort === "high" || config.effort === "xhigh"
+      ? "medium"
+      : config.effort;
+  // Shared across the revision-post reply, the cost guard's "paused for
+  // cost" note, and the inbound router's expired-thread redirect -- all
+  // three post plain thread replies with the same bot token.
+  const revisionSlack = new WebClient(secrets.slackBotToken);
+  const revisionSystem = buildRevisionSystem({
+    sessionStore: store,
+    coordinator: revisionCoordinator,
+    llm: createLlmClient({ ...config, effort: revisionEffort }),
+    getRecipe: getRecipeBound,
+    // Mirrors `rawBuildPlan`'s `selectValidatedPlan` config above -- a
+    // revision never adds/removes meals (see `buildRevisionPrompt`'s RULES),
+    // so the expected slot counts are the SAME static `cookNights` shape
+    // generation's own static/degraded fallback resolves to (ADR-0004 D6).
+    validateConfig: {
+      slots: config.cookNights,
+      maxPairedSides: config.maxPairedSides,
+      quickActiveMax: config.quickActiveMax,
+      calendarEnabled: config.calendar.enabled,
+    },
+    slack: revisionSlack,
+    channelId: profile.channelId,
+    caps: {
+      cycleTokenCap: config.revisionCycleTokenCap,
+      threadTurnCap: config.revisionThreadTurnCap,
+      threadDollarCap: config.revisionThreadDollarCap,
+    },
+    rate: config.modelRates[config.model],
+    alert,
+  });
+  const revisionHandler = revisionSystem.revisionHandler;
+  // B5 operator reset (ADR-0007 D6) -- see `resetRevisionPause`'s own doc
+  // comment above for why this is the minimal reachable binding rather than
+  // a built admin command surface.
+  resetRevisionPause = revisionSystem.resetPause;
+
   const post =
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
@@ -634,6 +919,16 @@ export async function main(): Promise<void> {
     // + the local log (bd meal-planner-bd6.11).
     alert,
     fireOnStart: process.env.MP_FIRE_ON_START === "1",
+    // Lets runDaemon attach the inbound event router (bd meal-planner-4u4.4)
+    // to the Socket Mode connection once it opens, with the composed v3.0
+    // revision chain (bd meal-planner-uo1) wired in above.
+    sessionStore: store,
+    revisionHandler,
+    approvalHandler,
+    // A5 (bd meal-planner-4u4.5): lets the router post the one-time
+    // expired-thread redirect reply for real, using the same Slack client +
+    // channel the revision chain above posts into.
+    redirect: { slack: revisionSlack, channelId: profile.channelId },
   });
 
   await handle.stopped;

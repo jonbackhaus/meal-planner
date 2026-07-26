@@ -26,14 +26,28 @@ describe("ALLOWED_TRANSITIONS", () => {
     expect(ALLOWED_TRANSITIONS.generating).toHaveLength(2);
 
     expect(ALLOWED_TRANSITIONS.suggested).toEqual(
-      expect.arrayContaining(["under_revision", "committed", "expired"]),
+      expect.arrayContaining([
+        "under_revision",
+        "paused_cost",
+        "committed",
+        "expired",
+      ]),
     );
-    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(3);
+    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(4);
 
     expect(ALLOWED_TRANSITIONS.under_revision).toEqual(
-      expect.arrayContaining(["committed", "expired"]),
+      expect.arrayContaining(["paused_cost", "committed", "expired"]),
     );
-    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(2);
+    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(3);
+
+    // v3.0 revision cost-cap pause (ADR-0007 D6, bd meal-planner-3e2.6):
+    // cleared via an explicit operator reset, back to `suggested`; OR via
+    // `/mealplan-approved` straight to `committed` (ADR-0007 D7,
+    // bd meal-planner-iu7.5, C4) -- approval always wins, even paused.
+    expect(ALLOWED_TRANSITIONS.paused_cost).toEqual(
+      expect.arrayContaining(["suggested", "committed"]),
+    );
+    expect(ALLOWED_TRANSITIONS.paused_cost).toHaveLength(2);
 
     // v3.0 soft-commit self-loop.
     expect(ALLOWED_TRANSITIONS.committed).toEqual(["committed"]);
@@ -50,6 +64,7 @@ describe("canTransition", () => {
     expect(canTransition("generating", "failed")).toBe(true);
     expect(canTransition("suggested", "expired")).toBe(true);
     expect(canTransition("committed", "committed")).toBe(true);
+    expect(canTransition("paused_cost", "committed")).toBe(true);
   });
 
   it("returns false for disallowed edges", () => {
