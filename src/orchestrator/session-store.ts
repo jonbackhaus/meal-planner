@@ -25,6 +25,12 @@ export const sessionStatusSchema = z.enum([
   "generating",
   "suggested",
   "under_revision",
+  // v3.0 revision cost-cap guard (ADR-0007 D6, SPEC §9.3, bd meal-planner-3e2.6):
+  // a durable, queryable pause -- not merely a log line -- set when a revision
+  // cycle trips the per-cycle token / per-thread turn / per-thread dollar cap.
+  // Additive: cleared ONLY by an explicit operator reset (never auto-resumed),
+  // see src/cost/revision-cost-guard.ts.
+  "paused_cost",
   "committed",
   "failed",
   "expired",

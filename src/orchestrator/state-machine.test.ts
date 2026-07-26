@@ -26,14 +26,23 @@ describe("ALLOWED_TRANSITIONS", () => {
     expect(ALLOWED_TRANSITIONS.generating).toHaveLength(2);
 
     expect(ALLOWED_TRANSITIONS.suggested).toEqual(
-      expect.arrayContaining(["under_revision", "committed", "expired"]),
+      expect.arrayContaining([
+        "under_revision",
+        "paused_cost",
+        "committed",
+        "expired",
+      ]),
     );
-    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(3);
+    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(4);
 
     expect(ALLOWED_TRANSITIONS.under_revision).toEqual(
-      expect.arrayContaining(["committed", "expired"]),
+      expect.arrayContaining(["paused_cost", "committed", "expired"]),
     );
-    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(2);
+    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(3);
+
+    // v3.0 revision cost-cap pause (ADR-0007 D6, bd meal-planner-3e2.6):
+    // cleared ONLY by an explicit operator reset, back to `suggested`.
+    expect(ALLOWED_TRANSITIONS.paused_cost).toEqual(["suggested"]);
 
     // v3.0 soft-commit self-loop.
     expect(ALLOWED_TRANSITIONS.committed).toEqual(["committed"]);
