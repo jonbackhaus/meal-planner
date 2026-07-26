@@ -590,7 +590,7 @@ rather than skipping the week.
 
 ## 8.2 Enable v3.0 (Socket Mode revision + Todoist commit + recency)  · epics `4u4` / `3e2` / `iu7` / `v9v`
 
-v3.0 (live in-thread revision, `/mp-approved` → commit to Todoist,
+v3.0 (live in-thread revision, `/mp-approve` → commit to Todoist,
 recency/semantic dedup) ships **off by default** — the daemon **gates the whole
 inbound path on the Slack app-level token being present** (`daemon.ts`). With no
 `slackAppToken`, it logs `[socket-mode] slackAppToken not set; skipping Socket
@@ -608,16 +608,16 @@ from §8.1 is untouched).
 **Prerequisite — the Slack app config (one-time, §1/§9.2):** in the app config,
 enable **Socket Mode** → generate an **app-level token** (`xapp-…`, scope
 `connections:write`), add the `channels:history` / `groups:history` + `commands`
-bot scopes, and **register the slash commands** `/mp-approved` (commit)
+bot scopes, and **register the slash commands** `/mp-approve` (commit)
 and `/mp-resume` (clear a cost-pause). Slash commands and thread events
 both arrive over the socket (no public endpoint).
 
 > **Renaming note (bd meal-planner-o0v):** these commands were renamed from
-> `/mealplan-approved` / `/mealplan-resume` to `/mp-approved` / `/mp-resume`.
+> `/mealplan-approved` / `/mealplan-resume` to `/mp-approve` / `/mp-resume`.
 > Slash commands are workspace-wide app config, **not** derived from the code —
 > so an already-installed app keeps serving the OLD names until you **re-register
 > them under the new names in the Slack app config** (Slack API dashboard →
-> *Slash Commands*: delete the two old entries, add `/mp-approved` and
+> *Slash Commands*: delete the two old entries, add `/mp-approve` and
 > `/mp-resume`). The daemon only matches the new strings after this session, so
 > until re-registration the old commands reach the socket but no-op and the new
 > ones aren't recognized by Slack. No token/scope change is needed.
@@ -677,7 +677,7 @@ both arrive over the socket (no public endpoint).
      "swap Tuesday for something lighter") → within the debounce window the
      daemon re-posts a **new** revised-plan message in-thread (append, never an
      edit).
-   - **Commit:** run `/mp-approved` → tasks appear in the Todoist project
+   - **Commit:** run `/mp-approve` → tasks appear in the Todoist project
      (each description carries a `mp:rid=<recipe_id>` marker) and a
      **confirmation** posts as a thread reply.
 

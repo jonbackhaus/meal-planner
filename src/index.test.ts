@@ -828,7 +828,7 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
     await approvalHandler?.onApprove({
       weekKey: "2026-07-12",
       threadTs: "1000.0001",
-      command: { command: "/mp-approved" },
+      command: { command: "/mp-approve" },
     });
 
     await vi.advanceTimersByTimeAsync(30_000);
@@ -992,7 +992,7 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
     await approvalHandler?.onApprove({
       weekKey: "2026-07-12",
       threadTs: "1000.0001",
-      command: { command: "/mp-approved" },
+      command: { command: "/mp-approve" },
     });
 
     expect(supersede).toHaveBeenCalledWith("2026-07-12");

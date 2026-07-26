@@ -56,7 +56,7 @@ function slashCommandPayload(
   overrides: Partial<SlackSlashCommandPayload> = {},
 ): SlackSlashCommandPayload {
   return {
-    command: "/mp-approved",
+    command: "/mp-approve",
     text: "",
     user_id: "U123",
     user_name: "jon",
@@ -181,7 +181,7 @@ describe("attachSlashCommandRouter", () => {
     expect(onApprove).not.toHaveBeenCalled();
   });
 
-  it("ignores a slash command other than /mp-approved (still acks, does not dispatch)", async () => {
+  it("ignores a slash command other than /mp-approve (still acks, does not dispatch)", async () => {
     const client = new FakeSocketModeClient();
     const session = fakeSession({
       week_key: ACTIVE_WEEK,

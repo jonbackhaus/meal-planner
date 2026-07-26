@@ -6,7 +6,7 @@ import {
 } from "../orchestrator/week-key.js";
 
 /**
- * Slash-command transport for `/mp-approved` and `/mp-resume`
+ * Slash-command transport for `/mp-approve` and `/mp-resume`
  * (bd meal-planner-4u4.6/m49, SPEC §7 "Approval commands" / §9.2, ADR-0007
  * D6/D7): attaches a `slash_commands` handler to the A3 Socket Mode seam
  * (`SocketModeConnectionHandle.client`, `../slack/socket-connection.ts`) --
@@ -26,7 +26,7 @@ import {
  *    (still `generating`, not yet posted) -> by definition not an active
  *    thread to approve/resume. Ack + no-op; nothing is dispatched.
  *  - Active week resolves to a real thread -> hand off AS-IS to the injected
- *    `ApprovalHandler` seam (for `/mp-approved`) or the injected
+ *    `ApprovalHandler` seam (for `/mp-approve`) or the injected
  *    `ResetPauseHandler` seam (for `/mp-resume`, bd meal-planner-m49,
  *    ADR-0007 D6's operator-only cost-pause reset). The async work -- the
  *    Todoist commit, the cost-guard reset, and any in-thread confirmation
@@ -79,7 +79,7 @@ export interface ApprovedMealPlanCommand {
 
 /**
  * The commit-handler seam (C1, bd meal-planner-iu7.2) this router hands
- * resolved `/mp-approved` commands off to. Defining this interface
+ * resolved `/mp-approve` commands off to. Defining this interface
  * here -- and NOT implementing it -- is this module's scope boundary:
  * resolving WHICH thread a workspace-wide command applies to is this
  * module's job; the async commit + confirmation post (SPEC §7 "ack
@@ -166,7 +166,7 @@ export function attachSlashCommandRouter(
       await ack();
 
       if (
-        body.command !== "/mp-approved" &&
+        body.command !== "/mp-approve" &&
         body.command !== MEALPLAN_RESUME_COMMAND
       ) {
         // Only these two commands are this router's concern; a differently-
@@ -187,7 +187,7 @@ export function attachSlashCommandRouter(
         return;
       }
 
-      if (body.command === "/mp-approved") {
+      if (body.command === "/mp-approve") {
         await approvalHandler.onApprove({
           weekKey: session.week_key,
           threadTs: session.thread_ts,

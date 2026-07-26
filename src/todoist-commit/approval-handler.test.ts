@@ -143,7 +143,7 @@ function command(
   return {
     weekKey: "2026-W32",
     threadTs: "1000.0001",
-    command: { command: "/mp-approved", user_id: "U123" },
+    command: { command: "/mp-approve", user_id: "U123" },
     ...overrides,
   };
 }

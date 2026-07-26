@@ -5,7 +5,7 @@ import type { SessionStore } from "./session-store.js";
 /**
  * B4 (bd meal-planner-3e2.5, ADR 0007 D4): single-writer serialization on the
  * session row, the `under_revision` transition (ADR 0002), and the supersede
- * signal that lets `/mp-approved` win over an in-flight revision.
+ * signal that lets `/mp-approve` win over an in-flight revision.
  *
  * Two composable pieces, both keyed by `week_key` (== session id):
  *
