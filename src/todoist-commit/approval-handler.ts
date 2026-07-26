@@ -1,4 +1,5 @@
 import type { TodoistCommitConfig } from "../config/profile.js";
+import type { RevisionCoordinator } from "../orchestrator/revision-coordinator.js";
 import type { SessionStore } from "../orchestrator/session-store.js";
 import { EnrichedWeekPlanSchema } from "../planner/enrich.js";
 import { type WeekPlan, WeekPlanSchema } from "../planner/select.js";
@@ -31,6 +32,13 @@ import { applyTodoistCommitResult } from "./persist.js";
  * re-approval of an already-committed plan simply re-creates fresh tasks
  * here (C2's `commitWeekPlanToTodoist` always creates) — an accepted,
  * explicitly-scoped-out soft-commit gap left for C4 to close.
+ *
+ * B4 (bd meal-planner-3e2.5, ADR 0007 D4) ADDITION: `onApprove` fires the
+ * `revisionCoordinator.supersede` signal (optional dep, see
+ * `TodoistApprovalHandlerOptions`) as its very first action, so approval
+ * deterministically wins over any in-flight revision — see
+ * `../orchestrator/revision-coordinator.js` for the serialization +
+ * supersede machinery this pairs with.
  */
 
 /**
@@ -63,6 +71,18 @@ export interface TodoistApprovalHandlerOptions {
   slack: TodoistApprovalSlackClient;
   /** Target Slack channel — the SAME channel the session's thread lives in (`ProfileSettings.channelId`). */
   channelId: string;
+  /**
+   * B4's (bd meal-planner-3e2.5, ADR 0007 D4) supersede signal: when
+   * present, `onApprove` calls `.supersede(command.weekKey)` before doing
+   * any work, so an in-flight revision (`../orchestrator/revision-coordinator.js`'s
+   * `serializeRevisionHandler`/`guardOnRevised`) drops its result instead of
+   * overwriting the plan this handler is about to commit. Optional — and
+   * called unconditionally, even on the no-op early-return paths below — so
+   * approval always wins regardless of whether a revision happens to be in
+   * flight; omitted only for callers/tests that don't wire the v3.0
+   * revision loop at all.
+   */
+  revisionCoordinator?: Pick<RevisionCoordinator, "supersede">;
   /** Injected clock for `SessionStore.update`'s `updated_at`; defaults to `() => new Date()`. */
   now?: () => Date;
   logger?: Pick<Console, "log" | "warn" | "error">;
@@ -120,6 +140,12 @@ export function createTodoistApprovalHandler(
 
   return {
     async onApprove(command: ApprovedMealPlanCommand): Promise<void> {
+      // ADR 0007 D4 — approval supersedes any in-flight revision FIRST,
+      // before any other work (including the no-session/no-plan early
+      // returns below): a revision result that lands after this point must
+      // not overwrite whatever this handler commits.
+      options.revisionCoordinator?.supersede(command.weekKey);
+
       const session = options.sessionStore.get(command.weekKey);
       if (!session) {
         logger.warn(

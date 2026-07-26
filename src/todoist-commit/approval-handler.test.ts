@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TodoistCommitConfig } from "../config/profile.js";
+import type { RevisionCoordinator } from "../orchestrator/revision-coordinator.js";
 import type { Session, SessionStore } from "../orchestrator/session-store.js";
 import type { PrepUnit, SelectedMeal, WeekPlan } from "../planner/select.js";
 import type { Recipe } from "../recipe-mcp/schema.js";
@@ -295,5 +296,51 @@ describe("createTodoistApprovalHandler", () => {
     expect(errorLog).toHaveBeenCalledWith(
       expect.stringContaining("confirmation post failed"),
     );
+  });
+
+  it("supersedes any in-flight revision (bd meal-planner-3e2.5, ADR 0007 D4) as its first action, even before the no-session/no-plan early returns", async () => {
+    const { store } = fakeSessionStore(null);
+    const { client } = fakeTodoistClient();
+    const { slack } = fakeSlack();
+    const supersede = vi.fn();
+    const revisionCoordinator: Pick<RevisionCoordinator, "supersede"> = {
+      supersede,
+    };
+
+    const handler = createTodoistApprovalHandler({
+      sessionStore: store,
+      todoistClient: client,
+      todoistConfig: todoistConfig(),
+      slack,
+      channelId: "C-MEAL-PLAN",
+      revisionCoordinator,
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await handler.onApprove(command({ weekKey: "2026-W32" }));
+
+    expect(supersede).toHaveBeenCalledWith("2026-W32");
+    expect(supersede).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits normally when no revisionCoordinator is injected (optional dep)", async () => {
+    const row = session();
+    const { store, update } = fakeSessionStore(row);
+    const { client, createTask } = fakeTodoistClient();
+    const { slack, postMessage } = fakeSlack();
+
+    const handler = createTodoistApprovalHandler({
+      sessionStore: store,
+      todoistClient: client,
+      todoistConfig: todoistConfig(),
+      slack,
+      channelId: "C-MEAL-PLAN",
+    });
+
+    await expect(handler.onApprove(command())).resolves.toBeUndefined();
+
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledTimes(1);
   });
 });
