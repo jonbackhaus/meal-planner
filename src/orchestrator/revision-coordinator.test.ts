@@ -40,6 +40,7 @@ function session(overrides: Partial<Session> = {}): Session {
     status: "suggested",
     thread_ts: "1000.0001",
     working_plan: { week_key: "2026-07-12", meals: [] },
+    last_posted_plan: { week_key: "2026-07-12", meals: [] },
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,
@@ -369,6 +370,9 @@ describe("guardOnRevised", () => {
     expect(downstream).toHaveBeenCalledWith(result);
     expect(update).toHaveBeenCalledWith("2026-07-12", {
       working_plan: result.revisedPlan,
+      // bd meal-planner-2b2: each successful revision re-post ALSO
+      // checkpoints last_posted_plan -- what `/mp-reset` reverts to.
+      last_posted_plan: result.revisedPlan,
       updated_at: "2026-07-12T09:00:00.000Z",
     });
   });

@@ -2,7 +2,9 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   BASELINE_VERSION,
+  currentVersion,
   type Migration,
+  migrations,
   pendingMigrations,
   runMigrations,
 } from "./migrations.js";
@@ -31,7 +33,10 @@ describe("runMigrations", () => {
     db = new Database(":memory:");
     expect(userVersion(db)).toBe(0);
 
-    runMigrations(db);
+    // Isolated from the shipped list (which now includes a real `session`-
+    // table migration, bd meal-planner-2b2) -- this test targets only the
+    // generic baseline-stamping behavior.
+    runMigrations(db, []);
 
     expect(userVersion(db)).toBe(BASELINE_VERSION);
     expect(userVersion(db)).toBe(1);
@@ -41,7 +46,7 @@ describe("runMigrations", () => {
     db = new Database(":memory:");
     db.pragma("user_version = 5");
 
-    runMigrations(db);
+    runMigrations(db, []);
 
     expect(userVersion(db)).toBe(5);
   });
@@ -103,7 +108,7 @@ describe("runMigrations", () => {
 
   it("rolls back a migration's schema change AND version bump atomically when `run` throws", () => {
     db = new Database(":memory:");
-    runMigrations(db); // baseline -> v1
+    runMigrations(db, []); // baseline -> v1, isolated from the shipped list
     expect(userVersion(db)).toBe(1);
 
     const list: Migration[] = [
@@ -144,10 +149,57 @@ describe("pendingMigrations", () => {
     expect(pendingMigrations(db, list).map((m) => m.to)).toEqual([3, 4]);
   });
 
-  it("is empty for the shipped (v1.0) migration list", () => {
+  it("is empty for the shipped migration list once fully applied", () => {
     db = new Database(":memory:");
-    runMigrations(db); // -> v1 baseline
-    // Default list is empty in v1.0.
+    // The shipped list's to:2 migration expects a `session` table to already
+    // exist (it ALTERs it) -- mirrors SessionStore's real constructor order
+    // (initSchema() creates the table, THEN runMigrations() applies this).
+    db.exec("CREATE TABLE session (week_key TEXT PRIMARY KEY)");
+    runMigrations(db); // -> baseline + every shipped migration
     expect(pendingMigrations(db)).toEqual([]);
+  });
+});
+
+describe("the shipped migrations list (bd meal-planner-2b2)", () => {
+  it("to:2 adds the last_posted_plan column to a baseline `session` table", () => {
+    db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE session (
+        week_key     TEXT PRIMARY KEY,
+        status       TEXT NOT NULL,
+        thread_ts    TEXT,
+        working_plan TEXT,
+        turn_count   INTEGER NOT NULL DEFAULT 0,
+        token_spend  INTEGER NOT NULL DEFAULT 0,
+        cost_usd     REAL    NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+      );
+    `);
+
+    const database = db;
+    runMigrations(database, migrations);
+
+    expect(currentVersion(database)).toBeGreaterThanOrEqual(2);
+    const columns = database
+      .prepare("PRAGMA table_info(session)")
+      .all()
+      .map((c) => (c as { name: string }).name);
+    expect(columns).toContain("last_posted_plan");
+
+    // The new column is usable immediately (nullable, no default needed).
+    expect(() =>
+      database
+        .prepare(
+          "INSERT INTO session (week_key, status, last_posted_plan, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(
+          "2026-07-12",
+          "suggested",
+          null,
+          "2026-07-12T06:00:00.000Z",
+          "2026-07-12T06:00:00.000Z",
+        ),
+    ).not.toThrow();
   });
 });

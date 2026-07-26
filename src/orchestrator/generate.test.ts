@@ -131,6 +131,9 @@ describe("generateForWeek", () => {
     expect(row?.status).toBe("suggested");
     expect(row?.thread_ts).toBe("1699999999.000100");
     expect(row?.working_plan).toEqual(builtPlan);
+    // bd meal-planner-2b2: the initial suggest snapshots last_posted_plan too
+    // -- the FIRST checkpoint `/mp-reset` can ever revert to.
+    expect(row?.last_posted_plan).toEqual(builtPlan);
   });
 
   it("buildPlan throws -> row ends `failed`, alert called, no thread_ts written, error propagates", async () => {
@@ -321,6 +324,7 @@ describe("generateForWeek", () => {
     expect(row?.status).toBe("suggested");
     expect(row?.thread_ts).toBe("1699999999.000100");
     expect(row?.working_plan).toEqual(plan());
+    expect(row?.last_posted_plan).toEqual(plan());
   });
 
   describe("cost tracking (bd meal-planner-fkg.1)", () => {

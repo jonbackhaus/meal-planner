@@ -76,6 +76,7 @@ function session(overrides: Partial<Session> = {}): Session {
     status: "suggested",
     thread_ts: "1000.0001",
     working_plan: enrichedWorkingPlan(),
+    last_posted_plan: enrichedWorkingPlan(),
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,

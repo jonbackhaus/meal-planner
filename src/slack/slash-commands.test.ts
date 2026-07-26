@@ -7,8 +7,10 @@ import {
   type ApprovedMealPlanCommand,
   attachSlashCommandRouter,
   MEALPLAN_REGENERATE_COMMAND,
+  MEALPLAN_RESET_COMMAND,
   MEALPLAN_RESUME_COMMAND,
   type RegenerateMealPlanCommand,
+  type ResetMealPlanCommand,
   type ResumeMealPlanCommand,
   type SlackSlashCommandPayload,
 } from "./slash-commands.js";
@@ -45,6 +47,7 @@ function fakeSession(overrides: Partial<Session> = {}): Session {
     status: "suggested",
     thread_ts: "1000.0001",
     working_plan: null,
+    last_posted_plan: null,
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,
@@ -589,6 +592,189 @@ describe("attachSlashCommandRouter", () => {
       });
 
       await emitSlashCommand(client, regeneratePayload(), ack);
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining("boom"),
+      );
+    });
+  });
+
+  describe("/mp-reset (bd meal-planner-2b2, RATIFIED design)", () => {
+    function resetPayload(
+      overrides: Partial<SlackSlashCommandPayload> = {},
+    ): SlackSlashCommandPayload {
+      return slashCommandPayload({
+        command: MEALPLAN_RESET_COMMAND,
+        ...overrides,
+      });
+    }
+
+    it("acks then resolves an active-week command to the active thread and dispatches it to the resetHandler seam", async () => {
+      const client = new FakeSocketModeClient();
+      const session = fakeSession({
+        week_key: ACTIVE_WEEK,
+        thread_ts: "1000.0001",
+      });
+      const sessionStore = fakeSessionStore((weekKey) =>
+        weekKey === ACTIVE_WEEK ? session : null,
+      );
+      const onReset = vi.fn<(cmd: ResetMealPlanCommand) => void>();
+      const ack = vi.fn(async () => {});
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        resetHandler: { onReset },
+        now: () => NOW,
+        logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      const body = resetPayload();
+      await emitSlashCommand(client, body, ack);
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(onReset).toHaveBeenCalledTimes(1);
+      expect(onReset).toHaveBeenCalledWith({
+        weekKey: ACTIVE_WEEK,
+        threadTs: "1000.0001",
+        command: body,
+      });
+    });
+
+    it("does NOT dispatch a reset when there is no active-week session", async () => {
+      const client = new FakeSocketModeClient();
+      const sessionStore = fakeSessionStore(() => null);
+      const onReset = vi.fn();
+      const ack = vi.fn(async () => {});
+      const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        resetHandler: { onReset },
+        now: () => NOW,
+        logger,
+      });
+
+      await emitSlashCommand(client, resetPayload(), ack);
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(onReset).not.toHaveBeenCalled();
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.stringContaining("no active thread"),
+      );
+    });
+
+    it("does NOT dispatch a reset when the active-week session has no thread_ts yet (still generating)", async () => {
+      const client = new FakeSocketModeClient();
+      const session = fakeSession({
+        week_key: ACTIVE_WEEK,
+        status: "generating",
+        thread_ts: null,
+      });
+      const sessionStore = fakeSessionStore((weekKey) =>
+        weekKey === ACTIVE_WEEK ? session : null,
+      );
+      const onReset = vi.fn();
+      const ack = vi.fn(async () => {});
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        resetHandler: { onReset },
+        now: () => NOW,
+        logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      await emitSlashCommand(client, resetPayload(), ack);
+
+      expect(ack).toHaveBeenCalledTimes(1);
+      expect(onReset).not.toHaveBeenCalled();
+    });
+
+    it("does NOT dispatch the approvalHandler/resetPauseHandler/regenerateHandler for /mp-reset, and vice versa (routed independently)", async () => {
+      const client = new FakeSocketModeClient();
+      const session = fakeSession({
+        week_key: ACTIVE_WEEK,
+        thread_ts: "1000.0001",
+      });
+      const sessionStore = fakeSessionStore((weekKey) =>
+        weekKey === ACTIVE_WEEK ? session : null,
+      );
+      const onApprove = vi.fn();
+      const onResetPause = vi.fn();
+      const onRegenerate = vi.fn();
+      const onReset = vi.fn();
+      const ack = vi.fn(async () => {});
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        approvalHandler: { onApprove },
+        resetPauseHandler: { onResetPause },
+        regenerateHandler: { onRegenerate },
+        resetHandler: { onReset },
+        now: () => NOW,
+        logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      await emitSlashCommand(client, resetPayload(), ack);
+
+      expect(onReset).toHaveBeenCalledTimes(1);
+      expect(onApprove).not.toHaveBeenCalled();
+      expect(onResetPause).not.toHaveBeenCalled();
+      expect(onRegenerate).not.toHaveBeenCalled();
+    });
+
+    it("defaults to a no-op resetHandler when none is injected (never throws)", async () => {
+      const client = new FakeSocketModeClient();
+      const session = fakeSession({
+        week_key: ACTIVE_WEEK,
+        thread_ts: "1000.0001",
+      });
+      const sessionStore = fakeSessionStore((weekKey) =>
+        weekKey === ACTIVE_WEEK ? session : null,
+      );
+      const ack = vi.fn(async () => {});
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        now: () => NOW,
+        logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      await expect(
+        emitSlashCommand(client, resetPayload(), ack),
+      ).resolves.toBeUndefined();
+      expect(ack).toHaveBeenCalledTimes(1);
+    });
+
+    it("still acks and does not throw when the resetHandler itself rejects", async () => {
+      const client = new FakeSocketModeClient();
+      const session = fakeSession({
+        week_key: ACTIVE_WEEK,
+        thread_ts: "1000.0001",
+      });
+      const sessionStore = fakeSessionStore((weekKey) =>
+        weekKey === ACTIVE_WEEK ? session : null,
+      );
+      const onReset = vi.fn(async () => {
+        throw new Error("boom");
+      });
+      const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const ack = vi.fn(async () => {});
+
+      attachSlashCommandRouter(client as unknown as SocketModeClient, {
+        sessionStore,
+        weekKeyConfig: cfg,
+        resetHandler: { onReset },
+        now: () => NOW,
+        logger,
+      });
+
+      await emitSlashCommand(client, resetPayload(), ack);
 
       expect(ack).toHaveBeenCalledTimes(1);
       expect(logger.error).toHaveBeenCalledWith(

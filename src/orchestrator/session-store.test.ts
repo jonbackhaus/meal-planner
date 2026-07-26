@@ -52,16 +52,17 @@ describe("SessionStore", () => {
     }
   });
 
-  it("stamps the baseline schema version (user_version = 1) on a fresh DB via runMigrations in the constructor (bd6.13)", () => {
+  it("stamps the fully-migrated schema version on a fresh DB via runMigrations in the constructor (bd6.13, bd meal-planner-2b2)", () => {
     const path = `${process.env.TMPDIR ?? "/tmp"}/session-store-migrate-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
     const s = new SessionStore({ path });
     s.close();
 
     // Reopen with a raw connection to read the header user_version the
-    // constructor's migration runner stamped.
+    // constructor's migration runner stamped -- baseline (1) PLUS every
+    // shipped migration (currently to:2, `last_posted_plan`).
     const raw = new Database(path);
     try {
-      expect(raw.pragma("user_version", { simple: true })).toBe(1);
+      expect(raw.pragma("user_version", { simple: true })).toBe(2);
     } finally {
       raw.close();
       for (const suffix of ["", "-wal", "-shm"]) {
@@ -86,6 +87,7 @@ describe("SessionStore", () => {
     expect(row?.status).toBe("generating");
     expect(row?.thread_ts).toBeNull();
     expect(row?.working_plan).toBeNull();
+    expect(row?.last_posted_plan).toBeNull();
     expect(row?.turn_count).toBe(0);
     expect(row?.token_spend).toBe(0);
     expect(row?.cost_usd).toBe(0);
@@ -214,6 +216,38 @@ describe("SessionStore", () => {
 
     const row = store.get("2026-07-12");
     expect(row?.working_plan).toEqual(plan);
+  });
+
+  it("insert can seed last_posted_plan; update mutates it independently of working_plan (bd meal-planner-2b2)", () => {
+    store = makeStore();
+    const posted = { weekKey: "2026-07-12", meals: [{ recipeId: "r1" }] };
+    store.insert({
+      week_key: "2026-07-12",
+      status: "suggested",
+      thread_ts: "1000.0001",
+      working_plan: posted,
+      last_posted_plan: posted,
+      created_at: "2026-07-12T06:00:00.000Z",
+      updated_at: "2026-07-12T06:00:00.000Z",
+    });
+
+    let row = store.get("2026-07-12");
+    expect(row?.working_plan).toEqual(posted);
+    expect(row?.last_posted_plan).toEqual(posted);
+
+    // A revision mutates working_plan only -- last_posted_plan is the
+    // checkpoint, untouched until the NEXT successful post.
+    const revised = { weekKey: "2026-07-12", meals: [{ recipeId: "r2" }] };
+    store.update("2026-07-12", { working_plan: revised });
+
+    row = store.get("2026-07-12");
+    expect(row?.working_plan).toEqual(revised);
+    expect(row?.last_posted_plan).toEqual(posted);
+
+    // Reverting: last_posted_plan can be written back onto working_plan.
+    store.update("2026-07-12", { working_plan: row?.last_posted_plan ?? null });
+    row = store.get("2026-07-12");
+    expect(row?.working_plan).toEqual(posted);
   });
 
   it("getByThreadTs finds the session by thread_ts", () => {

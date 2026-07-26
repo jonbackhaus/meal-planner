@@ -194,6 +194,13 @@ export interface OnRevisedGuardDeps {
  *    the row -- the late result must not overwrite what approval committed.
  *  - Not superseded either time -> write `working_plan` back onto the row,
  *    the normal case.
+ *
+ * Also snapshots `last_posted_plan` alongside `working_plan` (bd
+ * meal-planner-2b2, RATIFIED design, `/mp-reset`): this is the "each revision
+ * re-post" checkpoint the ratified design calls for -- `downstream` (B2's
+ * `createRevisionPostHandler`, `./revision-post.ts`) only reaches this point
+ * after `postRevisionReply` has ALREADY succeeded, so a write here is by
+ * definition a successful post.
  */
 export function guardOnRevised(
   downstream: (result: RevisionResult) => Promise<void> | void,
@@ -221,6 +228,7 @@ export function guardOnRevised(
 
     deps.sessionStore.update(result.weekKey, {
       working_plan: result.revisedPlan,
+      last_posted_plan: result.revisedPlan,
       updated_at: now().toISOString(),
     });
   };

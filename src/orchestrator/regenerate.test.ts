@@ -23,6 +23,7 @@ function session(overrides: Partial<Session> = {}): Session {
     status: "suggested",
     thread_ts: "1000.0001",
     working_plan: { week_key: WEEK, meals: [] },
+    last_posted_plan: { week_key: WEEK, meals: [] },
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,
@@ -120,6 +121,9 @@ describe("regenerateWeek", () => {
     const row = store.get(WEEK);
     expect(row?.status).toBe("suggested");
     expect(row?.working_plan).toEqual(plan());
+    // bd meal-planner-2b2: a regenerate's post also checkpoints
+    // last_posted_plan -- what `/mp-reset` would revert to next.
+    expect(row?.last_posted_plan).toEqual(plan());
     expect(row?.updated_at).toBe("2026-07-12T07:00:00.000Z");
     expect(alert).not.toHaveBeenCalled();
   });
