@@ -42,7 +42,7 @@ describe("ALLOWED_TRANSITIONS", () => {
 
     // v3.0 revision cost-cap pause (ADR-0007 D6, bd meal-planner-3e2.6):
     // cleared via an explicit operator reset, back to `suggested`; OR via
-    // `/mealplan-approved` straight to `committed` (ADR-0007 D7,
+    // `/mp-approved` straight to `committed` (ADR-0007 D7,
     // bd meal-planner-iu7.5, C4) -- approval always wins, even paused.
     expect(ALLOWED_TRANSITIONS.paused_cost).toEqual(
       expect.arrayContaining(["suggested", "committed"]),

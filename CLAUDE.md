@@ -114,7 +114,7 @@ Weekly flow: `in-process scheduler (+ startup catch-up)` → `sync recipes via R
 **Phased delivery** (build the machinery early, defer emitting content):
 - **v1.0 (MVP):** recipe sync + ingest extraction → hybrid planner → post an **unordered, slot-typed set** (no day assignment) to `#meal-plan`. Writes nothing anywhere. Full daemon + scheduler + SQLite state machine + idempotency + startup catch-up present; Socket Mode **not** open.
 - **v2.0:** live weather (Open-Meteo) + **calendar** (introduces day assignment) + Todoist recency read → semantic dedup.
-- **v3.0:** Socket Mode listener → in-thread revision + `/mealplan-approved` → commit to Todoist.
+- **v3.0:** Socket Mode listener → in-thread revision + `/mp-approved` → commit to Todoist.
 - **v4.0:** grocery list normalize/aggregate → `#grocery-list` → `/grocerylist-approved` → AnyList.
 
 **Three subsystems:**
