@@ -96,6 +96,39 @@ evidence that consent was required. See the bd memory
 `workflow-land-work-by-default-when-told-to-finish` for the incident this
 encodes.
 
+## Beads Export Hygiene — never discard `.beads/issues.jsonl`
+
+**Dolt is authoritative; `.beads/issues.jsonl` is a passive export.** Reconcile
+*toward* Dolt, never away from it.
+
+**Never run `git checkout -- .beads/issues.jsonl`** to clean the tree. bd's
+export is not sorted by any stable key, so a rewritten row moves its line — a
+real `open → closed` transition and meaningless line movement look identical in
+`git diff`. Discarding the file on that assumption silently reverts real status
+(incident 2026-07-26, bead `meal-planner-p2p`; commits `a25c673` → `31939e6`).
+
+Before trusting or discarding any export diff, diff it **semantically**:
+
+```bash
+node scripts/beads-diff.mjs            # HEAD's committed export vs. live Dolt
+node scripts/beads-diff.mjs --staged   # staged export vs. live Dolt
+node scripts/beads-diff.mjs a.jsonl b.jsonl
+```
+
+It compares by issue id, not by line, and separates benign line movement and
+`updated_at` bumps from real status/priority/label deltas. Exit 1 means a real
+delta. If it reports anything significant, re-export (`bd export -o
+.beads/issues.jsonl`) and commit that — do not revert.
+
+**The commit is kept fresh automatically.** `.beads/hooks/pre-commit` carries a
+repo-owned block (below bd's managed `END BEADS INTEGRATION` marker) that runs
+an explicit `bd export` and re-stages the file when it was already staged, so a
+commit can't capture an export predating the `bd` writes it should record.
+Without it, bd's async exporter (`export.interval`, default 60s) refreshes the
+*working tree* but never stages it, so git commits the stale index and the
+correction shows up afterwards looking like churn. Set `BD_SKIP_EXPORT_REFRESH=1`
+to bypass. **After `bd hooks install` or a bd upgrade, check the block survived.**
+
 ## Project Status
 
 **v1.0 runtime code-complete on `main`.** The full `src/` tree, toolchain (pnpm

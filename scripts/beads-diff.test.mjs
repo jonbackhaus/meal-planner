@@ -49,7 +49,11 @@ describe("semanticDiff", () => {
   it("flags a status transition as significant", () => {
     const d = semanticDiff(
       jsonl(xg6, u86),
-      jsonl(xg6, { ...u86, status: "closed", closed_at: "2026-07-26T13:00:00Z" }),
+      jsonl(xg6, {
+        ...u86,
+        status: "closed",
+        closed_at: "2026-07-26T13:00:00Z",
+      }),
     );
     expect(d.significantCount).toBe(1);
     expect(d.changed[0].id).toBe("meal-planner-8u6");
@@ -72,7 +76,10 @@ describe("semanticDiff", () => {
   });
 
   it("treats a bare updated_at bump as metadata-only, not significant", () => {
-    const d = semanticDiff(jsonl(xg6), jsonl({ ...xg6, updated_at: "2026-07-26T14:00:00Z" }));
+    const d = semanticDiff(
+      jsonl(xg6),
+      jsonl({ ...xg6, updated_at: "2026-07-26T14:00:00Z" }),
+    );
     expect(d.significantCount).toBe(0);
     expect(d.changed[0].metadata).toEqual(["updated_at"]);
   });

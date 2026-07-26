@@ -96,7 +96,9 @@ export function semanticDiff(beforeText, afterText) {
   const after = parseJsonl(afterText);
 
   const added = [...after.issues.keys()].filter((id) => !before.issues.has(id));
-  const removed = [...before.issues.keys()].filter((id) => !after.issues.has(id));
+  const removed = [...before.issues.keys()].filter(
+    (id) => !after.issues.has(id),
+  );
 
   const changed = [];
   for (const [id, afterIssue] of after.issues) {
@@ -105,11 +107,18 @@ export function semanticDiff(beforeText, afterText) {
 
     const significant = [];
     const metadata = [];
-    const fields = new Set([...Object.keys(beforeIssue), ...Object.keys(afterIssue)]);
+    const fields = new Set([
+      ...Object.keys(beforeIssue),
+      ...Object.keys(afterIssue),
+    ]);
     for (const field of fields) {
       if (sameValue(field, beforeIssue[field], afterIssue[field])) continue;
       if (SIGNIFICANT_FIELDS.includes(field)) {
-        significant.push({ field, before: beforeIssue[field] ?? null, after: afterIssue[field] ?? null });
+        significant.push({
+          field,
+          before: beforeIssue[field] ?? null,
+          after: afterIssue[field] ?? null,
+        });
       } else {
         metadata.push(field);
       }
@@ -118,7 +127,9 @@ export function semanticDiff(beforeText, afterText) {
 
     // Report significant fields in a stable, human-meaningful order.
     significant.sort(
-      (a, b) => SIGNIFICANT_FIELDS.indexOf(a.field) - SIGNIFICANT_FIELDS.indexOf(b.field),
+      (a, b) =>
+        SIGNIFICANT_FIELDS.indexOf(a.field) -
+        SIGNIFICANT_FIELDS.indexOf(b.field),
     );
     metadata.sort();
     changed.push({ id, significant, metadata });
@@ -134,7 +145,9 @@ export function semanticDiff(beforeText, afterText) {
   }
 
   const significantCount =
-    added.length + removed.length + changed.filter((c) => c.significant.length > 0).length;
+    added.length +
+    removed.length +
+    changed.filter((c) => c.significant.length > 0).length;
 
   return {
     added,
@@ -150,13 +163,17 @@ export function semanticDiff(beforeText, afterText) {
 export function formatReport(diff) {
   const lines = [];
 
-  for (const id of diff.added) lines.push(`  + ${id}  (present in Dolt, absent from the export)`);
-  for (const id of diff.removed) lines.push(`  - ${id}  (in the export, absent from Dolt)`);
+  for (const id of diff.added)
+    lines.push(`  + ${id}  (present in Dolt, absent from the export)`);
+  for (const id of diff.removed)
+    lines.push(`  - ${id}  (in the export, absent from Dolt)`);
 
   for (const entry of diff.changed) {
     if (entry.significant.length === 0) continue;
     for (const { field, before, after } of entry.significant) {
-      lines.push(`  ~ ${entry.id}  ${field}: ${render(before)} -> ${render(after)}`);
+      lines.push(
+        `  ~ ${entry.id}  ${field}: ${render(before)} -> ${render(after)}`,
+      );
     }
   }
 
@@ -166,7 +183,9 @@ export function formatReport(diff) {
     );
   }
 
-  const metadataOnly = diff.changed.filter((c) => c.significant.length === 0).length;
+  const metadataOnly = diff.changed.filter(
+    (c) => c.significant.length === 0,
+  ).length;
 
   if (diff.significantCount === 0) {
     if (diff.moved === 0 && metadataOnly === 0) {
@@ -196,7 +215,9 @@ function render(value) {
 
 function readGitBlob(ref, path) {
   try {
-    return execFileSync("git", ["show", `${ref}:${path}`], { encoding: "utf8" });
+    return execFileSync("git", ["show", `${ref}:${path}`], {
+      encoding: "utf8",
+    });
   } catch {
     return "";
   }
@@ -205,7 +226,10 @@ function readGitBlob(ref, path) {
 function liveExport() {
   // Explicit export, not the file on disk: the on-disk copy is written by an
   // asynchronous exporter and may lag the database it claims to represent.
-  return execFileSync("bd", ["export"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return execFileSync("bd", ["export"], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
 }
 
 function main(argv) {
@@ -217,7 +241,8 @@ function main(argv) {
   let label;
 
   if (positional.length === 2) {
-    const read = (p) => (p === "-" ? readGitBlob("HEAD", exportPath) : readFileSync(p, "utf8"));
+    const read = (p) =>
+      p === "-" ? readGitBlob("HEAD", exportPath) : readFileSync(p, "utf8");
     before = read(positional[0]);
     after = read(positional[1]);
     label = `${positional[0]} -> ${positional[1]}`;
