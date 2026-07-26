@@ -53,7 +53,10 @@ import type { RevisionHandler } from "./slack/inbound-router.js";
 import { renderPlan } from "./slack/render.js";
 import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
-import type { ApprovalHandler } from "./slack/slash-commands.js";
+import type {
+  ApprovalHandler,
+  ResetPauseHandler,
+} from "./slack/slash-commands.js";
 import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
 import { readRecentRecipeIds } from "./todoist-commit/recency.js";
 import { TodoistClient } from "./todoist-mcp/todoist-client.js";
@@ -184,6 +187,55 @@ export function buildApprovalHandler(
     // always supersedes an in-flight revision on the same week.
     revisionCoordinator,
   });
+}
+
+/**
+ * Builds the real `ResetPauseHandler` (bd meal-planner-m49, ADR-0007 D6/D7):
+ * the operator-only `/mealplan-resume` slash command's seam. Calls the LIVE
+ * revision cost guard's `resetPause` (`../orchestrator/revision-cost-guard.js`,
+ * threaded in from `buildRevisionSystem`'s `resetPause`) for the resolved
+ * active week, then posts a brief in-thread confirmation -- mirrors
+ * `buildApprovalHandler`'s shape, assembled in `main()` once
+ * `buildRevisionSystem`'s `resetPause` exists and injected into `runDaemon`'s
+ * `resetPauseHandler` option.
+ *
+ * `resetPause` itself already no-ops (with a warn log) when the week isn't
+ * currently `paused_cost` (`RevisionCostGuard.resetPause`'s own contract) --
+ * this wrapper only needs a pre-reset status read to choose which of the two
+ * benign confirmation messages to post; it never reimplements the guard's
+ * pause/reset state logic.
+ */
+export function buildResetPauseHandler(
+  resetPause: (weekKey: string) => void,
+  sessionStore: Pick<SessionStore, "get">,
+  slack: RevisionSlackClient,
+  channelId: string,
+  logger: Pick<Console, "error"> = console,
+): ResetPauseHandler {
+  return {
+    async onResetPause(command) {
+      const wasPaused =
+        sessionStore.get(command.weekKey)?.status === "paused_cost";
+
+      resetPause(command.weekKey);
+
+      const text = wasPaused
+        ? "revision resumed -- cost pause cleared"
+        : "nothing to resume -- this thread isn't currently paused for cost";
+      try {
+        await slack.chat.postMessage({
+          channel: channelId,
+          text,
+          mrkdwn: true,
+          thread_ts: command.threadTs,
+        });
+      } catch (err) {
+        logger.error(
+          `[reset-pause-handler] failed to post the resume confirmation for week ${command.weekKey}: ${String(err)}`,
+        );
+      }
+    },
+  };
 }
 
 /**
@@ -883,6 +935,17 @@ export async function main(): Promise<void> {
   // a built admin command surface.
   resetRevisionPause = revisionSystem.resetPause;
 
+  // bd meal-planner-m49 (ADR-0007 D6): the real `/mealplan-resume` operator
+  // command, wired into the slash-command router below via runDaemon's
+  // resetPauseHandler option. Reuses the SAME revisionSlack client + channel
+  // the revision chain posts its own confirmations/notes into.
+  const resetPauseHandler = buildResetPauseHandler(
+    revisionSystem.resetPause,
+    store,
+    revisionSlack,
+    profile.channelId,
+  );
+
   const post =
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
@@ -925,6 +988,7 @@ export async function main(): Promise<void> {
     sessionStore: store,
     revisionHandler,
     approvalHandler,
+    resetPauseHandler,
     // A5 (bd meal-planner-4u4.5): lets the router post the one-time
     // expired-thread redirect reply for real, using the same Slack client +
     // channel the revision chain above posts into.

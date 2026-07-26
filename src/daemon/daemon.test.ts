@@ -601,6 +601,41 @@ describe("runDaemon", () => {
         await handle.shutdown();
       });
 
+      it("forwards the resetPauseHandler dep to attachSlashCommandRouter as-is (bd meal-planner-m49, ADR-0007 D6)", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attachSlash = vi.fn();
+        const resetPauseHandler = { onResetPause: vi.fn() };
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+          resetPauseHandler,
+        });
+
+        expect(attachSlash).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ resetPauseHandler }),
+        );
+
+        await handle.shutdown();
+      });
+
       it("does NOT attach the slash-command router when no sessionStore is supplied", async () => {
         const onStartup = vi.fn(async () => {});
         const onTrigger = vi.fn(async () => {});
