@@ -31,10 +31,22 @@ export interface Migration {
 export const BASELINE_VERSION = 1;
 
 /**
- * Ordered, forward-only migrations. EMPTY in v1.0 (baseline only). Append new
- * entries in ascending `to` order; never edit or reorder a shipped entry.
+ * Ordered, forward-only migrations. EMPTY in v1.0 (baseline only) -- the v2.0
+ * `day` / v3.0 Todoist-id additions both landed as additional keys inside the
+ * existing `working_plan` JSON TEXT blob, so neither needed a real migration
+ * here. `to: 2` (bd meal-planner-2b2, `/mp-reset`) is the FIRST real entry: a
+ * genuine new top-level COLUMN (`last_posted_plan`, `./session-store.ts`),
+ * which the JSON-blob trick can't cover. Append new entries in ascending `to`
+ * order; never edit or reorder a shipped entry.
  */
-export const migrations: readonly Migration[] = [];
+export const migrations: readonly Migration[] = [
+  {
+    to: 2,
+    run(db) {
+      db.exec("ALTER TABLE session ADD COLUMN last_posted_plan TEXT");
+    },
+  },
+];
 
 /** The DB's current schema version (`PRAGMA user_version`). */
 export function currentVersion(db: Database.Database): number {

@@ -6,8 +6,8 @@ import {
 } from "../orchestrator/week-key.js";
 
 /**
- * Slash-command transport for `/mp-approve`, `/mp-resume`, and
- * `/mp-regenerate` (bd meal-planner-4u4.6/m49/8u6, SPEC §7 "Approval
+ * Slash-command transport for `/mp-approve`, `/mp-resume`, `/mp-regenerate`,
+ * and `/mp-reset` (bd meal-planner-4u4.6/m49/8u6/2b2, SPEC §7 "Approval
  * commands" / §9.2, ADR-0007 D2/D4/D6/D7): attaches a `slash_commands`
  * handler to the A3 Socket Mode seam (`SocketModeConnectionHandle.client`,
  * `../slack/socket-connection.ts`) -- kept in its own module, separate from
@@ -29,12 +29,16 @@ import {
  *  - Active week resolves to a real thread -> hand off AS-IS to the injected
  *    `ApprovalHandler` seam (for `/mp-approve`), the injected
  *    `ResetPauseHandler` seam (for `/mp-resume`, bd meal-planner-m49,
- *    ADR-0007 D6's operator-only cost-pause reset), or the injected
+ *    ADR-0007 D6's operator-only cost-pause reset), the injected
  *    `RegenerateHandler` seam (for `/mp-regenerate`, bd meal-planner-8u6, a
- *    full-replace regenerate of the active week's plan). The async work --
- *    the Todoist commit, the cost-guard reset, the full re-selection + new
- *    thread-reply post -- is entirely those seams' concern, not built here.
- *    No command has approver gating (private family workspace = operators).
+ *    full-replace regenerate of the active week's plan), or the injected
+ *    `ResetHandler` seam (for `/mp-reset`, bd meal-planner-2b2, RATIFIED
+ *    design: discard in-flight/pending revision work and revert to the most
+ *    recent successfully-posted plan). The async work -- the Todoist commit,
+ *    the cost-guard reset, the full re-selection + new thread-reply post, the
+ *    supersede + plan revert -- is entirely those seams' concern, not built
+ *    here. No command has approver gating (private family workspace =
+ *    operators).
  */
 
 /**
@@ -170,6 +174,44 @@ const noopRegenerateHandler: RegenerateHandler = {
   onRegenerate: () => {},
 };
 
+/**
+ * The `/mp-reset` slash command (bd meal-planner-2b2, RATIFIED design): an
+ * operator action that discards any in-flight/pending revision work and
+ * reverts the active week's plan back to the MOST RECENT successfully-posted
+ * plan. A shared constant so the handler and any docs/tests reference the
+ * same string.
+ */
+export const MEALPLAN_RESET_COMMAND = "/mp-reset";
+
+/** What gets handed to the reset seam once the command is resolved to the active week's thread. */
+export interface ResetMealPlanCommand {
+  /** The active week's key (== the matched session row's `week_key`). */
+  weekKey: string;
+  /** The active week's thread parent ts (== the matched session row's `thread_ts`). */
+  threadTs: string;
+  /** The raw slash command payload, forwarded as-is. */
+  command: SlackSlashCommandPayload;
+}
+
+/**
+ * The reset seam (bd meal-planner-2b2) this router hands resolved
+ * `/mp-reset` commands off to. Defining this interface here -- and NOT
+ * implementing it -- matches `ApprovalHandler`'s/`ResetPauseHandler`'s/
+ * `RegenerateHandler`'s scope boundary: resolving WHICH thread a
+ * workspace-wide command applies to is this module's job; superseding any
+ * in-flight revision, reverting `working_plan` to `last_posted_plan`, and
+ * posting the in-thread confirmation are entirely this seam's concern
+ * (`../orchestrator/reset.js`).
+ */
+export interface ResetHandler {
+  onReset(command: ResetMealPlanCommand): Promise<void> | void;
+}
+
+/** Default seam implementation: does nothing. Lets this module (and its tests) work standalone, with no dependency on the real reset wiring landing first. */
+const noopResetHandler: ResetHandler = {
+  onReset: () => {},
+};
+
 export interface SlashCommandRouterOptions {
   /** Only the read path this router needs -- keeps this module decoupled from the full `SessionStore` surface. */
   sessionStore: Pick<SessionStore, "get">;
@@ -181,6 +223,8 @@ export interface SlashCommandRouterOptions {
   resetPauseHandler?: ResetPauseHandler;
   /** Injected; defaults to `noopRegenerateHandler` (bd meal-planner-8u6 supplies the real one later). */
   regenerateHandler?: RegenerateHandler;
+  /** Injected; defaults to `noopResetHandler` (bd meal-planner-2b2 supplies the real one later). */
+  resetHandler?: ResetHandler;
   /** Injected clock, called fresh per inbound command. Defaults to `() => new Date()`. */
   now?: () => Date;
   logger?: Pick<Console, "log" | "warn" | "error">;
@@ -200,6 +244,7 @@ export function attachSlashCommandRouter(
   const approvalHandler = options.approvalHandler ?? noopApprovalHandler;
   const resetPauseHandler = options.resetPauseHandler ?? noopResetPauseHandler;
   const regenerateHandler = options.regenerateHandler ?? noopRegenerateHandler;
+  const resetHandler = options.resetHandler ?? noopResetHandler;
 
   client.on("slash_commands", async ({ body, ack }: SlashCommandEnvelope) => {
     try {
@@ -211,9 +256,10 @@ export function attachSlashCommandRouter(
       if (
         body.command !== "/mp-approve" &&
         body.command !== MEALPLAN_RESUME_COMMAND &&
-        body.command !== MEALPLAN_REGENERATE_COMMAND
+        body.command !== MEALPLAN_REGENERATE_COMMAND &&
+        body.command !== MEALPLAN_RESET_COMMAND
       ) {
-        // Only these three commands are this router's concern; a
+        // Only these four commands are this router's concern; a
         // differently-named slash command (e.g. v4.0's
         // /grocerylist-approved) is out of scope here.
         return;
@@ -240,6 +286,12 @@ export function attachSlashCommandRouter(
         });
       } else if (body.command === MEALPLAN_REGENERATE_COMMAND) {
         await regenerateHandler.onRegenerate({
+          weekKey: session.week_key,
+          threadTs: session.thread_ts,
+          command: body,
+        });
+      } else if (body.command === MEALPLAN_RESET_COMMAND) {
+        await resetHandler.onReset({
           weekKey: session.week_key,
           threadTs: session.thread_ts,
           command: body,

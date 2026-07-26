@@ -174,7 +174,15 @@ export async function regenerateWeek(
       deps.sessionStore,
       weekKey,
       "suggested",
-      { working_plan: plan, ...accumulatedSpendPatch(before, deps.meter) },
+      {
+        working_plan: plan,
+        // bd meal-planner-2b2 (RATIFIED design, `/mp-reset`): a regenerate's
+        // post is one of the three successful-post checkpoints last_posted_plan
+        // snapshots onto -- alongside the initial suggest and each revision
+        // re-post.
+        last_posted_plan: plan,
+        ...accumulatedSpendPatch(before, deps.meter),
+      },
       now().toISOString(),
     );
 

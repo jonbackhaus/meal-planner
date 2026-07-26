@@ -673,6 +673,7 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
       status: "suggested",
       thread_ts: "1000.0001",
       working_plan: weekPlan(),
+      last_posted_plan: weekPlan(),
       turn_count: 0,
       token_spend: 0,
       cost_usd: 0,

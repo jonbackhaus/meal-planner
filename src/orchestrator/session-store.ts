@@ -51,6 +51,18 @@ export interface Session {
   status: SessionStatus;
   thread_ts: string | null;
   working_plan: WorkingPlan | null;
+  /**
+   * bd meal-planner-2b2 (RATIFIED design, `/mp-reset`): a checkpoint of the
+   * MOST RECENT successfully-posted plan -- distinct from `working_plan`
+   * (which a revision/regenerate mutates/replaces in place). Snapshotted
+   * alongside `working_plan` on every successful post: the initial suggest
+   * (`./generate.ts`), each revision re-post (`./revision-coordinator.ts`'s
+   * `guardOnRevised`), and `/mp-regenerate`'s post (`./regenerate.ts`). Never
+   * written anywhere else -- `/mp-reset` (`./reset.ts`) is the only reader,
+   * reverting `working_plan` back to this value to discard in-flight/pending
+   * revision work while keeping already-accepted revisions.
+   */
+  last_posted_plan: WorkingPlan | null;
   turn_count: number;
   token_spend: number;
   cost_usd: number;
@@ -65,6 +77,7 @@ export interface InsertSessionRow {
   updated_at: string;
   thread_ts?: string | null;
   working_plan?: WorkingPlan | null;
+  last_posted_plan?: WorkingPlan | null;
   turn_count?: number;
   token_spend?: number;
   cost_usd?: number;
@@ -76,6 +89,7 @@ export type SessionPatch = Partial<
     | "status"
     | "thread_ts"
     | "working_plan"
+    | "last_posted_plan"
     | "turn_count"
     | "token_spend"
     | "cost_usd"
@@ -93,6 +107,7 @@ interface SessionRow {
   status: string;
   thread_ts: string | null;
   working_plan: string | null;
+  last_posted_plan: string | null;
   turn_count: number;
   token_spend: number;
   cost_usd: number;
@@ -107,6 +122,8 @@ function rowToSession(row: SessionRow): Session {
     thread_ts: row.thread_ts,
     working_plan:
       row.working_plan === null ? null : JSON.parse(row.working_plan),
+    last_posted_plan:
+      row.last_posted_plan === null ? null : JSON.parse(row.last_posted_plan),
     turn_count: row.turn_count,
     token_spend: row.token_spend,
     cost_usd: row.cost_usd,
@@ -130,9 +147,10 @@ export class SessionStore {
     this.initSchema();
     // Baseline create (initSchema above) -> stamp v1 -> apply any pending
     // forward-only migrations (bd6.13). Runs BEFORE any state-machine access.
-    // The v1.0 migration list is empty, so this only stamps the baseline
-    // `user_version`. Destructive migrations (v2.0+) are additionally gated by
-    // a mandatory pre-migration backup taken at boot (see boot-backup.ts).
+    // `to:2` (bd meal-planner-2b2, `last_posted_plan`) is the first real
+    // entry in the shipped list (see ./migrations.ts) -- it and any future
+    // migration are additionally gated by a mandatory pre-migration backup
+    // taken at boot (see boot-backup.ts).
     runMigrations(this.db);
   }
 
@@ -165,18 +183,23 @@ export class SessionStore {
       row.working_plan === undefined || row.working_plan === null
         ? null
         : JSON.stringify(row.working_plan);
+    const lastPostedPlan =
+      row.last_posted_plan === undefined || row.last_posted_plan === null
+        ? null
+        : JSON.stringify(row.last_posted_plan);
 
     this.db
       .prepare(
         `INSERT INTO session
-          (week_key, status, thread_ts, working_plan, turn_count, token_spend, cost_usd, created_at, updated_at)
-         VALUES (@week_key, @status, @thread_ts, @working_plan, @turn_count, @token_spend, @cost_usd, @created_at, @updated_at)`,
+          (week_key, status, thread_ts, working_plan, last_posted_plan, turn_count, token_spend, cost_usd, created_at, updated_at)
+         VALUES (@week_key, @status, @thread_ts, @working_plan, @last_posted_plan, @turn_count, @token_spend, @cost_usd, @created_at, @updated_at)`,
       )
       .run({
         week_key: row.week_key,
         status: row.status,
         thread_ts: row.thread_ts ?? null,
         working_plan: workingPlan,
+        last_posted_plan: lastPostedPlan,
         turn_count: row.turn_count ?? 0,
         token_spend: row.token_spend ?? 0,
         cost_usd: row.cost_usd ?? 0,
@@ -226,6 +249,13 @@ export class SessionStore {
       fields.push("working_plan = @working_plan");
       params.working_plan =
         patch.working_plan === null ? null : JSON.stringify(patch.working_plan);
+    }
+    if (patch.last_posted_plan !== undefined) {
+      fields.push("last_posted_plan = @last_posted_plan");
+      params.last_posted_plan =
+        patch.last_posted_plan === null
+          ? null
+          : JSON.stringify(patch.last_posted_plan);
     }
     if (patch.turn_count !== undefined) {
       fields.push("turn_count = @turn_count");

@@ -202,7 +202,14 @@ export async function generateForWeek(
       deps.store,
       week_key,
       "suggested",
-      { thread_ts: ts, working_plan: plan, ...spendPatch(deps.meter) },
+      {
+        thread_ts: ts,
+        working_plan: plan,
+        // bd meal-planner-2b2: the initial suggest is the FIRST successful-
+        // post checkpoint `/mp-reset` can ever revert to.
+        last_posted_plan: plan,
+        ...spendPatch(deps.meter),
+      },
       deps.now(),
     );
   } catch (e) {
@@ -253,7 +260,12 @@ export async function generateForWeek(
             deps.store,
             week_key,
             "suggested",
-            { thread_ts: ts, working_plan: plan, ...spendPatch(deps.meter) },
+            {
+              thread_ts: ts,
+              working_plan: plan,
+              last_posted_plan: plan,
+              ...spendPatch(deps.meter),
+            },
             deps.now(),
           );
           succeeded = true;

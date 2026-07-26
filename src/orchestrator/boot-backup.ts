@@ -17,12 +17,14 @@ import { pendingMigrations } from "./migrations.js";
  *     constructor migrates, so a destructive migration never runs without a
  *     snapshot.
  *
- * v1.0 note: the `migrations` list is empty, so `pendingMigrations` returns
- * nothing and the pre-migration branch is dormant. v1's only "migration" is
- * the non-destructive baseline `user_version` stamp, which transforms no data;
- * the rolling copy above already snapshots the pre-stamp DB. When the first
- * DESTRUCTIVE migration lands (v2.0 `day`), it will register in `migrations`
- * and this pre-migration gate activates automatically.
+ * v1.0 note: the `migrations` list was empty, so `pendingMigrations` returned
+ * nothing and the pre-migration branch stayed dormant -- v1's only
+ * "migration" was the non-destructive baseline `user_version` stamp, which
+ * transforms no data; the rolling copy above already snapshots the pre-stamp
+ * DB. `to:2` (bd meal-planner-2b2, `last_posted_plan`, `./migrations.ts`) is
+ * the first REAL entry, so this gate is now live: any pre-existing DB still
+ * at v1 gets a mandatory pre-migration copy on its next boot, before the
+ * `SessionStore` constructor's `runMigrations` applies the `ALTER TABLE`.
  *
  * On first boot the DB file does not exist yet — nothing to back up — so this
  * is a silent no-op.
