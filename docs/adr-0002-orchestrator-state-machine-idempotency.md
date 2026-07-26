@@ -71,7 +71,7 @@ CREATE INDEX idx_session_thread_ts ON session(thread_ts);
 ## State machine
 
 ```
-                 post + local write ok        first reply (v3.0)      /mealplan-approved (v3.0)
+                 post + local write ok        first reply (v3.0)      /mp-approve (v3.0)
    generating ───────────────────────► suggested ──────────► under_revision ──────────► committed
        │                                    │                     │                         ▲
        │ crash before ts / stale at startup │  next week generates, never committed         │ re-approve
@@ -85,11 +85,13 @@ CREATE INDEX idx_session_thread_ts ON session(thread_ts);
 | `generating` | post returns `ts` + local write commits | `suggested` |
 | `generating` | crash before post, or stale row seen at startup | `failed` |
 | `suggested` | first inbound thread reply (v3.0) | `under_revision` |
-| `suggested` / `under_revision` | `/mealplan-approved` (v3.0) | `committed` |
+| `suggested` / `under_revision` | `/mp-approve` (v3.0) | `committed` |
 | `suggested` / `under_revision` | next week generates; never committed | `expired` |
 | `committed` | re-issued approval (soft-commit) | `committed` (re-commit/overwrite) |
 
 `committed`, `failed`, `expired` are terminal (except `committed`'s soft-commit self-loop).
+
+> **Renaming note (bd meal-planner-o0v):** the approval slash command was named `/mealplan-approved` when this ADR was ratified; it was renamed to `/mp-approve` for consistency with the `/mp-*` command family (see CLAUDE.md, RUNBOOK §8.2). The diagram and table above use the current name.
 
 ---
 
