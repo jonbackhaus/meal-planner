@@ -6,13 +6,13 @@ import {
 } from "../orchestrator/week-key.js";
 
 /**
- * Slash-command transport for `/mp-approve` and `/mp-resume`
- * (bd meal-planner-4u4.6/m49, SPEC §7 "Approval commands" / §9.2, ADR-0007
- * D6/D7): attaches a `slash_commands` handler to the A3 Socket Mode seam
- * (`SocketModeConnectionHandle.client`, `../slack/socket-connection.ts`) --
- * kept in its own module, separate from `../slack/inbound-router.ts`
- * (thread-reply routing, bd meal-planner-4u4.4), since the two are
- * independent event types on the same socket.
+ * Slash-command transport for `/mp-approve`, `/mp-resume`, and
+ * `/mp-regenerate` (bd meal-planner-4u4.6/m49/8u6, SPEC §7 "Approval
+ * commands" / §9.2, ADR-0007 D2/D4/D6/D7): attaches a `slash_commands`
+ * handler to the A3 Socket Mode seam (`SocketModeConnectionHandle.client`,
+ * `../slack/socket-connection.ts`) -- kept in its own module, separate from
+ * `../slack/inbound-router.ts` (thread-reply routing, bd meal-planner-4u4.4),
+ * since the two are independent event types on the same socket.
  *
  * TRANSPORT ONLY, per SPEC §7:
  *  - **Ack within 3s, unconditionally and up front** -- same Slack
@@ -24,14 +24,17 @@ import {
  *    a stored flag.
  *  - No active-week session, or an active-week row with no `thread_ts` yet
  *    (still `generating`, not yet posted) -> by definition not an active
- *    thread to approve/resume. Ack + no-op; nothing is dispatched.
+ *    thread to approve/resume/regenerate. Ack + no-op; nothing is
+ *    dispatched.
  *  - Active week resolves to a real thread -> hand off AS-IS to the injected
- *    `ApprovalHandler` seam (for `/mp-approve`) or the injected
+ *    `ApprovalHandler` seam (for `/mp-approve`), the injected
  *    `ResetPauseHandler` seam (for `/mp-resume`, bd meal-planner-m49,
- *    ADR-0007 D6's operator-only cost-pause reset). The async work -- the
- *    Todoist commit, the cost-guard reset, and any in-thread confirmation
- *    post -- is entirely those seams' concern, not built here. Neither
- *    command has approver gating (private family workspace = operators).
+ *    ADR-0007 D6's operator-only cost-pause reset), or the injected
+ *    `RegenerateHandler` seam (for `/mp-regenerate`, bd meal-planner-8u6, a
+ *    full-replace regenerate of the active week's plan). The async work --
+ *    the Todoist commit, the cost-guard reset, the full re-selection + new
+ *    thread-reply post -- is entirely those seams' concern, not built here.
+ *    No command has approver gating (private family workspace = operators).
  */
 
 /**
@@ -130,6 +133,43 @@ const noopResetPauseHandler: ResetPauseHandler = {
   onResetPause: () => {},
 };
 
+/**
+ * The `/mp-regenerate` slash command (bd meal-planner-8u6, RATIFIED design,
+ * ADR-0007 D2/D4): a full-replace regenerate of the active week's plan. A
+ * shared constant so the handler and any docs/tests reference the same
+ * string.
+ */
+export const MEALPLAN_REGENERATE_COMMAND = "/mp-regenerate";
+
+/** What gets handed to the regenerate seam once the command is resolved to the active week's thread. */
+export interface RegenerateMealPlanCommand {
+  /** The active week's key (== the matched session row's `week_key`). */
+  weekKey: string;
+  /** The active week's thread parent ts (== the matched session row's `thread_ts`). */
+  threadTs: string;
+  /** The raw slash command payload, forwarded as-is. */
+  command: SlackSlashCommandPayload;
+}
+
+/**
+ * The full-replace regenerate seam (bd meal-planner-8u6) this router hands
+ * resolved `/mp-regenerate` commands off to. Defining this interface
+ * here -- and NOT implementing it -- matches `ApprovalHandler`'s/
+ * `ResetPauseHandler`'s scope boundary: resolving WHICH thread a
+ * workspace-wide command applies to is this module's job; the full
+ * re-selection, ADR-0003 D5 validation/repair, and the new thread-reply post
+ * (ADR-0007 D2) are entirely this seam's concern (`../orchestrator/
+ * regenerate.js`).
+ */
+export interface RegenerateHandler {
+  onRegenerate(command: RegenerateMealPlanCommand): Promise<void> | void;
+}
+
+/** Default seam implementation: does nothing. Lets this module (and its tests) work standalone, with no dependency on the real regenerate wiring landing first. */
+const noopRegenerateHandler: RegenerateHandler = {
+  onRegenerate: () => {},
+};
+
 export interface SlashCommandRouterOptions {
   /** Only the read path this router needs -- keeps this module decoupled from the full `SessionStore` surface. */
   sessionStore: Pick<SessionStore, "get">;
@@ -139,6 +179,8 @@ export interface SlashCommandRouterOptions {
   approvalHandler?: ApprovalHandler;
   /** Injected; defaults to `noopResetPauseHandler` (bd meal-planner-m49 supplies the real one later). */
   resetPauseHandler?: ResetPauseHandler;
+  /** Injected; defaults to `noopRegenerateHandler` (bd meal-planner-8u6 supplies the real one later). */
+  regenerateHandler?: RegenerateHandler;
   /** Injected clock, called fresh per inbound command. Defaults to `() => new Date()`. */
   now?: () => Date;
   logger?: Pick<Console, "log" | "warn" | "error">;
@@ -157,6 +199,7 @@ export function attachSlashCommandRouter(
   const now = options.now ?? (() => new Date());
   const approvalHandler = options.approvalHandler ?? noopApprovalHandler;
   const resetPauseHandler = options.resetPauseHandler ?? noopResetPauseHandler;
+  const regenerateHandler = options.regenerateHandler ?? noopRegenerateHandler;
 
   client.on("slash_commands", async ({ body, ack }: SlashCommandEnvelope) => {
     try {
@@ -167,11 +210,12 @@ export function attachSlashCommandRouter(
 
       if (
         body.command !== "/mp-approve" &&
-        body.command !== MEALPLAN_RESUME_COMMAND
+        body.command !== MEALPLAN_RESUME_COMMAND &&
+        body.command !== MEALPLAN_REGENERATE_COMMAND
       ) {
-        // Only these two commands are this router's concern; a differently-
-        // named slash command (e.g. v4.0's /grocerylist-approved) is out of
-        // scope here.
+        // Only these three commands are this router's concern; a
+        // differently-named slash command (e.g. v4.0's
+        // /grocerylist-approved) is out of scope here.
         return;
       }
 
@@ -180,7 +224,8 @@ export function attachSlashCommandRouter(
       if (!session?.thread_ts) {
         // No active-week session, or one that hasn't posted yet (still
         // `generating`) -> by definition not an active thread (SPEC §7: a
-        // stale/absent week cannot be approved/resumed). Benign no-op.
+        // stale/absent week cannot be approved/resumed/regenerated). Benign
+        // no-op.
         logger.log(
           `[slash-commands] ${body.command}: no active thread for week ${activeWeek}; ignoring`,
         );
@@ -189,6 +234,12 @@ export function attachSlashCommandRouter(
 
       if (body.command === "/mp-approve") {
         await approvalHandler.onApprove({
+          weekKey: session.week_key,
+          threadTs: session.thread_ts,
+          command: body,
+        });
+      } else if (body.command === MEALPLAN_REGENERATE_COMMAND) {
+        await regenerateHandler.onRegenerate({
           weekKey: session.week_key,
           threadTs: session.thread_ts,
           command: body,

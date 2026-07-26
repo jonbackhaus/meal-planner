@@ -28,6 +28,14 @@ import type {
  * even on a paused thread, so `../todoist-commit/approval-handler.ts` drives
  * this edge through the normal `transition()` guard below rather than
  * bypassing it.
+ *
+ * `-> "suggested"` self/recovery edges (bd meal-planner-8u6, RATIFIED
+ * design, `/mp-regenerate`): a full-replace regenerate always lands the row
+ * back on `suggested` (re-approval required if it was `committed`), so
+ * `suggested`, `under_revision`, and `committed` all gain a `"suggested"`
+ * outgoing edge here (`../orchestrator/regenerate.ts` is the ONLY caller
+ * that drives them; it itself refuses on `paused_cost` before ever calling
+ * `transition()`, so that edge is deliberately NOT added here).
  */
 
 /**
@@ -37,14 +45,20 @@ import type {
  */
 export const ALLOWED_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   generating: ["suggested", "failed"],
-  suggested: ["under_revision", "paused_cost", "committed", "expired"],
-  under_revision: ["paused_cost", "committed", "expired"],
+  suggested: [
+    "suggested",
+    "under_revision",
+    "paused_cost",
+    "committed",
+    "expired",
+  ],
+  under_revision: ["suggested", "paused_cost", "committed", "expired"],
   // Cleared via an explicit operator reset (ADR-0007 D6) back to
   // `suggested`, the normal resting state, never auto-resumed; OR via
   // `/mp-approve` straight to `committed` (ADR-0007 D7) -- approval
   // always wins, even on a paused thread.
   paused_cost: ["suggested", "committed"],
-  committed: ["committed"],
+  committed: ["committed", "suggested"],
   failed: [],
   expired: [],
 };
