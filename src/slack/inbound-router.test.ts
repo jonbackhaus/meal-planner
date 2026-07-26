@@ -33,8 +33,9 @@ class FakeSocketModeClient extends EventEmitter {}
 
 function fakeSessionStore(
   impl: (threadTs: string) => Session | null,
-): Pick<SessionStore, "getByThreadTs"> {
-  return { getByThreadTs: vi.fn(impl) };
+  getImpl: (weekKey: string) => Session | null = () => null,
+): Pick<SessionStore, "getByThreadTs" | "get"> {
+  return { getByThreadTs: vi.fn(impl), get: vi.fn(getImpl) };
 }
 
 function fakeSession(overrides: Partial<Session> = {}): Session {
@@ -124,6 +125,7 @@ describe("attachEventRouter", () => {
     const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const ack = vi.fn(async () => {});
 
+    // No `redirect` Slack client injected -- falls back to the log-only drop.
     attachEventRouter(client as unknown as SocketModeClient, {
       sessionStore,
       weekKeyConfig: cfg,
@@ -141,7 +143,97 @@ describe("attachEventRouter", () => {
     expect(ack).toHaveBeenCalledTimes(1);
     expect(onReply).not.toHaveBeenCalled();
     expect(logger.log).toHaveBeenCalledWith(
-      expect.stringContaining("meal-planner-4u4.5"),
+      expect.stringContaining("no redirect Slack client injected"),
+    );
+  });
+
+  it("posts a ONE-TIME expired-thread redirect on the first reply to a prior-week thread, linking the active week's thread", async () => {
+    const client = new FakeSocketModeClient();
+    const expiredSession = fakeSession({
+      week_key: PRIOR_WEEK,
+      thread_ts: "900.0001",
+    });
+    const activeSession = fakeSession({
+      week_key: ACTIVE_WEEK,
+      thread_ts: "1000.0001",
+    });
+    const sessionStore = fakeSessionStore(
+      (threadTs) => (threadTs === "900.0001" ? expiredSession : null),
+      (weekKey) => (weekKey === ACTIVE_WEEK ? activeSession : null),
+    );
+    const onReply = vi.fn();
+    const postMessage = vi.fn(async () => ({ ok: true, ts: "900.0003" }));
+    const ack = vi.fn(async () => {});
+
+    attachEventRouter(client as unknown as SocketModeClient, {
+      sessionStore,
+      weekKeyConfig: cfg,
+      revisionHandler: { onReply },
+      redirect: { slack: { chat: { postMessage } }, channelId: "C123" },
+      now: () => NOW,
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await emitMessage(
+      client,
+      threadReplyEvent({ thread_ts: "900.0001", ts: "900.0002" }),
+      ack,
+    );
+
+    expect(onReply).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        thread_ts: "900.0001",
+        mrkdwn: true,
+        text: expect.stringContaining("1000.0001".replace(".", "")),
+      }),
+    );
+
+    // A SECOND reply to the SAME expired thread must NOT redirect again.
+    await emitMessage(
+      client,
+      threadReplyEvent({ thread_ts: "900.0001", ts: "900.0004" }),
+      ack,
+    );
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(onReply).not.toHaveBeenCalled();
+  });
+
+  it("posts a redirect with no link when the active week has no session/thread yet", async () => {
+    const client = new FakeSocketModeClient();
+    const expiredSession = fakeSession({
+      week_key: PRIOR_WEEK,
+      thread_ts: "900.0001",
+    });
+    const sessionStore = fakeSessionStore(
+      (threadTs) => (threadTs === "900.0001" ? expiredSession : null),
+      () => null,
+    );
+    const postMessage = vi.fn(async () => ({ ok: true, ts: "900.0003" }));
+    const ack = vi.fn(async () => {});
+
+    attachEventRouter(client as unknown as SocketModeClient, {
+      sessionStore,
+      weekKeyConfig: cfg,
+      redirect: { slack: { chat: { postMessage } }, channelId: "C123" },
+      now: () => NOW,
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await emitMessage(
+      client,
+      threadReplyEvent({ thread_ts: "900.0001", ts: "900.0002" }),
+      ack,
+    );
+
+    expect(postMessage).toHaveBeenCalledTimes(1);
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thread_ts: "900.0001",
+        text: expect.stringContaining("hasn't posted yet"),
+      }),
     );
   });
 

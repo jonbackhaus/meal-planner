@@ -1,3 +1,4 @@
+import { WebClient } from "@slack/web-api";
 import { readCalendarEvents } from "./calendar/calendar-reader.js";
 import { type Effort, loadConfig } from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
@@ -32,6 +33,9 @@ import { loadSecrets, type Secrets } from "./secrets/secrets.js";
 import { renderPlan } from "./slack/render.js";
 import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
+import type { ApprovalHandler } from "./slack/slash-commands.js";
+import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
+import { TodoistClient } from "./todoist-mcp/todoist-client.js";
 import { getTemperatureBand } from "./weather/weather.js";
 
 /**
@@ -123,6 +127,37 @@ function buildSlackPost(
     logger.log(`[Slack post] channel=${profile.channelId} ts=${result.ts}`);
     return result;
   };
+}
+
+/**
+ * Builds the real `ApprovalHandler` (C1, bd meal-planner-iu7.2, SPEC §7 /
+ * ADR-0006): commits `/mealplan-approved`'s resolved plan to Todoist (C2/C3)
+ * and posts a confirmation reply in the session thread. Assembles C0's
+ * `TodoistClient` from `secrets.todoistApiToken` and C5's resolved
+ * `profile.todoist` config -- both already built, reused here as-is.
+ *
+ * Returns `undefined` when `secrets.todoistApiToken` isn't set (Todoist not
+ * yet configured for this profile) -- `runDaemon`'s `approvalHandler` option
+ * already defaults to a no-op in that case (`slash-commands.ts`), so
+ * omitting this wiring is a safe, silent no-op rather than a boot-time
+ * error, mirroring how Socket Mode itself is gated on `secrets.slackAppToken`
+ * above.
+ */
+function buildApprovalHandler(
+  profile: ProfileSettings,
+  secrets: Secrets,
+  sessionStore: Pick<SessionStore, "get" | "update">,
+): ApprovalHandler | undefined {
+  if (!secrets.todoistApiToken) {
+    return undefined;
+  }
+  return createTodoistApprovalHandler({
+    sessionStore,
+    todoistClient: new TodoistClient({ apiToken: secrets.todoistApiToken }),
+    todoistConfig: profile.todoist,
+    slack: new WebClient(secrets.slackBotToken),
+    channelId: profile.channelId,
+  });
 }
 
 /**
@@ -599,6 +634,12 @@ export async function main(): Promise<void> {
 
   const store = new SessionStore({ path: profile.sqlitePath });
 
+  // C1 (bd meal-planner-iu7.2): the real /mealplan-approved commit handler,
+  // wired into the slash-command router below via runDaemon's
+  // approvalHandler option. `undefined` (a safe no-op) until
+  // MP_TODOIST_API_TOKEN is configured.
+  const approvalHandler = buildApprovalHandler(profile, secrets, store);
+
   // Revision (B1, bd meal-planner-3e2.2, ADR 0007 D1): its own
   // `createLlmClient` instance, capped to `medium`/`low` effort (SPEC §9.3)
   // regardless of the generation `config.effort` -- deliberately NOT wrapped
@@ -655,6 +696,7 @@ export async function main(): Promise<void> {
     // `revisionHandler` (bd meal-planner-3e2.2) wired in above.
     sessionStore: store,
     revisionHandler,
+    approvalHandler,
   });
 
   await handle.stopped;
