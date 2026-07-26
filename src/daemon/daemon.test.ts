@@ -636,6 +636,76 @@ describe("runDaemon", () => {
         await handle.shutdown();
       });
 
+      it("forwards the regenerateHandler dep to attachSlashCommandRouter as-is (bd meal-planner-8u6/cny)", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attachSlash = vi.fn();
+        const regenerateHandler = { onRegenerate: vi.fn() };
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+          regenerateHandler,
+        });
+
+        expect(attachSlash).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ regenerateHandler }),
+        );
+
+        await handle.shutdown();
+      });
+
+      it("forwards the resetHandler dep to attachSlashCommandRouter as-is (bd meal-planner-2b2/cny)", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attachSlash = vi.fn();
+        const resetHandler = { onReset: vi.fn() };
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: vi.fn(),
+          attachSlashCommandRouter: attachSlash,
+          resetHandler,
+        });
+
+        expect(attachSlash).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ resetHandler }),
+        );
+
+        await handle.shutdown();
+      });
+
       it("does NOT attach the slash-command router when no sessionStore is supplied", async () => {
         const onStartup = vi.fn(async () => {});
         const onTrigger = vi.fn(async () => {});

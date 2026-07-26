@@ -8,6 +8,8 @@ import {
 import {
   type ApprovalHandler,
   attachSlashCommandRouter,
+  type RegenerateHandler,
+  type ResetHandler,
   type ResetPauseHandler,
 } from "../slack/slash-commands.js";
 import {
@@ -93,6 +95,10 @@ export interface RunDaemonOptions {
   approvalHandler?: ApprovalHandler;
   /** Forwarded to the slash-command router as-is (bd meal-planner-m49, ADR-0007 D6); defaults to a no-op until the real operator pause-reset handler is wired in `index.ts`. */
   resetPauseHandler?: ResetPauseHandler;
+  /** Forwarded to the slash-command router as-is (bd meal-planner-8u6, wired by cny); defaults to a no-op until the real full-replace regenerate handler is wired in `index.ts`. */
+  regenerateHandler?: RegenerateHandler;
+  /** Forwarded to the slash-command router as-is (bd meal-planner-2b2, wired by cny); defaults to a no-op until the real reset handler is wired in `index.ts`. */
+  resetHandler?: ResetHandler;
   /** Injectable clock for the router (called fresh per inbound reply, not once at attach time); defaults to `() => new Date()`. */
   now?: () => Date;
   /** Injectable router attacher, for tests; defaults to the real `attachEventRouter` (`../slack/inbound-router.js`). */
@@ -188,6 +194,8 @@ export async function runDaemon(
       weekKeyConfig: options.config,
       approvalHandler: options.approvalHandler,
       resetPauseHandler: options.resetPauseHandler,
+      regenerateHandler: options.regenerateHandler,
+      resetHandler: options.resetHandler,
       now: options.now,
       logger,
     });

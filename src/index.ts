@@ -1,6 +1,11 @@
 import { WebClient } from "@slack/web-api";
 import { readCalendarEvents } from "./calendar/calendar-reader.js";
-import { type Effort, loadConfig, type ModelRate } from "./config/config.js";
+import {
+  type Config,
+  type Effort,
+  loadConfig,
+  type ModelRate,
+} from "./config/config.js";
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
 import { meteredLlmClient } from "./cost/metered-llm-client.js";
@@ -15,7 +20,12 @@ import { makeAlert } from "./ops/alerter.js";
 import { appendLog } from "./ops/local-log.js";
 import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
 import { composeDaemon } from "./orchestrator/compose.js";
-import type { AlertFn } from "./orchestrator/generate.js";
+import type { AlertFn, BuildPlanFn } from "./orchestrator/generate.js";
+import {
+  createRegenerateHandler,
+  type RegenerateWeekDeps,
+} from "./orchestrator/regenerate.js";
+import { createResetHandler } from "./orchestrator/reset.js";
 import { resumeQuietly } from "./orchestrator/resume.js";
 import { createRevisionHandler } from "./orchestrator/revision.js";
 import {
@@ -55,6 +65,7 @@ import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
 import type {
   ApprovalHandler,
+  RegenerateHandler,
   ResetPauseHandler,
 } from "./slack/slash-commands.js";
 import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
@@ -234,6 +245,59 @@ export function buildResetPauseHandler(
           `[reset-pause-handler] failed to post the resume confirmation for week ${command.weekKey}: ${String(err)}`,
         );
       }
+    },
+  };
+}
+
+/**
+ * Builds the real `RegenerateHandler` (bd meal-planner-8u6, wired here by
+ * meal-planner-cny): the operator-only `/mp-regenerate` slash command's seam.
+ * `deps` carries everything STATIC (reused across every call, mirroring
+ * `buildApprovalHandler`'s own shared-coordinator wiring):
+ * `sessionStore`/`coordinator` (the SAME `revisionCoordinator` the revision
+ * chain and `/mp-approve` share, so a regenerate always supersedes/serializes
+ * against an in-flight revision on the same week) and `slack`/`channelId`
+ * (the SAME `revisionSlack`/`profile.channelId` every other operator-command
+ * confirmation posts through).
+ *
+ * `makeRawBuildPlan`/`createLlm` build a BRAND-NEW metered `llm` client +
+ * `CostMeter` on EVERY `onRegenerate` call -- the coordinator's ratified
+ * answer to `regenerate.ts`'s own open wiring question ("a per-cycle metered
+ * llm, mirroring `buildRevisionSystem`'s own factory pattern"): `runExclusive`
+ * only serializes per-`weekKey`, so a regenerate of one week can run fully
+ * concurrently with a regenerate of a DIFFERENT week (or with the scheduler's
+ * own weekly-cron generation) -- sharing a single `CostMeter` across those
+ * would let one call's `reset()`/`record()` corrupt another's still-in-flight
+ * totals. A fresh instance per call makes that impossible, at the cost of one
+ * extra `CostMeter`/`LlmClient` allocation per `/mp-regenerate` invocation
+ * (rare, operator-triggered — cheap to afford).
+ */
+export function buildRegenerateHandler(
+  config: Config,
+  deps: Pick<
+    RegenerateWeekDeps,
+    "sessionStore" | "coordinator" | "slack" | "channelId" | "alert"
+  >,
+  makeRawBuildPlan: (llm: LlmClient) => BuildPlanFn,
+  createLlm: (cfg: Config) => LlmClient = createLlmClient,
+): RegenerateHandler {
+  return {
+    onRegenerate(command) {
+      const meter = new CostMeter(
+        config.modelRates[config.model],
+        config.model,
+      );
+      const llm = retryLlmClient(
+        meteredLlmClient(createLlm(config), meter, {
+          capUsd: config.generationDollarCap,
+        }),
+        { maxRetries: config.llmCallMaxRetries },
+      );
+      return createRegenerateHandler({
+        ...deps,
+        buildPlan: makeRawBuildPlan(llm),
+        meter,
+      }).onRegenerate(command);
     },
   };
 }
@@ -791,51 +855,59 @@ export async function main(): Promise<void> {
   // empty/unset falls back to notes-reader's DEFAULT_RECIPES_FOLDER.
   const recipesFolder = process.env.MP_RECIPES_FOLDER || undefined;
 
-  const rawBuildPlan = (weekKey: string) =>
-    buildPlan({
-      weekKey,
-      cfg: {
-        cookNights: config.cookNights,
-        activeMaxMinutes: config.activeMaxMinutes,
-        fanoutMultiplier: config.fanoutMultiplier,
-        vegFloorK: config.vegFloorK,
-        untestedRate: config.untestedRate,
-        // Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8).
-        maxPairedSides: config.maxPairedSides,
-        // v1.0 tag-based seasonality (bd meal-planner-8zs.9): derive the
-        // current season from the wall clock in the configured zone. Read once
-        // per real generation (buildPlanFor only runs past the idempotency
-        // gate). main() is the clock-owning composition root — cf. nowDate
-        // below. Flows to both the hard search filter and the soft prompt bias.
-        season: seasonForDate(new Date(), config.timezone),
-        // ADR-0004 D4/D6: fed to getWeekNightSchedule to derive slots from the
-        // week's NightSchedule (degrades to the static cookNights count when
-        // calendar.enabled is false or the live read fails).
-        timezone: config.timezone,
-        calendar: config.calendar,
-        // ADR-0005 D3 (bd meal-planner-kro): threaded into
-        // selectValidatedPlan's ValidatePlanConfig.quickActiveMax so the
-        // QUICK-night capacity-fit day rule actually fires in production.
-        quickActiveMax: config.quickActiveMax,
-        // ADR-0003 A1 (bd bgb): household coords for the Open-Meteo
-        // temperature_band fetch; unset lat/lon = weather skipped entirely.
-        weather: config.weather,
-      },
-      household,
-      deps: {
-        search,
-        llm,
-        getRecipe: getRecipeBound,
-        readEvents: readCalendarEvents,
-        alert,
-        getTemperatureBand,
-        // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3): `undefined` until
-        // MP_TODOIST_API_TOKEN is configured (pre-v3.x boot), matching
-        // `approvalHandler`'s own gate -- see `buildRecencyReader`'s doc.
-        getRecentRecipeIds: buildRecencyReader(profile, secrets),
-        getEmbedding: (id: string) => vectorStore.getEmbedding(id),
-      },
-    });
+  // Factored out of a plain `rawBuildPlan` const (bd meal-planner-cny) so
+  // `/mp-regenerate` (below) can build the SAME cfg/household/deps pipeline
+  // with its own fresh per-cycle `llm` instead of this module's shared one --
+  // the only thing that ever varies between the two callers.
+  const makeRawBuildPlan =
+    (llmClient: LlmClient) =>
+    (weekKey: string): Promise<EnrichedWeekPlan> =>
+      buildPlan({
+        weekKey,
+        cfg: {
+          cookNights: config.cookNights,
+          activeMaxMinutes: config.activeMaxMinutes,
+          fanoutMultiplier: config.fanoutMultiplier,
+          vegFloorK: config.vegFloorK,
+          untestedRate: config.untestedRate,
+          // Hard ceiling on paired side dishes per week (bd meal-planner-8zs.8).
+          maxPairedSides: config.maxPairedSides,
+          // v1.0 tag-based seasonality (bd meal-planner-8zs.9): derive the
+          // current season from the wall clock in the configured zone. Read once
+          // per real generation (buildPlanFor only runs past the idempotency
+          // gate). main() is the clock-owning composition root — cf. nowDate
+          // below. Flows to both the hard search filter and the soft prompt bias.
+          season: seasonForDate(new Date(), config.timezone),
+          // ADR-0004 D4/D6: fed to getWeekNightSchedule to derive slots from the
+          // week's NightSchedule (degrades to the static cookNights count when
+          // calendar.enabled is false or the live read fails).
+          timezone: config.timezone,
+          calendar: config.calendar,
+          // ADR-0005 D3 (bd meal-planner-kro): threaded into
+          // selectValidatedPlan's ValidatePlanConfig.quickActiveMax so the
+          // QUICK-night capacity-fit day rule actually fires in production.
+          quickActiveMax: config.quickActiveMax,
+          // ADR-0003 A1 (bd bgb): household coords for the Open-Meteo
+          // temperature_band fetch; unset lat/lon = weather skipped entirely.
+          weather: config.weather,
+        },
+        household,
+        deps: {
+          search,
+          llm: llmClient,
+          getRecipe: getRecipeBound,
+          readEvents: readCalendarEvents,
+          alert,
+          getTemperatureBand,
+          // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3): `undefined` until
+          // MP_TODOIST_API_TOKEN is configured (pre-v3.x boot), matching
+          // `approvalHandler`'s own gate -- see `buildRecencyReader`'s doc.
+          getRecentRecipeIds: buildRecencyReader(profile, secrets),
+          getEmbedding: (id: string) => vectorStore.getEmbedding(id),
+        },
+      });
+
+  const rawBuildPlan = makeRawBuildPlan(llm);
 
   // Sync recipes from Apple Notes BEFORE selecting (SPEC weekly flow; bd
   // meal-planner-q95.8). Runs once per real generation (buildPlanFor is only
@@ -946,6 +1018,39 @@ export async function main(): Promise<void> {
     profile.channelId,
   );
 
+  // bd meal-planner-8u6/cny: the real `/mp-regenerate` operator command,
+  // wired into the slash-command router below via runDaemon's
+  // regenerateHandler option. Reuses the SAME revisionCoordinator/
+  // revisionSlack/profile.channelId every other operator command shares;
+  // `makeRawBuildPlan` is bound to a FRESH per-call `llm`/`CostMeter` inside
+  // buildRegenerateHandler itself (see its own doc comment for the
+  // cross-run-contamination rationale), never this module's shared `llm`/
+  // `meter`.
+  const regenerateHandler = buildRegenerateHandler(
+    config,
+    {
+      sessionStore: store,
+      coordinator: revisionCoordinator,
+      slack: revisionSlack,
+      channelId: profile.channelId,
+      alert,
+    },
+    makeRawBuildPlan,
+  );
+
+  // bd meal-planner-2b2/cny: the real `/mp-reset` operator command, wired
+  // into the slash-command router below via runDaemon's resetHandler option.
+  // No buildPlan/meter of its own (ResetWeekDeps has none -- resetWeek never
+  // calls the LLM, see reset.ts's own doc comment); reuses the SAME
+  // revisionCoordinator/revisionSlack/profile.channelId as every other
+  // operator command.
+  const resetHandler = createResetHandler({
+    sessionStore: store,
+    coordinator: revisionCoordinator,
+    slack: revisionSlack,
+    channelId: profile.channelId,
+  });
+
   const post =
     profile.postMode === "post"
       ? buildSlackPost(profile, secrets)
@@ -989,6 +1094,8 @@ export async function main(): Promise<void> {
     revisionHandler,
     approvalHandler,
     resetPauseHandler,
+    regenerateHandler,
+    resetHandler,
     // A5 (bd meal-planner-4u4.5): lets the router post the one-time
     // expired-thread redirect reply for real, using the same Slack client +
     // channel the revision chain above posts into.
