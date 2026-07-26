@@ -23,11 +23,11 @@ import type {
  * addition, additive to the table below: `suggested`/`under_revision` ->
  * `paused_cost` on a revision cost-cap breach (src/cost/revision-cost-guard.ts),
  * and `paused_cost` -> `suggested` ONLY via that module's explicit operator
- * reset (never auto-resumed). Approval (`/mealplan-approved`, D7) is
- * deliberately NOT gated by `status` at all in `../todoist-commit/
- * approval-handler.ts` — it commits whatever `working_plan` the row carries
- * regardless of status, so a paused thread stays approvable with no edge
- * needed here for that path.
+ * reset (never auto-resumed). `paused_cost` -> `committed` (ADR-0007 D7,
+ * bd meal-planner-iu7.5, C4) is the one exception: approval always wins,
+ * even on a paused thread, so `../todoist-commit/approval-handler.ts` drives
+ * this edge through the normal `transition()` guard below rather than
+ * bypassing it.
  */
 
 /**
@@ -39,9 +39,11 @@ export const ALLOWED_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   generating: ["suggested", "failed"],
   suggested: ["under_revision", "paused_cost", "committed", "expired"],
   under_revision: ["paused_cost", "committed", "expired"],
-  // Cleared ONLY by an explicit operator reset (ADR-0007 D6) -- back to
-  // `suggested`, the normal resting state, never auto-resumed.
-  paused_cost: ["suggested"],
+  // Cleared via an explicit operator reset (ADR-0007 D6) back to
+  // `suggested`, the normal resting state, never auto-resumed; OR via
+  // `/mealplan-approved` straight to `committed` (ADR-0007 D7) -- approval
+  // always wins, even on a paused thread.
+  paused_cost: ["suggested", "committed"],
   committed: ["committed"],
   failed: [],
   expired: [],

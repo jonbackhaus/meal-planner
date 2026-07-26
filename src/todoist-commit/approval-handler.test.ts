@@ -10,7 +10,7 @@ import {
   resolveWorkingPlanForCommit,
   type TodoistApprovalSlackClient,
 } from "./approval-handler.js";
-import type { TodoistTaskCreator } from "./commit.js";
+import type { TodoistTaskCreatorUpdater } from "./recommit.js";
 
 /**
  * `approval-handler.ts` tests (bd meal-planner-iu7.2, ADR-0006, SPEC §7). No
@@ -96,8 +96,9 @@ function fakeSessionStore(row: Session | null): {
 }
 
 function fakeTodoistClient(): {
-  client: TodoistTaskCreator;
+  client: TodoistTaskCreatorUpdater;
   createTask: ReturnType<typeof vi.fn>;
+  updateTask: ReturnType<typeof vi.fn>;
 } {
   let nextId = 0;
   const createTask = vi.fn(
@@ -113,7 +114,19 @@ function fakeTodoistClient(): {
       };
     },
   );
-  return { client: { createTask }, createTask };
+  const updateTask = vi.fn(
+    async (input: { task_id: string; content?: string }) => {
+      return {
+        id: input.task_id,
+        content: input.content ?? "",
+        description: "",
+        project_id: "proj-1",
+        due_date: null,
+        completed_at: null,
+      };
+    },
+  );
+  return { client: { createTask, updateTask }, createTask, updateTask };
 }
 
 function fakeSlack(): {
@@ -183,14 +196,16 @@ describe("createTodoistApprovalHandler", () => {
       }),
     );
 
-    // Persisted the returned id back onto working_plan via SessionStore.update.
+    // Persisted the returned id + `committed` status back via SessionStore.update
+    // (ADR-0002 transition discipline, C4).
     expect(update).toHaveBeenCalledTimes(1);
     const [weekKey, patch] = update.mock.calls[0] as [
       string,
-      { working_plan: WeekPlan; updated_at: string },
+      { working_plan: WeekPlan; status: string; updated_at: string },
     ];
     expect(weekKey).toBe("2026-W32");
     expect(patch.working_plan.meals[0]?.todoist_task_id).toBe("task-1");
+    expect(patch.status).toBe("committed");
     expect(patch.updated_at).toBe("2026-08-02T12:00:00.000Z");
 
     // Confirmation posted as a follow-up in the session thread.
@@ -342,5 +357,77 @@ describe("createTodoistApprovalHandler", () => {
     expect(createTask).toHaveBeenCalledTimes(1);
     expect(update).toHaveBeenCalledTimes(1);
     expect(postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("soft-commit RE-approval (bd meal-planner-iu7.5, C4, ADR-0006 D4): updates in place for meals with a stored todoist_task_id, creates only the genuinely-new ones, and stays `committed` (no duplicate tasks)", async () => {
+    const existingMeal = selectedMeal({
+      recipe_id: "r1",
+      title: "Braised Short Ribs",
+      day: "2026-08-04",
+      todoist_task_id: "task-existing",
+    });
+    const newMeal = selectedMeal({
+      recipe_id: "r2",
+      title: "Veggie Stir Fry",
+      day: "2026-08-05",
+    });
+    // Already `committed` (a prior approval ran) -- the soft-commit self-loop
+    // (ADR-0002 "re-approve", `committed -> committed`) must also succeed.
+    const row = session({
+      status: "committed",
+      working_plan: enrichedWorkingPlan([existingMeal, newMeal]),
+    });
+    const { store, update } = fakeSessionStore(row);
+    const { client, createTask, updateTask } = fakeTodoistClient();
+    const { slack, postMessage } = fakeSlack();
+    const config = todoistConfig({ projectId: "proj-42" });
+
+    const handler = createTodoistApprovalHandler({
+      sessionStore: store,
+      todoistClient: client,
+      todoistConfig: config,
+      slack,
+      channelId: "C-MEAL-PLAN",
+      now: () => new Date("2026-08-02T13:00:00.000Z"),
+    });
+
+    await handler.onApprove(command());
+
+    // The already-committed meal is UPDATED IN PLACE, not re-created.
+    expect(updateTask).toHaveBeenCalledTimes(1);
+    expect(updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task_id: "task-existing",
+        content: "Braised Short Ribs",
+        due_date: "2026-08-04",
+      }),
+    );
+
+    // Only the genuinely-new meal is created fresh -- one call, not two.
+    expect(createTask).toHaveBeenCalledTimes(1);
+    expect(createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_id: "proj-42",
+        content: "Veggie Stir Fry",
+        due_date: "2026-08-05",
+      }),
+    );
+
+    // Persisted ids: the existing task id is preserved, the new one is added.
+    expect(update).toHaveBeenCalledTimes(1);
+    const [weekKey, patch] = update.mock.calls[0] as [
+      string,
+      { working_plan: WeekPlan; status: string; updated_at: string },
+    ];
+    expect(weekKey).toBe("2026-W32");
+    expect(patch.status).toBe("committed");
+    expect(patch.working_plan.meals[0]?.todoist_task_id).toBe("task-existing");
+    expect(patch.working_plan.meals[1]?.todoist_task_id).toBe("task-1");
+
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Committed 2 meals"),
+      }),
+    );
   });
 });

@@ -1,14 +1,18 @@
 import type { TodoistCommitConfig } from "../config/profile.js";
 import type { RevisionCoordinator } from "../orchestrator/revision-coordinator.js";
 import type { SessionStore } from "../orchestrator/session-store.js";
+import { transition } from "../orchestrator/state-machine.js";
 import { EnrichedWeekPlanSchema } from "../planner/enrich.js";
 import { type WeekPlan, WeekPlanSchema } from "../planner/select.js";
 import type {
   ApprovalHandler,
   ApprovedMealPlanCommand,
 } from "../slack/slash-commands.js";
-import { commitWeekPlanToTodoist, type TodoistTaskCreator } from "./commit.js";
 import { applyTodoistCommitResult } from "./persist.js";
+import {
+  recommitWeekPlanToTodoist,
+  type TodoistTaskCreatorUpdater,
+} from "./recommit.js";
 
 /**
  * C1 (bd meal-planner-iu7.2, SPEC §7 "Slack UX" / ADR-0006): the real
@@ -17,21 +21,26 @@ import { applyTodoistCommitResult } from "./persist.js";
  * AFTER it has already ack'd Slack (<3s). Everything here runs async:
  *
  *  1. Load the active week's `working_plan` off the session row.
- *  2. Translate + write it to Todoist (C2 `commitWeekPlanToTodoist`).
- *  3. Merge the created task ids back onto the plan (C3
- *     `applyTodoistCommitResult`) and persist via the EXISTING
- *     `SessionStore.update` (no new store method).
+ *  2. Translate + write it to Todoist — create-or-update per meal/second-dish/
+ *     prep-unit slot (C4 `recommitWeekPlanToTodoist`, ADR-0006 D4
+ *     soft-commit): a meal with no stored `todoist_task_id` is created
+ *     fresh, a meal that already has one is updated in place, so a
+ *     re-issued approval on an already-committed plan overwrites rather
+ *     than duplicating tasks (SPEC §7 "soft-commit" — the week is NOT
+ *     hard-locked after commit).
+ *  3. Merge the (possibly new, possibly unchanged) task ids back onto the
+ *     plan (C3 `applyTodoistCommitResult`) and persist + transition the
+ *     session to `committed` in ONE `SessionStore.update` call, via the
+ *     guarded `transition()` helper (ADR-0002 transition discipline,
+ *     `../orchestrator/state-machine.js`) so an illegal edge throws instead
+ *     of silently corrupting the row. `suggested -> committed`,
+ *     `under_revision -> committed`, `committed -> committed` (the
+ *     soft-commit self-loop), and `paused_cost -> committed` (ADR-0007 D7 —
+ *     approval always wins, even on a paused thread) are all allowed edges.
  *  4. Post a confirmation as a NEW reply in the session thread.
  *
  * No approver gating (bd meal-planner-1tk, RATIFIED): anyone in the
  * workspace may approve — this module never inspects `command.command.user_id`.
- *
- * OUT OF SCOPE (bd meal-planner-iu7.5, C4): the `committed` state
- * transition and soft-commit re-commit UPDATE-IN-PLACE orchestration
- * (`../todoist-commit/persist.js`'s `partitionMealsForRecommit`). A
- * re-approval of an already-committed plan simply re-creates fresh tasks
- * here (C2's `commitWeekPlanToTodoist` always creates) — an accepted,
- * explicitly-scoped-out soft-commit gap left for C4 to close.
  *
  * B4 (bd meal-planner-3e2.5, ADR 0007 D4) ADDITION: `onApprove` fires the
  * `revisionCoordinator.supersede` signal (optional dep, see
@@ -63,8 +72,8 @@ export interface TodoistApprovalSlackClient {
 export interface TodoistApprovalHandlerOptions {
   /** Only the two methods this handler needs — keeps it decoupled from the full `SessionStore` surface (matches `slash-commands.ts`'s own narrowing convention). */
   sessionStore: Pick<SessionStore, "get" | "update">;
-  /** C0's client, narrowed to `createTask` only (C2's own `TodoistTaskCreator`) — this module never calls `updateTask`/`listCompleted` (C4/recency's concern). */
-  todoistClient: TodoistTaskCreator;
+  /** C0's client, narrowed to `createTask`/`updateTask` (`./recommit.js`'s `TodoistTaskCreatorUpdater`) — the soft-commit create-or-update path needs both; this module still never calls `listCompleted` (recency's concern). */
+  todoistClient: TodoistTaskCreatorUpdater;
   /** C5's resolved Todoist commit config (project/title/link template). */
   todoistConfig: TodoistCommitConfig;
   /** Slack client used ONLY to post the confirmation thread reply. */
@@ -123,7 +132,7 @@ export function resolveWorkingPlanForCommit(
 }
 
 function committedMealCount(
-  result: Awaited<ReturnType<typeof commitWeekPlanToTodoist>>,
+  result: Awaited<ReturnType<typeof recommitWeekPlanToTodoist>>,
 ): number {
   return result.meals.filter((outcome) => outcome.mealTask !== null).length;
 }
@@ -162,17 +171,26 @@ export function createTodoistApprovalHandler(
         return;
       }
 
-      const result = await commitWeekPlanToTodoist(
+      const result = await recommitWeekPlanToTodoist(
         plan,
         options.todoistConfig,
         options.todoistClient,
       );
 
       const updatedPlan = applyTodoistCommitResult(plan, result);
-      options.sessionStore.update(command.weekKey, {
-        working_plan: updatedPlan,
-        updated_at: now().toISOString(),
-      });
+      // ADR-0002 transition discipline: status + working_plan land in ONE
+      // write. `transition()` throws `IllegalTransitionError` on an illegal
+      // edge (e.g. from a terminal `failed`/`expired` row) rather than
+      // silently committing an unreachable state; `suggested`/
+      // `under_revision`/`paused_cost`/`committed` (self-loop, soft-commit)
+      // are all legal sources per `../orchestrator/state-machine.js`.
+      transition(
+        options.sessionStore,
+        command.weekKey,
+        "committed",
+        { working_plan: updatedPlan },
+        now().toISOString(),
+      );
 
       const count = committedMealCount(result);
       const text = `Committed ${count} meal${count === 1 ? "" : "s"} to Todoist.`;
