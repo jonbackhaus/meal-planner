@@ -8,6 +8,7 @@ import {
 import {
   type ApprovalHandler,
   attachSlashCommandRouter,
+  type ResetPauseHandler,
 } from "../slack/slash-commands.js";
 import {
   openSocketModeConnection,
@@ -90,6 +91,8 @@ export interface RunDaemonOptions {
   redirect?: NonNullable<Parameters<typeof attachEventRouter>[1]>["redirect"];
   /** Forwarded to the slash-command router as-is (bd meal-planner-4u4.6); defaults to a no-op (C1, bd meal-planner-iu7.2, supplies the real commit handler later). */
   approvalHandler?: ApprovalHandler;
+  /** Forwarded to the slash-command router as-is (bd meal-planner-m49, ADR-0007 D6); defaults to a no-op until the real operator pause-reset handler is wired in `index.ts`. */
+  resetPauseHandler?: ResetPauseHandler;
   /** Injectable clock for the router (called fresh per inbound reply, not once at attach time); defaults to `() => new Date()`. */
   now?: () => Date;
   /** Injectable router attacher, for tests; defaults to the real `attachEventRouter` (`../slack/inbound-router.js`). */
@@ -184,6 +187,7 @@ export async function runDaemon(
       sessionStore: options.sessionStore,
       weekKeyConfig: options.config,
       approvalHandler: options.approvalHandler,
+      resetPauseHandler: options.resetPauseHandler,
       now: options.now,
       logger,
     });

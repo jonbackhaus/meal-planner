@@ -10,6 +10,7 @@ import {
   buildApprovalHandler,
   buildDryRunPost,
   buildRecencyReader,
+  buildResetPauseHandler,
   buildRevisionSystem,
   DEFAULT_LOG_PATH,
   makeBuildPlanWithSync,
@@ -875,6 +876,101 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
     expect(row?.turn_count).toBe(0);
     expect(row?.token_spend).toBe(0);
     expect(row?.cost_usd).toBe(0);
+  });
+
+  describe("buildResetPauseHandler (bd meal-planner-m49, ADR-0007 D6)", () => {
+    it("calls resetPause(weekKey) and posts a resumed confirmation when the week was paused_cost", async () => {
+      const { store, table } = fakeSessionStore({
+        "2026-07-12": session({ status: "paused_cost" }),
+      });
+      const resetPause = vi.fn((weekKey: string) => {
+        const row = table.get(weekKey);
+        if (row) {
+          table.set(weekKey, { ...row, status: "suggested" });
+        }
+      });
+      const { slack, postMessage } = fakeSlack();
+
+      const handler = buildResetPauseHandler(
+        resetPause,
+        store,
+        slack,
+        "C_MEAL_PLAN",
+      );
+
+      await handler.onResetPause({
+        weekKey: "2026-07-12",
+        threadTs: "1000.0001",
+        command: { command: "/mealplan-resume" },
+      });
+
+      expect(resetPause).toHaveBeenCalledWith("2026-07-12");
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "C_MEAL_PLAN",
+          thread_ts: "1000.0001",
+          text: expect.stringContaining("resumed"),
+        }),
+      );
+    });
+
+    it("posts a benign 'nothing to resume' confirmation when the week was NOT paused_cost (resetPause still called -- the guard itself no-ops)", async () => {
+      const { store } = fakeSessionStore({
+        "2026-07-12": session({ status: "suggested" }),
+      });
+      const resetPause = vi.fn();
+      const { slack, postMessage } = fakeSlack();
+
+      const handler = buildResetPauseHandler(
+        resetPause,
+        store,
+        slack,
+        "C_MEAL_PLAN",
+      );
+
+      await handler.onResetPause({
+        weekKey: "2026-07-12",
+        threadTs: "1000.0001",
+        command: { command: "/mealplan-resume" },
+      });
+
+      expect(resetPause).toHaveBeenCalledWith("2026-07-12");
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: expect.stringContaining("nothing to resume"),
+        }),
+      );
+    });
+
+    it("does not throw when the confirmation post itself rejects (logs instead)", async () => {
+      const { store } = fakeSessionStore({
+        "2026-07-12": session({ status: "paused_cost" }),
+      });
+      const resetPause = vi.fn();
+      const postMessage = vi.fn().mockRejectedValue(new Error("network"));
+      const slack: RevisionSlackClient = { chat: { postMessage } };
+      const logger = { error: vi.fn() };
+
+      const handler = buildResetPauseHandler(
+        resetPause,
+        store,
+        slack,
+        "C_MEAL_PLAN",
+        logger,
+      );
+
+      await expect(
+        handler.onResetPause({
+          weekKey: "2026-07-12",
+          threadTs: "1000.0001",
+          command: { command: "/mealplan-resume" },
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.stringContaining("network"),
+      );
+    });
   });
 
   it("buildApprovalHandler passes the injected RevisionCoordinator through to onApprove's supersede call", async () => {

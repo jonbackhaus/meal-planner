@@ -608,8 +608,9 @@ from §8.1 is untouched).
 **Prerequisite — the Slack app config (one-time, §1/§9.2):** in the app config,
 enable **Socket Mode** → generate an **app-level token** (`xapp-…`, scope
 `connections:write`), add the `channels:history` / `groups:history` + `commands`
-bot scopes, and **register the `/mealplan-approved` slash command**. Slash
-commands and thread events both arrive over the socket (no public endpoint).
+bot scopes, and **register the slash commands** `/mealplan-approved` (commit)
+and `/mealplan-resume` (clear a cost-pause). Slash commands and thread events
+both arrive over the socket (no public endpoint).
 
 **Ordered checklist:**
 
@@ -680,9 +681,9 @@ commands and thread events both arrive over the socket (no public endpoint).
   no-op until the family has committed and **checked off** meals.
 - **Revision cost cap breach** transitions that thread to `paused_cost`, alerts
   `#agent-alerts`, and posts an in-thread "paused for cost" note — it never dies
-  silently. **Caveat:** the `resetRevisionPause` operator reset is currently a
-  module export only (no bound command surface yet — tracked follow-up), so
-  clearing a paused thread needs a manual invocation until that lands.
+  silently. An operator clears the pause with **`/mealplan-resume`** on the
+  paused week's thread (resolves to the active week, calls the live guard's
+  `resetPause` → back to `suggested`; never auto-resumes — ADR-0007 D6).
 
 > **Verified live 2026-07-26** (PR #60): after the plist edit + reload the daemon
 > logged `[socket-mode] connection opened`. Socket transport confirmed up;
