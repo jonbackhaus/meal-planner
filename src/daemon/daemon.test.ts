@@ -478,6 +478,44 @@ describe("runDaemon", () => {
         await handle.shutdown();
       });
 
+      it("forwards the redirect dep to attachEventRouter as-is (bd meal-planner-uo1, A5)", async () => {
+        const onStartup = vi.fn(async () => {});
+        const onTrigger = vi.fn(async () => {});
+        const proc = new FakeProcess();
+        const fakeHandle = fakeSocketModeHandle();
+        const openSocketMode = vi.fn(async () => fakeHandle);
+        const sessionStore = {
+          getByThreadTs: vi.fn(() => null),
+          get: vi.fn(() => null),
+        };
+        const attach = vi.fn();
+        const redirect = {
+          slack: { chat: { postMessage: vi.fn() } },
+          channelId: "C_MEAL_PLAN",
+        };
+
+        const handle = await runDaemon({
+          config: fakeConfig(),
+          secrets: fakeSecretsWithAppToken(),
+          onStartup,
+          onTrigger,
+          alert: vi.fn(async () => {}),
+          process: proc as unknown as NodeJS.Process,
+          openSocketMode,
+          sessionStore,
+          attachEventRouter: attach,
+          attachSlashCommandRouter: vi.fn(),
+          redirect,
+        });
+
+        expect(attach).toHaveBeenCalledWith(
+          fakeHandle.client,
+          expect.objectContaining({ redirect }),
+        );
+
+        await handle.shutdown();
+      });
+
       it("does NOT attach the event router when no sessionStore is supplied", async () => {
         const onStartup = vi.fn(async () => {});
         const onTrigger = vi.fn(async () => {});

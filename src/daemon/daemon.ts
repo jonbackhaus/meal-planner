@@ -80,6 +80,14 @@ export interface RunDaemonOptions {
   sessionStore?: Pick<SessionStore, "getByThreadTs" | "get">;
   /** Forwarded to the router as-is; defaults to a no-op (B1, bd meal-planner-3e2.2, supplies the real one later). */
   revisionHandler?: RevisionHandler;
+  /**
+   * Forwarded AS-IS to `attachEventRouter`'s `EventRouterOptions.redirect`
+   * (A5, bd meal-planner-4u4.5): the Slack client + channelId used to post
+   * the one-time expired-thread redirect reply. Omitted (the default) means
+   * an expired-thread reply falls back to a log-only drop, exactly as before
+   * this option existed. Wired by bd meal-planner-uo1.
+   */
+  redirect?: NonNullable<Parameters<typeof attachEventRouter>[1]>["redirect"];
   /** Forwarded to the slash-command router as-is (bd meal-planner-4u4.6); defaults to a no-op (C1, bd meal-planner-iu7.2, supplies the real commit handler later). */
   approvalHandler?: ApprovalHandler;
   /** Injectable clock for the router (called fresh per inbound reply, not once at attach time); defaults to `() => new Date()`. */
@@ -162,6 +170,7 @@ export async function runDaemon(
       sessionStore: options.sessionStore,
       weekKeyConfig: options.config,
       revisionHandler: options.revisionHandler,
+      redirect: options.redirect,
       now: options.now,
       logger,
     });
