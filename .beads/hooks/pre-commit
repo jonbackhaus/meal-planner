@@ -31,3 +31,49 @@ if command -v bd >/dev/null 2>&1; then
   if [ $_bd_exit -ne 0 ]; then exit $_bd_exit; fi
 fi
 # --- END BEADS INTEGRATION v1.1.0 ---
+
+# --- BEGIN MEAL-PLANNER EXPORT FRESHNESS (bead meal-planner-p2p) ---
+# NOT managed by beads — keep this block below the END marker so `bd hooks
+# install` does not regenerate over it. Verify it survives a bd upgrade.
+#
+# Why: bd's JSONL auto-export is asynchronous (export.interval, default 60s)
+# and sits off the git critical path, so the `.beads/issues.jsonl` a commit
+# captures can predate the bd writes it is meant to record. Worse, the tree can
+# read clean while the file is already stale, so nothing warns you. The
+# corrected export then lands *after* the commit and looks like unexplained
+# churn — which is how real `closed` statuses got discarded on 2026-07-26.
+#
+# Fix: export explicitly and synchronously, here, before the commit is built.
+# Dolt is authoritative; reconcile toward it, never away.
+if [ -z "$BD_SKIP_EXPORT_REFRESH" ] && command -v bd >/dev/null 2>&1; then
+  _mp_export=.beads/issues.jsonl
+  _mp_staged=0
+  if ! git diff --cached --quiet -- "$_mp_export" 2>/dev/null; then _mp_staged=1; fi
+
+  # Export to a temp file first: a failed export must never clobber a good one.
+  _mp_tmp="$(mktemp 2>/dev/null || echo .beads/.export-refresh.tmp)"
+  if bd export -o "$_mp_tmp" >/dev/null 2>&1 && [ -s "$_mp_tmp" ]; then
+    if ! cmp -s "$_mp_tmp" "$_mp_export" 2>/dev/null; then
+      cat "$_mp_tmp" > "$_mp_export"
+      echo >&2 "beads: refreshed $_mp_export from Dolt (the async export had lagged)"
+    fi
+
+    if [ "$_mp_staged" = "1" ]; then
+      git add -- "$_mp_export"
+      echo >&2 "beads: re-staged $_mp_export — this commit matches Dolt"
+    elif ! git diff --quiet -- "$_mp_export" 2>/dev/null; then
+      echo >&2 "beads: WARNING $_mp_export differs from HEAD but is NOT staged:"
+      if command -v node >/dev/null 2>&1 && [ -f scripts/beads-diff.mjs ]; then
+        node scripts/beads-diff.mjs >&2 2>/dev/null || true
+      fi
+      echo >&2 "beads: run 'git add $_mp_export' to record current issue state."
+      echo >&2 "beads: never 'git checkout --' it — that discards real status."
+    fi
+  else
+    echo >&2 "beads: WARNING 'bd export' failed; leaving $_mp_export as-is"
+  fi
+  rm -f "$_mp_tmp"
+fi
+# Export bookkeeping must never fail the commit.
+:
+# --- END MEAL-PLANNER EXPORT FRESHNESS ---
