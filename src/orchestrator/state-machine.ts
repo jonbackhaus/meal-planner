@@ -16,7 +16,7 @@ import type {
  * v1.0 (this repo) only ever DRIVES `(none)->generating`, `generating-
  * >suggested`, `generating->failed`, and `suggested->expired`. The
  * `under_revision`/`committed` edges are v3.0 (first inbound reply /
- * `/mp-approved`) — they're encoded here for completeness (so the
+ * `/mp-approve`) — they're encoded here for completeness (so the
  * table matches the ADR exactly) but nothing in v1.0 transitions into them.
  *
  * `paused_cost` (ADR-0007 D6, SPEC §9.3, bd meal-planner-3e2.6) is a v3.0
@@ -41,7 +41,7 @@ export const ALLOWED_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
   under_revision: ["paused_cost", "committed", "expired"],
   // Cleared via an explicit operator reset (ADR-0007 D6) back to
   // `suggested`, the normal resting state, never auto-resumed; OR via
-  // `/mp-approved` straight to `committed` (ADR-0007 D7) -- approval
+  // `/mp-approve` straight to `committed` (ADR-0007 D7) -- approval
   // always wins, even on a paused thread.
   paused_cost: ["suggested", "committed"],
   committed: ["committed"],

@@ -33,7 +33,7 @@ import { canTransition, transition } from "./state-machine.js";
  * On any cap breach: the session row transitions to the durable `paused_cost`
  * status (D6, `./state-machine.ts`), `#agent-alerts` fires, and an in-thread
  * "paused for cost" note posts. A paused thread NEVER auto-resumes -- only
- * `resetPause` (an explicit operator action) clears it. `/mp-approved`
+ * `resetPause` (an explicit operator action) clears it. `/mp-approve`
  * is unaffected (D7): `../todoist-commit/approval-handler.ts` never inspects
  * `status`, so a paused thread stays approvable with no change needed there
  * (confirmed by reading that module -- see its own doc comment).
@@ -163,7 +163,7 @@ export interface RevisionCostGuardDeps {
 const PAUSED_NOTE_TEXT =
   "This week's plan revisions are paused for cost -- an operator must " +
   "reset the thread's budget before further edits are processed. " +
-  "Approving the current plan (`/mp-approved`) still works.";
+  "Approving the current plan (`/mp-approve`) still works.";
 
 export interface RevisionCostGuard {
   /**

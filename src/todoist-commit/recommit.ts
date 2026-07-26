@@ -21,7 +21,7 @@ import { partitionMealsForRecommit } from "./persist.js";
 /**
  * Soft-commit re-commit orchestration (bd meal-planner-iu7.5, C4, ADR-0006
  * D4): a create-OR-update translator that supersedes C2's `commitWeekPlanToTodoist`
- * (which only ever creates) for the `/mp-approved` path, so a
+ * (which only ever creates) for the `/mp-approve` path, so a
  * re-approval of an already-committed plan UPDATES the previously-created
  * Todoist tasks in place instead of duplicating them.
  *
@@ -158,7 +158,7 @@ async function recommitOneMeal(
 }
 
 /**
- * Create-or-update translator for `/mp-approved` (both the FIRST
+ * Create-or-update translator for `/mp-approve` (both the FIRST
  * approval and any soft-commit RE-approval, ADR-0006 D4 / SPEC §7
  * "soft-commit"): routes each meal via {@link partitionMealsForRecommit}
  * (C3) to a create or update call, and further routes each meal's second
