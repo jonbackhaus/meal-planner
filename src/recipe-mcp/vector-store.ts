@@ -212,6 +212,34 @@ export class VectorStore {
   }
 
   /**
+   * The stored embedding vector for a note id, or null if never upserted
+   * (ADR-0006 D2, SPEC §6.3: the semantic recency penalty looks up a
+   * resolved recent recipe's embedding, and each candidate's, by id — reusing
+   * these already-computed vectors rather than re-running `search`).
+   * `vec_notes.embedding` round-trips as a raw float32 blob (verified against
+   * the installed sqlite-vec version), so it's read back via `Float32Array`.
+   */
+  getEmbedding(id: string): number[] | null {
+    const row = this.db
+      .prepare(
+        `SELECT v.embedding AS embedding
+         FROM notes n
+         JOIN vec_notes v ON v.rowid = n.rowid
+         WHERE n.id = ?`,
+      )
+      .get(id) as { embedding: Buffer } | undefined;
+    if (!row) {
+      return null;
+    }
+    const floats = new Float32Array(
+      row.embedding.buffer,
+      row.embedding.byteOffset,
+      row.embedding.byteLength / Float32Array.BYTES_PER_ELEMENT,
+    );
+    return Array.from(floats);
+  }
+
+  /**
    * Nearest-neighbor search by cosine similarity. Returns candidates ordered
    * by descending score (`1 - cosine distance`), most similar first.
    */
