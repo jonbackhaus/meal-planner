@@ -85,7 +85,7 @@ interface SelectedMealCommitAdditions {
 ## Alternatives considered
 
 - **Keep recency in v2.0 via a manual-task interim** — rejected (D1). Depends on unstated family discipline; sparse early data → weak dedup.
-- **Pull the commit write forward into v2.0** — rejected (D1). Commit needs `/mealplan-approved` + Socket Mode (all v3.0); drags the interactive machinery early and breaks the "v2.0 writes nothing" invariant.
+- **Pull the commit write forward into v2.0** — rejected (D1). Commit needs `/mp-approve` (renamed from `/mealplan-approved` by meal-planner-o0v) + Socket Mode (all v3.0); drags the interactive machinery early and breaks the "v2.0 writes nothing" invariant.
 - **Pure semantic title→recipe matching for the round-trip** — rejected (D2). Lossy: title drift, family edits, and non-recipe tasks misresolve; §6.3's resolution becomes a guess. We own the write, so an embedded id is free and exact.
 - **Embed the id in the task title or a label** — rejected (D2). Titles get edited by the family; labels are global/shared. The description is stable and out of the way.
 - **New `todoist_task_ids` SQL column on `session`** (the bead's original proposal) — rejected in favor of the `working_plan` JSON field (D4): per-meal ids belong with the per-meal plan data, and the additive-JSON pattern (like `day`) avoids a migration.

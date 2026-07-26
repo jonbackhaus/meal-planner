@@ -98,7 +98,7 @@ launchd ──(boot-launch + KeepAlive)──► Orchestrator daemon (always res
                       ├─ post draft ──(Web API)──► Slack #meal-plan (thread)
                       │
                       ├─ revise ◄── thread replies (Socket Mode)                (v3.0)
-                      ├─ /mealplan-approved ──► commit to Todoist MCP           (v3.0)
+                      ├─ /mp-approve ──► commit to Todoist MCP                 (v3.0)
                       │
                       ├─ fetch recipes+ingredients ◄─► Recipe MCP               (v4.0)
                       ├─ normalize + aggregate ─► draft grocery list            (v4.0)
@@ -115,7 +115,7 @@ launchd ──(boot-launch + KeepAlive)──► Orchestrator daemon (always res
 |-------|----------|-------|
 | **v1.0 (MVP)** | Sync recipes (+ ingest extraction) → tag/time-based plan as an **unordered slot-typed set** → post draft to `#meal-plan`. Writes nothing anywhere. | Seasonality from recipe *tags* (not live weather). Within-week variety only — no cross-week dedup. **No day assignment.** Full daemon + in-process scheduler + SQLite state machine + idempotency + startup catch-up present; Socket Mode **not** open. dev/prod profile in place. |
 | **v2.0** | Live weather (Open-Meteo), **calendar integration** (schedule-awareness, **day assignment**, calendar-derived cook-night count, do-ahead prep timing). | Calendar work is more than "read events" — it classifies events by effect on cooking capacity, per **ADR 0004** (source = local Calendar.app/EventKit; per-calendar `cook`/`logistics` roles; FULL/QUICK/NONE per-night capacity; derived cook-night count; full prep placement; degrade-to-static on no calendar). Weather = ADR 0003 A1. **No Todoist dependency** (recency moved to v3.x, ADR 0006). |
-| **v3.0** | Socket Mode listener opens. Live thread revision + `/mealplan-approved` → **commit to Todoist**, then **Todoist recency read → semantic dedup** (ADR 0006 — the read depends on the commit write). | In-code turn/token caps become load-bearing. App-level token added here. Gated on *who-may-approve* (§10.2) and the *completion-signal* decision (§10.1). Commit stamps `mp:rid=<recipe_id>` per task for the lossless recency round-trip; task-ids persist in `working_plan` (ADR 0006). |
+| **v3.0** | Socket Mode listener opens. Live thread revision + `/mp-approve` → **commit to Todoist**, then **Todoist recency read → semantic dedup** (ADR 0006 — the read depends on the commit write). | In-code turn/token caps become load-bearing. App-level token added here. Gated on *who-may-approve* (§10.2) and the *completion-signal* decision (§10.1). Commit stamps `mp:rid=<recipe_id>` per task for the lossless recency round-trip; task-ids persist in `working_plan` (ADR 0006). |
 | **v4.0** | Recipe/ingredient fetch → normalize + aggregate → draft to `#grocery-list` → revision → `/grocerylist-approved` → AnyList. | Depends on the structured-ingredient block (built in v1.0, §5). Aggregation edge cases in §10. |
 
 ---
@@ -254,14 +254,14 @@ Open-Meteo (no key). **Resolved in bead `bgb` → ADR 0003 A1 (amendment):**
 - **"Active week" (defined):** the session row whose `week_key` equals the current plan-week (a **computed, clock-derived** property, not a stored flag — §8). This is what "the current week's thread" and "the single active thread" mean. It is robust across any number of skipped weeks with no maintenance.
 - **Listener scope (v3.0):** react **only** to replies whose thread maps to the active week; ignore stray channel messages and prior weeks' threads.
 - **Multi-person feedback:** "the family" is plural. The bot folds *all* in-thread messages into revision context and reasons over possibly-conflicting input rather than assuming a single instruction.
-- **Approval commands:** `/mealplan-approved` (v3.0), `/grocerylist-approved` (v4.0).
+- **Approval commands:** `/mp-approve` (v3.0, renamed from `/mealplan-approved` by meal-planner-o0v), `/grocerylist-approved` (v4.0).
   - Slash commands are workspace-wide; the handler resolves them to the **active** thread. Because an expired week is by definition not active, a stale week **cannot** be accidentally approved.
   - Slack requires ack < 3 s: **ack immediately, do the commit async, post confirmation as a follow-up thread message.**
   - **Soft-commit:** re-issuing an approval re-commits/overwrites. The week is not hard-locked after commit.
   - *(Dev note: slash commands are workspace-wide and are **not** channel-isolated the way posts are — revisit dev-testing of approvals when v3.0 lands.)*
 - **Skip on silence:** if the draft goes unanswered, nothing commits and the draft simply expires when the week rolls over (§8). Absence of an approval *is* the skip — no timeout logic. Silent. A skipped week writes nothing to Todoist, so it never counts toward recency/dedup.
 
-> **TODO (§10):** who may issue `/mealplan-approved`? (Anyone in the workspace, or gated?)
+> **TODO (§10):** who may issue `/mp-approve`? (Anyone in the workspace, or gated?)
 
 ---
 
@@ -340,7 +340,7 @@ suggested / under-revision → expired                   (week rolled over, no c
 ## 10. Open questions (flagged, non-blocking for v1.0)
 
 1. **Completion signal (gates v3.x recency — moved from v2.0 per ADR 0006):** recency reads Todoist *completed* tasks as "meals eaten," but committing a plan creates *open* tasks. Who checks them off — does the family mark meals complete as cooked, or should recency key on *scheduled/committed* tasks instead? Resolve before wiring v3.x recency. (The task→recipe round-trip and task schema are now settled in **ADR 0006**; this remaining open question is only the read semantics.)
-2. **Approval governance (gates v3.0):** who may issue `/mealplan-approved` / `/grocerylist-approved` — anyone in the workspace, or gated?
+2. **Approval governance (gates v3.0):** who may issue `/mp-approve` / `/grocerylist-approved` — anyone in the workspace, or gated?
 3. **1Password service-account availability:** confirm support or fold setup into the build.
 4. **Calendar source (v2.0 recon):** ~~Google vs. iCloud vs. other~~ — **RESOLVED (ADR 0004):** read the **local macOS Calendar.app via EventKit**. The family schedule spans multiple iCloud calendars (incl. cross-account shares); Calendar.app is the aggregation layer, so one local read covers all of them without CalDAV/OAuth. Local-first, like the Notes reader.
 5. **Todoist / AnyList / calendar MCP — adopt vs. build:** recon on maintained community servers before v2.0 / v3.0 / v4.0. *Calendar half **RESOLVED (ADR 0004): build a local reader** (EventKit), not adopt.* Todoist (v2.0/v3.0) and AnyList (v4.0, see §10.6 / bead d9i) still open.
