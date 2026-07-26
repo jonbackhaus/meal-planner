@@ -17,7 +17,7 @@ import {
 /**
  * C1 (bd meal-planner-iu7.2, SPEC §7 "Slack UX" / ADR-0006): the real
  * `ApprovalHandler` (`../slack/slash-commands.js`'s seam) that the A6
- * transport router hands a resolved `/mealplan-approved` command to,
+ * transport router hands a resolved `/mp-approved` command to,
  * AFTER it has already ack'd Slack (<3s). Everything here runs async:
  *
  *  1. Load the active week's `working_plan` off the session row.
@@ -158,7 +158,7 @@ export function createTodoistApprovalHandler(
       const session = options.sessionStore.get(command.weekKey);
       if (!session) {
         logger.warn(
-          `[todoist-commit] /mealplan-approved: no session row for week ${command.weekKey}; ignoring`,
+          `[todoist-commit] /mp-approved: no session row for week ${command.weekKey}; ignoring`,
         );
         return;
       }
@@ -166,7 +166,7 @@ export function createTodoistApprovalHandler(
       const plan = resolveWorkingPlanForCommit(session.working_plan);
       if (!plan) {
         logger.warn(
-          `[todoist-commit] /mealplan-approved: no usable working_plan for week ${command.weekKey}; ignoring`,
+          `[todoist-commit] /mp-approved: no usable working_plan for week ${command.weekKey}; ignoring`,
         );
         return;
       }

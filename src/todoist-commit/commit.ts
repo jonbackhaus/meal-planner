@@ -13,7 +13,7 @@ import type { TodoistClient } from "../todoist-mcp/todoist-client.js";
 /**
  * v3.0 commit write translator (bd meal-planner-iu7.3, ADR-0006 D2/D3): pure
  * `working_plan` -> Todoist task-write translator, called deterministically
- * from the (not-yet-built) `/mealplan-approved` handler — no LLM call, no
+ * from the (not-yet-built) `/mp-approved` handler — no LLM call, no
  * MCP round-trip (a commit is code-driven; see ADR-0006 D3's interface
  * sketch). Reuses the C0 `TodoistClient` directly and the C5
  * `composeTodoistRidMarker` helper so the marker string has one definition.

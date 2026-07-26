@@ -155,7 +155,7 @@ function buildSlackPost(
 
 /**
  * Builds the real `ApprovalHandler` (C1, bd meal-planner-iu7.2, SPEC §7 /
- * ADR-0006): commits `/mealplan-approved`'s resolved plan to Todoist (C2/C3)
+ * ADR-0006): commits `/mp-approved`'s resolved plan to Todoist (C2/C3)
  * and posts a confirmation reply in the session thread. Assembles C0's
  * `TodoistClient` from `secrets.todoistApiToken` and C5's resolved
  * `profile.todoist` config -- both already built, reused here as-is.
@@ -183,7 +183,7 @@ export function buildApprovalHandler(
     slack: new WebClient(secrets.slackBotToken),
     channelId: profile.channelId,
     // B4/D4 (bd meal-planner-3e2.5, ADR 0007 D4): the SAME RevisionCoordinator
-    // instance the revision chain below is built with, so `/mealplan-approved`
+    // instance the revision chain below is built with, so `/mp-approved`
     // always supersedes an in-flight revision on the same week.
     revisionCoordinator,
   });
@@ -191,7 +191,7 @@ export function buildApprovalHandler(
 
 /**
  * Builds the real `ResetPauseHandler` (bd meal-planner-m49, ADR-0007 D6/D7):
- * the operator-only `/mealplan-resume` slash command's seam. Calls the LIVE
+ * the operator-only `/mp-resume` slash command's seam. Calls the LIVE
  * revision cost guard's `resetPause` (`../orchestrator/revision-cost-guard.js`,
  * threaded in from `buildRevisionSystem`'s `resetPause`) for the resolved
  * active week, then posts a brief in-thread confirmation -- mirrors
@@ -875,11 +875,11 @@ export async function main(): Promise<void> {
 
   // B4 (bd meal-planner-3e2.5, ADR 0007 D4): ONE RevisionCoordinator
   // instance, shared between the composed revision chain below and the
-  // approval handler, so `/mealplan-approved` always supersedes an
+  // approval handler, so `/mp-approved` always supersedes an
   // in-flight revision on the same week.
   const revisionCoordinator = createRevisionCoordinator();
 
-  // C1 (bd meal-planner-iu7.2): the real /mealplan-approved commit handler,
+  // C1 (bd meal-planner-iu7.2): the real /mp-approved commit handler,
   // wired into the slash-command router below via runDaemon's
   // approvalHandler option. `undefined` (a safe no-op) until
   // MP_TODOIST_API_TOKEN is configured.
@@ -935,7 +935,7 @@ export async function main(): Promise<void> {
   // a built admin command surface.
   resetRevisionPause = revisionSystem.resetPause;
 
-  // bd meal-planner-m49 (ADR-0007 D6): the real `/mealplan-resume` operator
+  // bd meal-planner-m49 (ADR-0007 D6): the real `/mp-resume` operator
   // command, wired into the slash-command router below via runDaemon's
   // resetPauseHandler option. Reuses the SAME revisionSlack client + channel
   // the revision chain posts its own confirmations/notes into.

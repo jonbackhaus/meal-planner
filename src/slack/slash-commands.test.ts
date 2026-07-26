@@ -56,7 +56,7 @@ function slashCommandPayload(
   overrides: Partial<SlackSlashCommandPayload> = {},
 ): SlackSlashCommandPayload {
   return {
-    command: "/mealplan-approved",
+    command: "/mp-approved",
     text: "",
     user_id: "U123",
     user_name: "jon",
@@ -181,7 +181,7 @@ describe("attachSlashCommandRouter", () => {
     expect(onApprove).not.toHaveBeenCalled();
   });
 
-  it("ignores a slash command other than /mealplan-approved (still acks, does not dispatch)", async () => {
+  it("ignores a slash command other than /mp-approved (still acks, does not dispatch)", async () => {
     const client = new FakeSocketModeClient();
     const session = fakeSession({
       week_key: ACTIVE_WEEK,
@@ -264,7 +264,7 @@ describe("attachSlashCommandRouter", () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("boom"));
   });
 
-  describe("/mealplan-resume (bd meal-planner-m49, ADR-0007 D6)", () => {
+  describe("/mp-resume (bd meal-planner-m49, ADR-0007 D6)", () => {
     function resumePayload(
       overrides: Partial<SlackSlashCommandPayload> = {},
     ): SlackSlashCommandPayload {
@@ -331,7 +331,7 @@ describe("attachSlashCommandRouter", () => {
       );
     });
 
-    it("does NOT dispatch the approvalHandler for /mealplan-resume, and vice versa (the two commands are routed independently)", async () => {
+    it("does NOT dispatch the approvalHandler for /mp-resume, and vice versa (the two commands are routed independently)", async () => {
       const client = new FakeSocketModeClient();
       const session = fakeSession({
         week_key: ACTIVE_WEEK,
