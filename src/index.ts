@@ -55,6 +55,7 @@ import { SlackAlerter } from "./slack/slack-alerter.js";
 import { SlackPoster } from "./slack/slack-poster.js";
 import type { ApprovalHandler } from "./slack/slash-commands.js";
 import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
+import { readRecentRecipeIds } from "./todoist-commit/recency.js";
 import { TodoistClient } from "./todoist-mcp/todoist-client.js";
 import { getTemperatureBand } from "./weather/weather.js";
 
@@ -183,6 +184,39 @@ export function buildApprovalHandler(
     // always supersedes an in-flight revision on the same week.
     revisionCoordinator,
   });
+}
+
+/**
+ * Builds the real recency-read function `buildPlan` consumes (D3, bd
+ * meal-planner-v9v.3, ADR-0006, SPEC §6.3): assembles a `TodoistClient` from
+ * `secrets.todoistApiToken` exactly like {@link buildApprovalHandler} does,
+ * then binds D1's `readRecentRecipeIds` against it, scoped to
+ * `profile.todoist.projectId` when configured.
+ *
+ * Returns `undefined` when `secrets.todoistApiToken` isn't set -- mirroring
+ * `buildApprovalHandler`'s gate -- so a pre-v3.x boot (no Todoist token) never
+ * even attempts a recency read; `buildPlan`'s `getRecentRecipeIds` is optional
+ * for exactly this case. When present, the returned function may still THROW
+ * (an expired token, a network failure, a malformed response) -- that is
+ * intentional: `buildPlan` itself is what catches it and degrades silently
+ * (SPEC §6.3, the load-bearing requirement), not this assembly step.
+ */
+export function buildRecencyReader(
+  profile: ProfileSettings,
+  secrets: Secrets,
+): (() => Promise<string[]>) | undefined {
+  if (!secrets.todoistApiToken) {
+    return undefined;
+  }
+  const client = new TodoistClient({ apiToken: secrets.todoistApiToken });
+  return async () => {
+    const { recipeIds } = await readRecentRecipeIds(client, {
+      ...(profile.todoist.projectId
+        ? { projectId: profile.todoist.projectId }
+        : {}),
+    });
+    return recipeIds;
+  };
 }
 
 /**
@@ -743,6 +777,11 @@ export async function main(): Promise<void> {
         readEvents: readCalendarEvents,
         alert,
         getTemperatureBand,
+        // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3): `undefined` until
+        // MP_TODOIST_API_TOKEN is configured (pre-v3.x boot), matching
+        // `approvalHandler`'s own gate -- see `buildRecencyReader`'s doc.
+        getRecentRecipeIds: buildRecencyReader(profile, secrets),
+        getEmbedding: (id: string) => vectorStore.getEmbedding(id),
       },
     });
 

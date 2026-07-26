@@ -9,6 +9,7 @@ import {
   buildAlert,
   buildApprovalHandler,
   buildDryRunPost,
+  buildRecencyReader,
   buildRevisionSystem,
   DEFAULT_LOG_PATH,
   makeBuildPlanWithSync,
@@ -913,5 +914,30 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
     );
 
     expect(approvalHandler).toBeUndefined();
+  });
+
+  it("buildRecencyReader returns undefined (no client assembled) when Todoist isn't configured", () => {
+    const reader = buildRecencyReader(
+      { channelId: "C_MEAL_PLAN", todoist: {} } as never,
+      { slackBotToken: "xoxb-fake" } as never,
+    );
+
+    expect(reader).toBeUndefined();
+  });
+
+  it("buildRecencyReader returns a bound reader function when Todoist IS configured", () => {
+    const reader = buildRecencyReader(
+      {
+        channelId: "C_MEAL_PLAN",
+        todoist: {
+          projectId: "",
+          titleTemplate: "{title}",
+          recipeLinkFormat: "",
+        },
+      } as never,
+      { slackBotToken: "xoxb-fake", todoistApiToken: "fake-token" } as never,
+    );
+
+    expect(reader).toBeTypeOf("function");
   });
 });

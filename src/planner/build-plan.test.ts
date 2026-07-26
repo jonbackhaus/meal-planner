@@ -291,6 +291,113 @@ describe("buildPlan", () => {
   });
 });
 
+// ── Recency dedup wiring (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3) ──
+describe("buildPlan — recency dedup wiring", () => {
+  it("feeds the resolved recent ids into every search call's exclude_ids AND consults getEmbedding for the semantic penalty", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+    const getRecentRecipeIds = vi.fn(async () => ["recent-1", "recent-2"]);
+    const getEmbedding = vi.fn((_id: string) => null as number[] | null);
+
+    await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+        getRecentRecipeIds,
+        getEmbedding,
+      },
+    });
+
+    expect(getRecentRecipeIds).toHaveBeenCalledTimes(1);
+    // Exact exclusion: every search call carries the resolved recent ids.
+    for (const call of search.mock.calls) {
+      const filters = call[1] as SearchFilters | undefined;
+      expect(filters?.exclude_ids).toEqual(
+        expect.arrayContaining(["recent-1", "recent-2"]),
+      );
+    }
+    // Semantic penalty: the pool candidates (wn-veg / we-veg) were run
+    // through the embedding lookup as part of pool re-ranking.
+    expect(getEmbedding).toHaveBeenCalledWith("wn-veg");
+    expect(getEmbedding).toHaveBeenCalledWith("we-veg");
+  });
+
+  it("degrades silently when the recency read throws (Todoist fetch failure) — generation proceeds with NO dedup, never fails the week", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+    const getRecentRecipeIds = vi.fn(async () => {
+      throw new Error("Todoist fetch timed out");
+    });
+    const getEmbedding = vi.fn((_id: string) => null as number[] | null);
+    const logger = { warn: vi.fn(), error: vi.fn() };
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+        getRecentRecipeIds,
+        getEmbedding,
+        logger,
+      },
+    });
+
+    expect(result.week_key).toBe("2026-08-02");
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("recency read failed"),
+    );
+    // No dedup applied: no exclude_ids added, no embedding lookups made.
+    for (const call of search.mock.calls) {
+      expect(
+        (call[1] as SearchFilters | undefined)?.exclude_ids,
+      ).toBeUndefined();
+    }
+    expect(getEmbedding).not.toHaveBeenCalled();
+  });
+
+  it("behaves exactly as before when getRecentRecipeIds is omitted (no Todoist token configured)", async () => {
+    const search = fakeSearch();
+    const llm = fakeLlm(JSON.stringify(planJson()));
+    const getRecipe = fakeGetRecipe();
+
+    const result = await buildPlan({
+      weekKey: "2026-08-02",
+      cfg: baseCfg,
+      household: "Vegetarian daughter every night.",
+      deps: {
+        search,
+        llm,
+        getRecipe,
+        readEvents: fakeReadEvents(),
+        alert: fakeAlert(),
+        getTemperatureBand: fakeGetTemperatureBand(),
+      },
+    });
+
+    expect(result.week_key).toBe("2026-08-02");
+    for (const call of search.mock.calls) {
+      expect(
+        (call[1] as SearchFilters | undefined)?.exclude_ids,
+      ).toBeUndefined();
+    }
+  });
+});
+
 // ── Pool-sufficiency pre-check (bd meal-planner-8zs.12) ──
 // A search that returns FIXED weeknight/weekend candidate arrays regardless of
 // seed, so a test can starve a pool deterministically. untestedRate:0 keeps
