@@ -161,8 +161,13 @@ export interface RevisionSlackClient {
  * (`../slack/slack-poster.js`) exactly, with `thread_ts` added; deliberately
  * does not reuse `SlackPoster` itself (that class has no thread-reply mode)
  * to avoid widening its top-level-post contract for this one caller.
+ *
+ * Exported (bd meal-planner-8u6): `./regenerate.ts`'s `/mp-regenerate` also
+ * posts a fresh `EnrichedWeekPlan` as a new thread reply — the SAME
+ * append-only, never-edit posting mechanics a revision uses (ADR-0007 D2),
+ * reused as-is rather than duplicated.
  */
-async function postRevisionReply(
+export async function postRevisionReply(
   plan: EnrichedWeekPlan,
   threadTs: string,
   deps: { slack: RevisionSlackClient; channelId: string },

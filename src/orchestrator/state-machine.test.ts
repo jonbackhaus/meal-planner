@@ -25,20 +25,33 @@ describe("ALLOWED_TRANSITIONS", () => {
     );
     expect(ALLOWED_TRANSITIONS.generating).toHaveLength(2);
 
+    // "suggested" -> "suggested" (bd meal-planner-8u6, RATIFIED design):
+    // /mp-regenerate self-loops when the row is already `suggested` -- the
+    // common case, a week that hasn't been revised/approved yet.
     expect(ALLOWED_TRANSITIONS.suggested).toEqual(
       expect.arrayContaining([
+        "suggested",
         "under_revision",
         "paused_cost",
         "committed",
         "expired",
       ]),
     );
-    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(4);
+    expect(ALLOWED_TRANSITIONS.suggested).toHaveLength(5);
 
+    // "under_revision" -> "suggested" (bd meal-planner-8u6): defensive edge
+    // for /mp-regenerate landing on a row a stuck/failed revision left at
+    // `under_revision` (normally already reverted by
+    // `revision-coordinator.ts`'s own serializeRevisionHandler).
     expect(ALLOWED_TRANSITIONS.under_revision).toEqual(
-      expect.arrayContaining(["paused_cost", "committed", "expired"]),
+      expect.arrayContaining([
+        "suggested",
+        "paused_cost",
+        "committed",
+        "expired",
+      ]),
     );
-    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(3);
+    expect(ALLOWED_TRANSITIONS.under_revision).toHaveLength(4);
 
     // v3.0 revision cost-cap pause (ADR-0007 D6, bd meal-planner-3e2.6):
     // cleared via an explicit operator reset, back to `suggested`; OR via
@@ -49,8 +62,15 @@ describe("ALLOWED_TRANSITIONS", () => {
     );
     expect(ALLOWED_TRANSITIONS.paused_cost).toHaveLength(2);
 
-    // v3.0 soft-commit self-loop.
-    expect(ALLOWED_TRANSITIONS.committed).toEqual(["committed"]);
+    // v3.0 soft-commit self-loop, PLUS "committed" -> "suggested"
+    // (bd meal-planner-8u6, RATIFIED design): /mp-regenerate is allowed on a
+    // committed week and moves it back to `suggested` (re-approval required;
+    // existing Todoist tasks untouched until a later /mp-approve
+    // soft-recommits).
+    expect(ALLOWED_TRANSITIONS.committed).toEqual(
+      expect.arrayContaining(["committed", "suggested"]),
+    );
+    expect(ALLOWED_TRANSITIONS.committed).toHaveLength(2);
 
     // Terminal states (other than committed's self-loop): no outgoing edges.
     expect(ALLOWED_TRANSITIONS.failed).toEqual([]);
@@ -65,6 +85,10 @@ describe("canTransition", () => {
     expect(canTransition("suggested", "expired")).toBe(true);
     expect(canTransition("committed", "committed")).toBe(true);
     expect(canTransition("paused_cost", "committed")).toBe(true);
+    // bd meal-planner-8u6 (/mp-regenerate, RATIFIED design).
+    expect(canTransition("suggested", "suggested")).toBe(true);
+    expect(canTransition("under_revision", "suggested")).toBe(true);
+    expect(canTransition("committed", "suggested")).toBe(true);
   });
 
   it("returns false for disallowed edges", () => {
@@ -72,6 +96,10 @@ describe("canTransition", () => {
     expect(canTransition("failed", "suggested")).toBe(false);
     expect(canTransition("expired", "generating")).toBe(false);
     expect(canTransition("generating", "under_revision")).toBe(false);
+    // paused_cost -> "suggested" is legal ONLY via the explicit operator
+    // reset (ADR-0007 D6); /mp-regenerate itself refuses on a paused thread
+    // BEFORE ever calling transition() -- see regenerate.ts.
+    expect(canTransition("paused_cost", "generating")).toBe(false);
   });
 });
 
