@@ -588,6 +588,108 @@ rather than skipping the week.
 
 ---
 
+## 8.2 Enable v3.0 (Socket Mode revision + Todoist commit + recency)  · epics `4u4` / `3e2` / `iu7` / `v9v`
+
+v3.0 (live in-thread revision, `/mealplan-approved` → commit to Todoist,
+recency/semantic dedup) ships **off by default** — the daemon **gates the whole
+inbound path on the Slack app-level token being present** (`daemon.ts`). With no
+`slackAppToken`, it logs `[socket-mode] slackAppToken not set; skipping Socket
+Mode connection` and behaves exactly like v2.0 (outbound-only). Turn it on by
+adding the token + Todoist config, then reloading. **No new TCC grant** — Socket
+Mode is a network websocket and Todoist is HTTP (the `ekreader` Calendars grant
+from §8.1 is untouched).
+
+> Same rule as §8.1: the daemon reads env from the plist `EnvironmentVariables`,
+> NOT `.env`. The committed template `deploy/launchd/…` carries the v3.0 block
+> commented. **Rebuild `dist/` and reload** — prod runs the compiled
+> `node dist/index.js`, so build without reload runs the old process and reload
+> without build runs stale code; you need both.
+
+**Prerequisite — the Slack app config (one-time, §1/§9.2):** in the app config,
+enable **Socket Mode** → generate an **app-level token** (`xapp-…`, scope
+`connections:write`), add the `channels:history` / `groups:history` + `commands`
+bot scopes, and **register the `/mealplan-approved` slash command**. Slash
+commands and thread events both arrive over the socket (no public endpoint).
+
+**Ordered checklist:**
+
+1. **Store the two v3.0 secrets** in the `Meal-Planner` 1Password vault (the
+   read-only service account already covers new items/fields in that vault):
+   - the Slack **app-level token** (`xapp-…`), and
+   - a Todoist **personal API token** (Todoist → Settings → Integrations →
+     Developer → API token).
+
+   Verify each ref resolves **with the service-account token exported** (a bare
+   `op read` with no `OP_SERVICE_ACCOUNT_TOKEN` falls back to interactive auth
+   and fails with an `authorization timeout` — that is an auth miss, not a
+   missing field; `unset OP_CONNECT_HOST`/`OP_CONNECT_TOKEN` if set, they outrank
+   the service-account token):
+   ```bash
+   export OP_SERVICE_ACCOUNT_TOKEN="ops_…"
+   op read "op://Meal-Planner/slack-app/socket-mode"  >/dev/null && echo slack-ok
+   op read "op://Meal-Planner/todoist-api/credential" >/dev/null && echo todoist-ok
+   ```
+
+2. **Set the v3.0 vars in the plist** (uncomment the v3.0 block in your local
+   copy):
+   - `MP_OP_SLACK_APP_TOKEN_REF` → the app-level token's `op://` ref
+     (e.g. `op://Meal-Planner/slack-app/socket-mode` — stored as a field on the
+     existing `slack-app` item). **This is the master switch** — its presence is
+     what opens Socket Mode.
+   - `MP_OP_TODOIST_TOKEN_REF` → the Todoist token's `op://` ref.
+   - `MP_TODOIST_PROJECT_ID_PROD` → the target Todoist project **ID** (get it
+     from the project URL, or
+     `curl -s -H "Authorization: Bearer <token>" https://api.todoist.com/rest/v2/projects`).
+     Without it the commit has no destination.
+   - Optional (defaults shown): `MP_TODOIST_TITLE_TEMPLATE` (`{title}`),
+     `MP_TODOIST_RECIPE_LINK_FORMAT` (empty), and the three revision cost caps
+     `MP_REVISION_CYCLE_TOKEN_CAP` (150000 tokens/cycle),
+     `MP_REVISION_THREAD_TURN_CAP` (25 turns/thread),
+     `MP_REVISION_THREAD_DOLLAR_CAP` (`5` — shared with the generation budget).
+   - Env-fallback source instead of 1Password: `MP_SLACK_APP_TOKEN` /
+     `MP_TODOIST_API_TOKEN` with the raw values.
+
+3. **Rebuild and reload** so the daemon runs the v3.0 `dist/` and re-reads the
+   plist env:
+   ```bash
+   pnpm build
+   launchctl unload ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+   launchctl load   ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+   launchctl list | grep com.backhaus.meal-planner        # PID present = loaded
+   ```
+
+4. **Verify v3.0 is live:**
+   - **Socket connected:** the stdout log (plist `StandardOutPath`, e.g.
+     `logs/meal-planner.out.log`) shows `[socket-mode] connection opened` — NOT
+     the `skipping Socket Mode connection` line.
+   - **Revision loop:** reply in the current week's `#meal-plan` thread (e.g.
+     "swap Tuesday for something lighter") → within the debounce window the
+     daemon re-posts a **new** revised-plan message in-thread (append, never an
+     edit).
+   - **Commit:** run `/mealplan-approved` → tasks appear in the Todoist project
+     (each description carries a `mp:rid=<recipe_id>` marker) and a
+     **confirmation** posts as a thread reply.
+
+**Degrade / rollback (by design):**
+- **Absent app-level token** (or removed from the plist + reload) ⇒ Socket Mode
+  is skipped and the daemon reverts to exact v2.0 behavior — the clean, instant
+  rollback if the inbound path misbehaves.
+- **Todoist read failure** (recency, §6.3) degrades **silently** to no-dedup and
+  never fails the week; recency only affects planning once completed tasks with
+  `mp:rid` markers exist over the lookback window (default 8 weeks), so it is a
+  no-op until the family has committed and **checked off** meals.
+- **Revision cost cap breach** transitions that thread to `paused_cost`, alerts
+  `#agent-alerts`, and posts an in-thread "paused for cost" note — it never dies
+  silently. **Caveat:** the `resetRevisionPause` operator reset is currently a
+  module export only (no bound command surface yet — tracked follow-up), so
+  clearing a paused thread needs a manual invocation until that lands.
+
+> **Verified live 2026-07-26** (PR #60): after the plist edit + reload the daemon
+> logged `[socket-mode] connection opened`. Socket transport confirmed up;
+> revision/commit exercise on the next real thread interaction.
+
+---
+
 ## 9. Post-launch checklist
 
 - [ ] `#meal-plan` received a sensible draft at the scheduled time.

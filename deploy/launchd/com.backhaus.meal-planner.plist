@@ -98,6 +98,28 @@
 		<key>MP_WEATHER_LONGITUDE</key>
 		<string>-73.09</string>
 		===== end v2.0 weather ===== -->
+
+		<!-- ===== v3.0 revision + Todoist commit (OPTIONAL; runbook §8.2) =====
+		     OFF by default → with no Slack app-level token the daemon skips the
+		     Socket Mode connection and behaves exactly like v2.0 (outbound-only).
+		     To enable: store the app-level (xapp-) + Todoist API tokens in the
+		     Meal-Planner 1Password vault and point the *_REF vars at them, set
+		     MP_TODOIST_PROJECT_ID_PROD, then reload. No new TCC grant (Socket
+		     Mode is network; Todoist is HTTP). Ref paths are config, not secrets.
+		<key>MP_OP_SLACK_APP_TOKEN_REF</key>
+		<string>op://Meal-Planner/slack-app/socket-mode</string>
+		<key>MP_OP_TODOIST_TOKEN_REF</key>
+		<string>op://Meal-Planner/todoist-api/credential</string>
+		<key>MP_TODOIST_PROJECT_ID_PROD</key>
+		<string>REPLACE_WITH_TODOIST_PROJECT_ID</string>
+		     Optional (sensible defaults — omit unless overriding):
+		     MP_TODOIST_TITLE_TEMPLATE (default "{title}"),
+		     MP_TODOIST_RECIPE_LINK_FORMAT (default ""),
+		     revision caps MP_REVISION_CYCLE_TOKEN_CAP (150000) /
+		     MP_REVISION_THREAD_TURN_CAP (25) / MP_REVISION_THREAD_DOLLAR_CAP (5).
+		     (Env-fallback source instead of 1Password: MP_SLACK_APP_TOKEN /
+		     MP_TODOIST_API_TOKEN with the raw values.)
+		===== end v3.0 ===== -->
 	</dict>
 </dict>
 </plist>
