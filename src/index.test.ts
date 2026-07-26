@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NightSchedule } from "./calendar/night-schedule.js";
+import type { Config } from "./config/config.js";
 import type { ProfileSettings } from "./config/profile.js";
 import {
   applySecretsToEnv,
@@ -10,6 +11,7 @@ import {
   buildApprovalHandler,
   buildDryRunPost,
   buildRecencyReader,
+  buildRegenerateHandler,
   buildResetPauseHandler,
   buildRevisionSystem,
   DEFAULT_LOG_PATH,
@@ -971,6 +973,192 @@ describe("buildRevisionSystem + buildApprovalHandler wiring (bd meal-planner-uo1
       expect(logger.error).toHaveBeenCalledWith(
         expect.stringContaining("network"),
       );
+    });
+  });
+
+  describe("buildRegenerateHandler (bd meal-planner-cny)", () => {
+    function fakeRegenerateConfig(overrides: Partial<Config> = {}): Config {
+      return {
+        profile: "dev",
+        timezone: "America/Chicago",
+        triggerTime: "06:00",
+        model: "claude-sonnet-5",
+        effort: "medium",
+        modelRates: {
+          "claude-sonnet-5": { inputPerMTok: 2, outputPerMTok: 10 },
+        },
+        cookNights: { constrained: 4, relaxed: 2 },
+        activeMaxMinutes: 60,
+        fanoutMultiplier: 4,
+        vegFloorK: 2,
+        untestedRate: 0.15,
+        maxPairedSides: 2,
+        generationDollarCap: 2,
+        revisionCycleTokenCap: 150_000,
+        revisionThreadTurnCap: 25,
+        revisionThreadDollarCap: 5,
+        staleSyncThreshold: 50,
+        triggerTimeoutMs: 2_700_000,
+        llmCallTimeoutMs: 240_000,
+        llmCallMaxRetries: 0,
+        quickActiveMax: 30,
+        calendar: {
+          enabled: false,
+          include: [],
+          cookingWindow: { start: "16:30", end: "19:30" },
+        },
+        weather: {},
+        ...overrides,
+      };
+    }
+
+    function fakePlan(weekKey: string): EnrichedWeekPlan {
+      return { week_key: weekKey, meals: [] };
+    }
+
+    /** Resolves externally -- lets a test pause one call mid-flight while a second (different weekKey) call runs to completion. */
+    function makeDeferred<T>(): {
+      promise: Promise<T>;
+      resolve: (value: T) => void;
+    } {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    it("wires sessionStore/coordinator/slack/channelId/alert through to a real regenerateWeek call, folding the fresh meter's totals onto the session row", async () => {
+      const { store, table } = fakeSessionStore({
+        "2026-07-12": session(),
+      });
+      const coordinator = createRevisionCoordinator();
+      const { slack, postMessage } = fakeSlack();
+      const alert = vi.fn(async () => {});
+      const makeRawBuildPlan =
+        (llm: LlmClient) =>
+        async (weekKey: string): Promise<EnrichedWeekPlan> => {
+          await llm.runQuery({ prompt: "regenerate" } as never);
+          return fakePlan(weekKey);
+        };
+      const createLlm = (): LlmClient => ({
+        runQuery: vi.fn(async () => ({
+          text: "{}",
+          usage: { inputTokens: 100, outputTokens: 50 },
+        })),
+      });
+
+      const handler = buildRegenerateHandler(
+        fakeRegenerateConfig(),
+        {
+          sessionStore: store,
+          coordinator,
+          slack,
+          channelId: "C_MEAL_PLAN",
+          alert,
+        },
+        makeRawBuildPlan,
+        createLlm,
+      );
+
+      await handler.onRegenerate({
+        weekKey: "2026-07-12",
+        threadTs: "1000.0001",
+        command: { command: "/mp-regenerate" },
+      });
+
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channel: "C_MEAL_PLAN",
+          thread_ts: "1000.0001",
+        }),
+      );
+      const row = table.get("2026-07-12");
+      expect(row?.working_plan).toEqual(fakePlan("2026-07-12"));
+      expect(row?.status).toBe("suggested");
+      expect(row?.turn_count).toBe(1);
+      // rate: {inputPerMTok: 2, outputPerMTok: 10} -> (100/1e6)*2 + (50/1e6)*10 = 0.0007
+      expect(row?.token_spend).toBe(150);
+      expect(row?.cost_usd).toBeCloseTo(0.0007, 10);
+    });
+
+    it("constructs a FRESH CostMeter + llm client on EVERY call, so a concurrent regenerate of a DIFFERENT week never corrupts another in-flight call's cost bookkeeping", async () => {
+      const { store, table } = fakeSessionStore({
+        "week-a": session({ week_key: "week-a", thread_ts: "a.0001" }),
+        "week-b": session({ week_key: "week-b", thread_ts: "b.0001" }),
+      });
+      const coordinator = createRevisionCoordinator();
+      const { slack, postMessage } = fakeSlack();
+      const alert = vi.fn(async () => {});
+
+      const deferredA = makeDeferred<void>();
+      const makeRawBuildPlan =
+        (llm: LlmClient) =>
+        async (weekKey: string): Promise<EnrichedWeekPlan> => {
+          await llm.runQuery({ prompt: "regenerate" } as never);
+          if (weekKey === "week-a") {
+            // Pauses mid-flight so week-b's concurrent call (a DIFFERENT
+            // weekKey -- runExclusive only serializes per-weekKey) can run to
+            // completion, including its own meter.reset(), while week-a's
+            // own call is still awaiting inside buildPlan.
+            await deferredA.promise;
+          }
+          return fakePlan(weekKey);
+        };
+
+      let llmCallIndex = 0;
+      const usages = [
+        { inputTokens: 100, outputTokens: 50 }, // week-a's own call
+        { inputTokens: 10, outputTokens: 5 }, // week-b's own call
+      ];
+      const createLlm = (): LlmClient => {
+        const usage = usages[llmCallIndex];
+        llmCallIndex += 1;
+        return {
+          runQuery: vi.fn(async () => ({ text: "{}", usage })),
+        };
+      };
+
+      const handler = buildRegenerateHandler(
+        fakeRegenerateConfig(),
+        {
+          sessionStore: store,
+          coordinator,
+          slack,
+          channelId: "C_MEAL_PLAN",
+          alert,
+        },
+        makeRawBuildPlan,
+        createLlm,
+      );
+
+      const callA = handler.onRegenerate({
+        weekKey: "week-a",
+        threadTs: "a.0001",
+        command: { command: "/mp-regenerate" },
+      });
+
+      // week-b's call is a DIFFERENT weekKey, so it runs concurrently with
+      // week-a's still-paused call rather than queueing behind it.
+      await handler.onRegenerate({
+        weekKey: "week-b",
+        threadTs: "b.0001",
+        command: { command: "/mp-regenerate" },
+      });
+
+      // week-b's own call must already be fully settled -- its bookkeeping
+      // must reflect ONLY its own 10/5 usage, not week-a's 100/50.
+      expect(table.get("week-b")?.token_spend).toBe(15);
+
+      deferredA.resolve();
+      await callA;
+
+      // week-a's bookkeeping must reflect ONLY its own 100/50 usage -- a
+      // shared (non-fresh) meter would have been reset()/overwritten by
+      // week-b's concurrent call before week-a ever read its own totals().
+      expect(table.get("week-a")?.token_spend).toBe(150);
+
+      expect(postMessage).toHaveBeenCalledTimes(2);
     });
   });
 

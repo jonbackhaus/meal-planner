@@ -608,8 +608,10 @@ from §8.1 is untouched).
 **Prerequisite — the Slack app config (one-time, §1/§9.2):** in the app config,
 enable **Socket Mode** → generate an **app-level token** (`xapp-…`, scope
 `connections:write`), add the `channels:history` / `groups:history` + `commands`
-bot scopes, and **register the slash commands** `/mp-approve` (commit)
-and `/mp-resume` (clear a cost-pause). Slash commands and thread events
+bot scopes, and **register the slash commands** `/mp-approve` (commit),
+`/mp-resume` (clear a cost-pause), `/mp-regenerate` (full-replace regenerate,
+bd meal-planner-8u6), and `/mp-reset` (discard in-flight work + revert to the
+last posted plan, bd meal-planner-2b2). Slash commands and thread events
 both arrive over the socket (no public endpoint).
 
 > **Renaming note (bd meal-planner-o0v):** these commands were renamed from
@@ -695,6 +697,27 @@ both arrive over the socket (no public endpoint).
   paused week's thread (resolves to the active week, calls the live guard's
   `resetPause` → back to `suggested`; never auto-resumes — ADR-0007 D6).
 
+**Operator commands, at a glance** (all workspace-wide slash commands, always
+resolved to the CURRENT active week's thread — no approver gating, private
+family workspace = operators):
+
+| Command | Does | Reach for it when… | `paused_cost` behavior |
+| --- | --- | --- | --- |
+| `/mp-approve` | Commits the current `working_plan` to Todoist + posts a confirmation reply. | The draft (as revised so far) looks good and is ready to cook from. | n/a — approval isn't gated on the cost pause. |
+| `/mp-resume` | Clears a `paused_cost` guard (back to `suggested`); no plan change. | A thread got paused for cost and the revision/regenerate loop needs to keep going. | Clears the pause (that's its whole job). |
+| `/mp-regenerate` | Full-replace: discards `working_plan` and re-runs the SAME generation/selection pipeline a week's first-ever post uses, posting the fresh result as a NEW thread reply (`suggested` again, even from `committed` — re-approval required). | The draft (or an already-committed week) needs a do-over from scratch rather than another incremental in-thread edit. | **Refuses** — logs and no-ops; an explicit `/mp-reset` is required first (ADR-0007 D6: only an operator reset may clear a cost pause, never a regenerate). |
+| `/mp-reset` | Cancels any in-flight/pending revision and reverts `working_plan` to the most recent successfully-posted plan (`last_posted_plan`); posts a brief in-thread confirmation. Never calls the LLM. | An in-flight revision (or regenerate) went sideways and the safest move is "undo to what was last actually posted." | **Clears the pause** (back to `suggested`) in addition to reverting the plan — this is the one command ratified to lift a cost pause via a revert rather than a resume. |
+
+> **Deploy note (bd meal-planner-2b2/cny):** wiring `/mp-regenerate`/`/mp-reset`
+> into the daemon ships alongside the repo's **FIRST real SQLite migration**
+> (`to: 2`, a nullable `last_posted_plan` column — see §10). That activates the
+> pre-migration-backup gate (§10) at the next boot: the mandatory pre-migration
+> snapshot fires once, then the migration applies. As with any source change
+> meant to reach the daemon, this requires **`pnpm build` + a launchd
+> unload/reload** (§8.1's own gotcha) — build alone doesn't restart the resident
+> process, and a reload without a fresh build just re-runs the stale `dist/`
+> that predates the migration.
+
 > **Verified live 2026-07-26** (PR #60): after the plist edit + reload the daemon
 > logged `[socket-mode] connection opened`. Socket transport confirmed up;
 > revision/commit exercise on the next real thread interaction.
@@ -732,13 +755,17 @@ Two triggers:
 - **Pre-migration copy** — a mandatory snapshot (`…-premigration.sqlite`, kept
   indefinitely, never pruned) taken right before a real schema migration
   applies. If it fails, boot **aborts before migrating** rather than run a
-  destructive change with no snapshot. v1.0 ships **zero** real migrations (the
-  only schema step is the non-destructive baseline `user_version = 1` stamp), so
-  this branch is dormant until the first additive migration (v2.0 `day`); the
+  destructive change with no snapshot. v1.0 shipped **zero** real migrations
+  (the only schema step was the non-destructive baseline `user_version = 1`
+  stamp), so this branch stayed dormant until bd meal-planner-2b2's `to: 2`
+  (`/mp-reset`'s nullable `last_posted_plan` column) — the repo's **FIRST**
+  real additive migration. Any boot on or after that release takes this
+  mandatory pre-migration snapshot once, then applies the migration; the
   rolling boot copy already covers the baseline stamp.
 
 Schema versioning is `PRAGMA user_version` with a forward-only runner
-(`src/orchestrator/migrations.ts`); the current schema is **baseline v1**.
+(`src/orchestrator/migrations.ts`); the current schema is **v2** (bd
+meal-planner-2b2's `last_posted_plan` column).
 
 > **The recipe index is NOT auto-backed-up here** — it is fully regenerable
 > with **`pnpm sync`** (re-reads Apple Notes → re-embeds → re-extracts), so it
