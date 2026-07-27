@@ -608,11 +608,41 @@ from §8.1 is untouched).
 **Prerequisite — the Slack app config (one-time, §1/§9.2):** in the app config,
 enable **Socket Mode** → generate an **app-level token** (`xapp-…`, scope
 `connections:write`), add the `channels:history` / `groups:history` + `commands`
-bot scopes, and **register the slash commands** `/mp-approve` (commit),
+bot scopes, **enable Event Subscriptions → subscribe to the `message.channels`
+bot event** (see the note below — this step is easy to miss and fails
+silently), and **register the slash commands** `/mp-approve` (commit),
 `/mp-resume` (clear a cost-pause), `/mp-regenerate` (full-replace regenerate,
 bd meal-planner-8u6), and `/mp-reset` (discard in-flight work + revert to the
 last posted plan, bd meal-planner-2b2). Slash commands and thread events
-both arrive over the socket (no public endpoint).
+both arrive over the socket (no public endpoint), but they have **different**
+config prerequisites — see below.
+
+> **Event Subscriptions are separate from scopes (2026-07-26 inbound outage).**
+> The `channels:history` scope only grants *permission* to receive
+> `message.channels`; it does **not** subscribe the app to it. Enabling Socket
+> Mode doesn't either — `connections:write` is all the websocket handshake
+> needs, so **the connection opens normally and the daemon logs
+> `[socket-mode] connection opened` even when no events will ever be
+> delivered.** Thread replies then vanish with no error anywhere: Slack sends
+> nothing, and `attachEventRouter` has nothing to log (its drop paths only fire
+> for events it actually receives). Turn it on at Slack API dashboard →
+> *Event Subscriptions* → toggle **Enable Events** on → *Subscribe to bot
+> events* → add **`message.channels`** (add `groups:history`'s counterpart
+> `message.groups` too if the target channel is private), then **reinstall the
+> app** if prompted.
+>
+> **Diagnostic:** slash commands arrive over a *different* Socket Mode envelope
+> (`slash_commands`) that needs only command registration, **not** Event
+> Subscriptions. So `/mp-resume` working while thread replies are ignored
+> isolates the fault to Event Subscriptions specifically, rather than to the
+> socket, the tokens, or the daemon. `/mp-resume` is the safe probe — on a week
+> that isn't cost-paused it just replies "nothing to resume" with no LLM spend,
+> no Todoist write, and no plan mutation.
+>
+> Note this app has **no `app_mentions:read` scope and no `app_mention`
+> handler**: the v3.0 listener is scoped to *thread replies* (SPEC §7), so
+> tagging `@Meal Planner` at top level in the channel does nothing, by design
+> (bd meal-planner-kqq).
 
 > **Renaming note (bd meal-planner-o0v):** these commands were renamed from
 > `/mealplan-approved` / `/mealplan-resume` to `/mp-approve` / `/mp-resume`.
@@ -674,11 +704,17 @@ both arrive over the socket (no public endpoint).
 4. **Verify v3.0 is live:**
    - **Socket connected:** the stdout log (plist `StandardOutPath`, e.g.
      `logs/meal-planner.out.log`) shows `[socket-mode] connection opened` — NOT
-     the `skipping Socket Mode connection` line.
+     the `skipping Socket Mode connection` line. **This line is necessary but
+     NOT sufficient** — it proves only that the websocket handshake succeeded,
+     and it appears identically when Event Subscriptions are off and no event
+     will ever be delivered (see the prerequisite note above). Do not treat it
+     as proof the inbound path works; only the next two checks do that.
    - **Revision loop:** reply in the current week's `#meal-plan` thread (e.g.
      "swap Tuesday for something lighter") → within the debounce window the
      daemon re-posts a **new** revised-plan message in-thread (append, never an
-     edit).
+     edit). **Nothing at all happening — no reply and no new log lines — points
+     at Event Subscriptions**, not the daemon; confirm with `/mp-resume`, which
+     reaches the socket over a separate envelope that doesn't need them.
    - **Commit:** run `/mp-approve` → tasks appear in the Todoist project
      (each description carries a `mp:rid=<recipe_id>` marker) and a
      **confirmation** posts as a thread reply.
