@@ -48,6 +48,8 @@ export interface SlackMessageEvent {
   /** Present only on messages that are themselves replies within a thread; equals the root message's `ts`. */
   thread_ts?: string;
   subtype?: string;
+  /** Set by Slack on messages posted by a bot/app -- including THIS daemon's own outbound posts echoing back as events. Used to skip logging our own noise on the non-threaded drop path. */
+  bot_id?: string;
   [key: string]: unknown;
 }
 
@@ -259,9 +261,22 @@ export function attachEventRouter(
 
       const threadTs = event.thread_ts;
       if (!threadTs) {
-        // Not a threaded reply (a bare channel message, our own outbound
-        // post landing back as an event, a message_changed/deleted subtype
-        // without a top-level thread_ts, etc.) -- nothing to route.
+        // Not a threaded reply -- nothing to route (SPEC §7 scopes this
+        // listener to thread replies; top-level messages are thread-only by
+        // design, bd meal-planner-j8b). Log ONLY a genuine human top-level
+        // message: one with no `bot_id` (our own outbound posts echo back
+        // here) and no `subtype` (edit/delete/join events also land here).
+        // Those two are the high-volume noise AC#2 warns against; a plain
+        // user message is low-volume in the family channel and worth a line,
+        // because its ABSENCE is exactly what let the 2026-07-26 outage read
+        // as "no events arriving at all" (bd meal-planner-kqq). Every other
+        // drop path in this router logs; this makes the last silent one
+        // traceable without flooding the log.
+        if (!event.bot_id && event.subtype === undefined) {
+          logger.log(
+            `[inbound-router] ignoring non-threaded message in channel ${event.channel ?? "?"} (ts=${event.ts ?? "?"}); this listener only acts on replies within a plan thread`,
+          );
+        }
         return;
       }
 

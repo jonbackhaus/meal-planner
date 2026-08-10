@@ -262,7 +262,7 @@ describe("attachEventRouter", () => {
     expect(onReply).not.toHaveBeenCalled();
   });
 
-  it("drops a stray channel message (no thread_ts) -- does not forward", async () => {
+  it("logs (but does not forward) a plain human top-level message (no thread_ts)", async () => {
     const client = new FakeSocketModeClient();
     const sessionStore = fakeSessionStore(() => {
       throw new Error(
@@ -271,20 +271,91 @@ describe("attachEventRouter", () => {
     });
     const onReply = vi.fn();
     const ack = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
     attachEventRouter(client as unknown as SocketModeClient, {
       sessionStore,
       weekKeyConfig: cfg,
       revisionHandler: { onReply },
       now: () => NOW,
-      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger,
     });
 
-    const { thread_ts: _omit, ...strayEvent } = threadReplyEvent();
+    const { thread_ts: _omit, ...strayEvent } = threadReplyEvent({
+      channel: "C123",
+      ts: "1000.0009",
+    });
     await emitMessage(client, strayEvent, ack);
 
     expect(ack).toHaveBeenCalledTimes(1);
     expect(onReply).not.toHaveBeenCalled();
+    // AC#1: distinguishes an ignored top-level message from "no events at all".
+    expect(logger.log).toHaveBeenCalledWith(
+      expect.stringContaining("ignoring non-threaded message"),
+    );
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining("C123"));
+  });
+
+  it("does NOT log our own outbound post echoing back (bot_id set, no thread_ts)", async () => {
+    const client = new FakeSocketModeClient();
+    const sessionStore = fakeSessionStore(() => {
+      throw new Error(
+        "getByThreadTs should not be called for a non-threaded message",
+      );
+    });
+    const onReply = vi.fn();
+    const ack = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    attachEventRouter(client as unknown as SocketModeClient, {
+      sessionStore,
+      weekKeyConfig: cfg,
+      revisionHandler: { onReply },
+      now: () => NOW,
+      logger,
+    });
+
+    // The weekly draft the bot itself posts lands back as a top-level event.
+    const { thread_ts: _omit, ...botEcho } = threadReplyEvent({
+      user: undefined,
+      bot_id: "B999",
+    });
+    await emitMessage(client, botEcho, ack);
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(onReply).not.toHaveBeenCalled();
+    // AC#2: bot echoes are the high-volume noise -- never logged.
+    expect(logger.log).not.toHaveBeenCalled();
+  });
+
+  it("does NOT log an edit/delete subtype without a thread_ts (message_changed)", async () => {
+    const client = new FakeSocketModeClient();
+    const sessionStore = fakeSessionStore(() => {
+      throw new Error(
+        "getByThreadTs should not be called for a non-threaded message",
+      );
+    });
+    const onReply = vi.fn();
+    const ack = vi.fn(async () => {});
+    const logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    attachEventRouter(client as unknown as SocketModeClient, {
+      sessionStore,
+      weekKeyConfig: cfg,
+      revisionHandler: { onReply },
+      now: () => NOW,
+      logger,
+    });
+
+    const { thread_ts: _omit, ...changed } = threadReplyEvent({
+      subtype: "message_changed",
+    });
+    await emitMessage(client, changed, ack);
+
+    expect(ack).toHaveBeenCalledTimes(1);
+    expect(onReply).not.toHaveBeenCalled();
+    // AC#2: subtype events (edit/delete/join) are noise -- never logged.
+    expect(logger.log).not.toHaveBeenCalled();
   });
 
   it("defaults to a no-op revisionHandler when none is injected (never throws)", async () => {
