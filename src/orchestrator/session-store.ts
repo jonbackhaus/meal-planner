@@ -63,6 +63,14 @@ export interface Session {
    * revision work while keeping already-accepted revisions.
    */
   last_posted_plan: WorkingPlan | null;
+  /**
+   * bd meal-planner-5uy: the week's FIRST successfully-posted plan, written
+   * once by the initial suggest (`./generate.ts`) and never touched by
+   * revisions, `/mp-regenerate`, or `/mp-reset`. Read by `./plan-memory.ts`
+   * as the interim local recency memory ("treat the initial recommendation
+   * as accepted") until the Todoist round-trip supplies real feedback.
+   */
+  initial_plan: WorkingPlan | null;
   turn_count: number;
   token_spend: number;
   cost_usd: number;
@@ -78,6 +86,7 @@ export interface InsertSessionRow {
   thread_ts?: string | null;
   working_plan?: WorkingPlan | null;
   last_posted_plan?: WorkingPlan | null;
+  initial_plan?: WorkingPlan | null;
   turn_count?: number;
   token_spend?: number;
   cost_usd?: number;
@@ -90,6 +99,7 @@ export type SessionPatch = Partial<
     | "thread_ts"
     | "working_plan"
     | "last_posted_plan"
+    | "initial_plan"
     | "turn_count"
     | "token_spend"
     | "cost_usd"
@@ -108,6 +118,7 @@ interface SessionRow {
   thread_ts: string | null;
   working_plan: string | null;
   last_posted_plan: string | null;
+  initial_plan: string | null;
   turn_count: number;
   token_spend: number;
   cost_usd: number;
@@ -124,6 +135,8 @@ function rowToSession(row: SessionRow): Session {
       row.working_plan === null ? null : JSON.parse(row.working_plan),
     last_posted_plan:
       row.last_posted_plan === null ? null : JSON.parse(row.last_posted_plan),
+    initial_plan:
+      row.initial_plan === null ? null : JSON.parse(row.initial_plan),
     turn_count: row.turn_count,
     token_spend: row.token_spend,
     cost_usd: row.cost_usd,
@@ -187,12 +200,16 @@ export class SessionStore {
       row.last_posted_plan === undefined || row.last_posted_plan === null
         ? null
         : JSON.stringify(row.last_posted_plan);
+    const initialPlan =
+      row.initial_plan === undefined || row.initial_plan === null
+        ? null
+        : JSON.stringify(row.initial_plan);
 
     this.db
       .prepare(
         `INSERT INTO session
-          (week_key, status, thread_ts, working_plan, last_posted_plan, turn_count, token_spend, cost_usd, created_at, updated_at)
-         VALUES (@week_key, @status, @thread_ts, @working_plan, @last_posted_plan, @turn_count, @token_spend, @cost_usd, @created_at, @updated_at)`,
+          (week_key, status, thread_ts, working_plan, last_posted_plan, initial_plan, turn_count, token_spend, cost_usd, created_at, updated_at)
+         VALUES (@week_key, @status, @thread_ts, @working_plan, @last_posted_plan, @initial_plan, @turn_count, @token_spend, @cost_usd, @created_at, @updated_at)`,
       )
       .run({
         week_key: row.week_key,
@@ -200,6 +217,7 @@ export class SessionStore {
         thread_ts: row.thread_ts ?? null,
         working_plan: workingPlan,
         last_posted_plan: lastPostedPlan,
+        initial_plan: initialPlan,
         turn_count: row.turn_count ?? 0,
         token_spend: row.token_spend ?? 0,
         cost_usd: row.cost_usd ?? 0,
@@ -257,6 +275,11 @@ export class SessionStore {
           ? null
           : JSON.stringify(patch.last_posted_plan);
     }
+    if (patch.initial_plan !== undefined) {
+      fields.push("initial_plan = @initial_plan");
+      params.initial_plan =
+        patch.initial_plan === null ? null : JSON.stringify(patch.initial_plan);
+    }
     if (patch.turn_count !== undefined) {
       fields.push("turn_count = @turn_count");
       params.turn_count = patch.turn_count;
@@ -283,6 +306,29 @@ export class SessionStore {
         `UPDATE session SET ${fields.join(", ")} WHERE week_key = @week_key`,
       )
       .run(params);
+  }
+
+  /**
+   * The `initial_plan`s of the `limit` most recent weeks strictly BEFORE
+   * `week_key` (newest first), skipping rows with none (a `failed` week never
+   * posted). `week_key`s are `YYYY-MM-DD`, so string order is date order.
+   * Read by `./plan-memory.ts` (bd meal-planner-5uy).
+   */
+  listInitialPlansBefore(
+    week_key: string,
+    limit: number,
+  ): { week_key: string; initial_plan: WorkingPlan }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT week_key, initial_plan FROM session
+         WHERE week_key < ? AND initial_plan IS NOT NULL
+         ORDER BY week_key DESC LIMIT ?`,
+      )
+      .all(week_key, limit) as { week_key: string; initial_plan: string }[];
+    return rows.map((r) => ({
+      week_key: r.week_key,
+      initial_plan: JSON.parse(r.initial_plan),
+    }));
   }
 
   /**

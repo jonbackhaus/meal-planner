@@ -22,6 +22,7 @@ function session(overrides: Partial<Session> = {}): Session {
     thread_ts: "1000.0001",
     working_plan: IN_FLIGHT,
     last_posted_plan: LAST_POSTED,
+    initial_plan: null,
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,

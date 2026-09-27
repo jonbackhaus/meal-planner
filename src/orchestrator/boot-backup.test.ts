@@ -28,7 +28,9 @@ afterEach(() => {
 function seedSessionDb(path: string): void {
   const d = new Database(path);
   d.pragma("journal_mode = WAL");
-  d.exec("CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT)");
+  d.exec(
+    "CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT, working_plan TEXT)",
+  );
   d.close();
 }
 
@@ -36,7 +38,9 @@ function seedSessionDb(path: string): void {
 function seedFullyMigratedSessionDb(path: string): void {
   const d = new Database(path);
   d.pragma("journal_mode = WAL");
-  d.exec("CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT)");
+  d.exec(
+    "CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT, working_plan TEXT)",
+  );
   runMigrations(d, migrations);
   d.close();
 }

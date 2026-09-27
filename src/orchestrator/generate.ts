@@ -208,6 +208,9 @@ export async function generateForWeek(
         // bd meal-planner-2b2: the initial suggest is the FIRST successful-
         // post checkpoint `/mp-reset` can ever revert to.
         last_posted_plan: plan,
+        // bd meal-planner-5uy: written ONCE, here -- the interim recency
+        // memory treats this initial recommendation as accepted.
+        initial_plan: plan,
         ...spendPatch(deps.meter),
       },
       deps.now(),
@@ -264,6 +267,7 @@ export async function generateForWeek(
               thread_ts: ts,
               working_plan: plan,
               last_posted_plan: plan,
+              initial_plan: plan,
               ...spendPatch(deps.meter),
             },
             deps.now(),

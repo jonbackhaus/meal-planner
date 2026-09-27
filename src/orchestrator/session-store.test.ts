@@ -59,10 +59,10 @@ describe("SessionStore", () => {
 
     // Reopen with a raw connection to read the header user_version the
     // constructor's migration runner stamped -- baseline (1) PLUS every
-    // shipped migration (currently to:2, `last_posted_plan`).
+    // shipped migration (currently to:3, `initial_plan`).
     const raw = new Database(path);
     try {
-      expect(raw.pragma("user_version", { simple: true })).toBe(2);
+      expect(raw.pragma("user_version", { simple: true })).toBe(3);
     } finally {
       raw.close();
       for (const suffix of ["", "-wal", "-shm"]) {
