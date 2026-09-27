@@ -51,6 +51,12 @@
 		     via the `op` CLI instead of holding secrets directly. -->
 		<key>OP_SERVICE_ACCOUNT_TOKEN</key>
 		<string>REPLACE_ME_DO_NOT_COMMIT_REAL_VALUE</string>
+		<!-- Stop `op` probing the 1Password desktop app (not needed with a
+		     service-account token). The probe can raise a macOS consent
+		     prompt attributed to `node` that a headless daemon never answers,
+		     hanging `op read` until the secrets-load timeout. -->
+		<key>OP_BIOMETRIC_UNLOCK_ENABLED</key>
+		<string>false</string>
 
 		<!-- Only needed if NOT using 1Password (env fallback source); still
 		     placeholders only, never real values in this committed file. -->
