@@ -46,6 +46,20 @@ export const migrations: readonly Migration[] = [
       db.exec("ALTER TABLE session ADD COLUMN last_posted_plan TEXT");
     },
   },
+  {
+    // bd meal-planner-5uy: `initial_plan`, the week's FIRST posted plan,
+    // written once and never revised -- the interim local recency memory
+    // (`./plan-memory.ts`). Back-filled from the best available copy on
+    // existing rows: `last_posted_plan`, else `working_plan` (every row
+    // predating this migration is an unrevised initial suggest in practice).
+    to: 3,
+    run(db) {
+      db.exec("ALTER TABLE session ADD COLUMN initial_plan TEXT");
+      db.exec(
+        "UPDATE session SET initial_plan = COALESCE(last_posted_plan, working_plan)",
+      );
+    },
+  },
 ];
 
 /** The DB's current schema version (`PRAGMA user_version`). */

@@ -154,7 +154,9 @@ describe("pendingMigrations", () => {
     // The shipped list's to:2 migration expects a `session` table to already
     // exist (it ALTERs it) -- mirrors SessionStore's real constructor order
     // (initSchema() creates the table, THEN runMigrations() applies this).
-    db.exec("CREATE TABLE session (week_key TEXT PRIMARY KEY)");
+    db.exec(
+      "CREATE TABLE session (week_key TEXT PRIMARY KEY, working_plan TEXT)",
+    );
     runMigrations(db); // -> baseline + every shipped migration
     expect(pendingMigrations(db)).toEqual([]);
   });
@@ -201,5 +203,37 @@ describe("the shipped migrations list (bd meal-planner-2b2)", () => {
           "2026-07-12T06:00:00.000Z",
         ),
     ).not.toThrow();
+  });
+});
+
+describe("the shipped migrations list (bd meal-planner-5uy)", () => {
+  it("to:3 adds initial_plan, back-filled from last_posted_plan else working_plan", () => {
+    db = new Database(":memory:");
+    const database = db;
+    database.exec(
+      "CREATE TABLE session (week_key TEXT PRIMARY KEY, working_plan TEXT)",
+    );
+    runMigrations(
+      database,
+      migrations.filter((m) => m.to <= 2),
+    );
+    database.exec(`
+      INSERT INTO session VALUES ('2026-07-19', '"w1"', NULL);
+      INSERT INTO session VALUES ('2026-07-26', '"w2"', '"p2"');
+      INSERT INTO session VALUES ('2026-08-02', NULL, NULL);
+    `);
+
+    runMigrations(database, migrations);
+
+    expect(currentVersion(database)).toBe(3);
+    expect(
+      database
+        .prepare("SELECT week_key, initial_plan FROM session ORDER BY week_key")
+        .all(),
+    ).toEqual([
+      { week_key: "2026-07-19", initial_plan: '"w1"' },
+      { week_key: "2026-07-26", initial_plan: '"p2"' },
+      { week_key: "2026-08-02", initial_plan: null },
+    ]);
   });
 });

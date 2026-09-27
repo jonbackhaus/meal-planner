@@ -24,6 +24,7 @@ function session(overrides: Partial<Session> = {}): Session {
     thread_ts: "1000.0001",
     working_plan: { week_key: WEEK, meals: [] },
     last_posted_plan: { week_key: WEEK, meals: [] },
+    initial_plan: null,
     turn_count: 0,
     token_spend: 0,
     cost_usd: 0,

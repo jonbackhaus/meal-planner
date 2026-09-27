@@ -33,7 +33,9 @@ afterEach(() => {
 function makeSourceDb(): Database.Database {
   const d = new Database(":memory:");
   d.pragma("journal_mode = WAL");
-  d.exec("CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT)");
+  d.exec(
+    "CREATE TABLE session (week_key TEXT PRIMARY KEY, status TEXT, working_plan TEXT)",
+  );
   d.prepare("INSERT INTO session (week_key, status) VALUES (?, ?)").run(
     "2026-07-12",
     "suggested",

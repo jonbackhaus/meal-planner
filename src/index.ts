@@ -22,6 +22,10 @@ import { backupSessionDbAtBoot } from "./orchestrator/boot-backup.js";
 import { composeDaemon } from "./orchestrator/compose.js";
 import type { AlertFn, BuildPlanFn } from "./orchestrator/generate.js";
 import {
+  combineRecencySources,
+  readPlannedRecipeIds,
+} from "./orchestrator/plan-memory.js";
+import {
   createRegenerateHandler,
   type RegenerateWeekDeps,
 } from "./orchestrator/regenerate.js";
@@ -69,7 +73,10 @@ import type {
   ResetPauseHandler,
 } from "./slack/slash-commands.js";
 import { createTodoistApprovalHandler } from "./todoist-commit/approval-handler.js";
-import { readRecentRecipeIds } from "./todoist-commit/recency.js";
+import {
+  DEFAULT_RECENCY_LOOKBACK_WEEKS,
+  readRecentRecipeIds,
+} from "./todoist-commit/recency.js";
 import { TodoistClient } from "./todoist-mcp/todoist-client.js";
 import { getTemperatureBand } from "./weather/weather.js";
 
@@ -899,10 +906,19 @@ export async function main(): Promise<void> {
           readEvents: readCalendarEvents,
           alert,
           getTemperatureBand,
-          // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3): `undefined` until
-          // MP_TODOIST_API_TOKEN is configured (pre-v3.x boot), matching
-          // `approvalHandler`'s own gate -- see `buildRecencyReader`'s doc.
-          getRecentRecipeIds: buildRecencyReader(profile, secrets),
+          // D3 (bd meal-planner-v9v.3, ADR-0006, SPEC §6.3) + bd
+          // meal-planner-5uy: the local plan memory (prior weeks' INITIAL
+          // plans, treated as accepted) unioned with the Todoist read, which
+          // stays `undefined` until MP_TODOIST_API_TOKEN is configured -- see
+          // `buildRecencyReader`'s doc. `store` is declared below but only
+          // read at generation time, after boot has constructed it.
+          getRecentRecipeIds: combineRecencySources({
+            local: () =>
+              readPlannedRecipeIds(store, weekKey, {
+                lookbackWeeks: DEFAULT_RECENCY_LOOKBACK_WEEKS,
+              }),
+            todoist: buildRecencyReader(profile, secrets),
+          }),
           getEmbedding: (id: string) => vectorStore.getEmbedding(id),
         },
       });
