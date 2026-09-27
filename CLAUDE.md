@@ -131,16 +131,20 @@ to bypass. **After `bd hooks install` or a bd upgrade, check the block survived.
 
 ## Project Status
 
-**v1.0 runtime code-complete on `main`.** The full `src/` tree, toolchain (pnpm
-+ Vitest + Biome), and test suite (~491 tests passing) are in place; the v1.0
-daemon is built and PRs #1–#19 are merged. Remaining work is ops go-live (see
-`docs/RUNBOOK.md`) and the v2.0+ phases. The design docs in `docs/` remain the
-authoritative source for intent and invariants:
+**v1.0–v3.0 are on `main`**: the weekly daemon, v2.0 weather + calendar + day
+assignment, and the v3.0 Socket Mode revision loop, Todoist commit and `/mp-*`
+operator commands. v4.0 (grocery list → AnyList) is not built yet; ops steps
+live in `docs/RUNBOOK.md`. The design docs in `docs/` remain the authoritative
+source for intent and invariants:
 
 - `docs/SPEC.md` — the authoritative design document (v1.0). Read this first. Section numbers (§) are referenced throughout the ADRs.
 - `docs/adr-0001-recipe-mcp-structured-field-interface.md` — Recipe MCP two-tier tool interface + ingest-time extraction + frozen ingredient schema.
 - `docs/adr-0002-orchestrator-state-machine-idempotency.md` — session schema, state machine, week-keyed idempotency, startup catch-up.
 - `docs/adr-0003-planner-hybrid-selection-contract.md` — planner prompt, `WeekPlan` output schema, and deterministic post-validation.
+- `docs/adr-0004-v2.0-calendar-contract.md` — calendar source, event→capacity classification, cook-night derivation, prep scheduling.
+- `docs/adr-0005-v2.0-day-assignment.md` — populating the nullable `day`: mechanism, format, validation, render.
+- `docs/adr-0006-todoist-commit-recency-contract.md` — Todoist task schema, recipe-id round-trip, task-id persistence, phase ordering.
+- `docs/adr-0007-v3.0-revision-loop-protocol.md` — revision mutation semantics, re-post format, debounce, revision/approval concurrency, cost-cap pause/resume.
 
 When implementing, **the ADRs override the SPEC** where they refine it, and both are more specific than this file. Keep them in sync when a decision changes.
 
@@ -166,13 +170,13 @@ pnpm sync                    # tsx src/sync-cli.ts (recipe sync CLI)
 
 Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context config (not hardcoded). Gotchas — manual thinking `budget_tokens` is rejected (use `effort`); non-default `temperature`/`top_p`/`top_k` are rejected; the new tokenizer runs ~1.0–1.35× higher token counts (size cost caps accordingly).
 
-**Local run & ops gotchas** (learned in the 2026-07-20 go-live):
+**Local run & ops gotchas:**
 - **`.env` auto-loads for `pnpm dev`/`pnpm sync`** (the scripts pass `--env-file-if-exists=.env`) — but a hand-run *built* daemon (`node dist/index.js`) does not; `set -a; source ./.env; set +a` first. launchd carries the same vars via the plist `EnvironmentVariables`, not your shell.
-- **Rebuild `dist/` after ANY source change meant to reach the daemon** (learned 2026-07-24 go-live) — prod runs the *compiled* `node dist/index.js`, NOT `src/`, so `git pull`/merge updates source but leaves the running daemon on stale `dist/`. Run **`pnpm build`** then reload launchd (`launchctl unload/load`); build alone doesn't restart the resident process, reload alone runs stale code. (Whole v2.0 was merged green yet the daemon kept executing the old build — `dist/calendar/` didn't exist — so the new calendar vars would have done nothing.) Asymmetry: `pnpm dev`/`pnpm sync` use tsx and run `src/` directly (no build); prod is the built `dist/`. CI builds fresh per run, so it's unaffected. Quick check: `dist/index.js` mtime vs newest `src/*.ts`, or `ls dist/<new-module>/`.
+- **Rebuild `dist/` after any source change meant to reach the daemon** — prod runs the *compiled* `node dist/index.js`, not `src/`, so `git pull`/merge updates source but leaves the running daemon on stale `dist/` (a merged module simply doesn't exist there yet). Run **`pnpm build`** then reload launchd (`launchctl unload/load`); build alone doesn't restart the resident process, reload alone runs stale code. Asymmetry: `pnpm dev`/`pnpm sync` use tsx and run `src/` directly (no build); prod is the built `dist/`. CI builds fresh per run, so it's unaffected. Quick check: `dist/index.js` mtime vs newest `src/*.ts`, or `ls dist/<new-module>/`.
 - **macOS has no `timeout`** — bound a hangable command (`op`, sync, the daemon) with a background sleep-kill watchdog (`cmd & p=$!; (sleep N; kill -9 $p) & wait $p`), not `timeout`.
 - **A full recipe re-sync is expensive** — a note-reader/hash change invalidates the index, so the whole corpus re-processes and exceeds the default `MP_GENERATION_DOLLAR_CAP=2`. Use the **`/resync-recipes`** skill (`.claude/skills/resync-recipes/`), which raises the cap for the one-off out-of-band `pnpm sync` and runs it under a watchdog (RUNBOOK §6; bead a9e).
 - **launchd plist gotchas** — `PATH` must include `/opt/homebrew/bin` (else `op` isn't found → boot crash-loop), and it needs the *real* `OP_SERVICE_ACCOUNT_TOKEN` (not the template placeholder); the daemon's `node` needs Full Disk Access + Automation→Notes (TCC keys on the binary — re-grant after node/OS upgrades). RUNBOOK §0.1/§7.
-- **Prod's calendar read is `native/ekreader` (EventKit), not node** (bead ob8/12p) — built by `pnpm build:native` (macOS-only, NOT part of `pnpm build`/CI, so it never runs there); it needs its own **Calendars** TCC grant separate from node's Automation/FDA grants. `build:native` signs it with a stable Apple Development cert (`--identifier com.backhaus.meal-planner.ekreader`, override via `MP_EKREADER_SIGN_IDENTITY`) + embeds an `Info.plist` usage-description, so the grant is triggered by running the bare binary once (click Allow), **carries to the headless launchd daemon, and survives rebuilds** (stable designated requirement — only an OS upgrade drops it). This resolved the 12p "launchd can't read calendar" limitation: the earlier revert failed only because it granted a `.app` wrapper while launchd exec'd the bare binary (identity mismatch). RUNBOOK §0.1 item 3/§8.1.
+- **Prod's calendar read is `native/ekreader` (EventKit), not node** (bead ob8/12p) — built by `pnpm build:native` (macOS-only, NOT part of `pnpm build`/CI, so it never runs there); it needs its own **Calendars** TCC grant separate from node's Automation/FDA grants. `build:native` signs it with a stable Apple Development cert (`--identifier com.backhaus.meal-planner.ekreader`, override via `MP_EKREADER_SIGN_IDENTITY`) + embeds an `Info.plist` usage-description, so the grant is triggered by running the bare binary once (click Allow), **carries to the headless launchd daemon, and survives rebuilds** (stable designated requirement — only an OS upgrade drops it). Grant the bare binary launchd execs, never a `.app` wrapper — TCC keys on the exact identity. RUNBOOK §0.1 item 3/§8.1.
 - **Inspecting live prod state** — session rows live in `data/meal-planner.prod.sqlite` (`./data/meal-planner.{prod,dev}.sqlite` are the `MP_SQLITE_PATH_*` defaults) and the table is **`session`, singular**: `sqlite3 data/meal-planner.prod.sqlite "select week_key,status,thread_ts from session order by week_key desc"`. Gotcha: `sqlite3` pointed at a wrong path **silently creates an empty DB** rather than erroring, so a typo presents as "no such table" and leaves junk in `data/`.
 - **Reconstructing the daemon boot timeline** — stdout/stderr are `logs/meal-planner.{out,err}.log` (plist `StandardOutPath`). The log carries **no timestamps**, but every boot writes `data/backups/session-<UTC-ISO>.sqlite`, so those filenames give the boot times. Needed to judge whether a given Slack message ts arrived while a socket was actually connected.
 - **Stale dev daemons accumulate** — earlier sessions leave `node dist/index.js` processes alive for days. `launchctl list | grep com.backhaus.meal-planner` gives the ONE real prod PID; any other `ps aux | grep dist/index.js` match is a stray. They're harmless (dev profile, dry-run, preview DB) but confuse diagnosis.
@@ -208,8 +212,8 @@ Invariants pulled from the design docs — preserve these when implementing:
 - **Deterministic post-validation** with one bounded repair retry on the planner output (ADR 0003 D5).
 - **Cost caps are dollar-denominated and enforced in code** (SPEC §9.3) — Anthropic offers alerts, not enforced per-key cutoffs. A *turn* = one inbound-message response cycle; a *run* = all Agent SDK calls within one cycle (budget aggregates across them). The real risk is a runaway v3.0 revision loop, not the weekly cron.
 - **dev/prod profile** (SPEC §7): a single `--profile dev|prod` switch bundles settings that must move together — target channel **ID** (never a name lookup), a **separate** SQLite path for dev, force-regenerate (on in dev), and post-vs-dry-run.
-- **Slack** is outbound-only via the Web API (`chat:write`) through v2.0; Socket Mode + the app-level token are a v3.0 addition — do not front-load them.
-- Nullable `day` field is carried through v1.0 schemas (unused until v2.0 calendar assignment) so v2.0/v3.0 are purely additive.
+- **Slack**: outbound posts go through the Web API (`chat:write`); inbound thread replies and `/mp-*` slash commands arrive over Socket Mode with the app-level token (ADR 0007).
+- `day` is nullable in the plan schemas and populated by v2.0 day assignment (ADR 0005).
 
 ## Non-Interactive Shell Commands
 
