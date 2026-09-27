@@ -65,9 +65,9 @@ tracker.
      merely surfaced it.
   3. **Voided per-binary TCC grants.** TCC keys Automation/Calendar grants to
      the exact Cellar path/cdhash, so node 26.5.1 inherits none of node
-     26.5.0's grants — the Notes Automation grant likely still needs one
-     interactive re-grant (open at time of writing; verify on the Sun 2026-08-23
-     run).
+     26.5.0's grants. As of 2026-09-27 node 26.5.1 still lacks Full Disk
+     Access (`notes-tags: could not open NoteStore … unable to open database
+     file` every run; sync still works, only the tag refresh is skipped).
   **Prevention now in place:** `brew pin node` + `brew pin 1password-cli` so a
   background `brew upgrade` can't silently replace them again. Diagnostic
   reflex for "op hangs": `sample <pid>` a stuck process (no sudo needed) and
@@ -76,6 +76,22 @@ tracker.
   kept posting a degraded (static all-FULL, no-dedup) plan and only the alert
   log showed it — read `logs/meal-planner.err.log`, don't trust "it still
   posted."
+
+- **An unanswerable consent prompt + a fatal boot timeout + `KeepAlive` = a
+  prompt flood** (2026-09-23, just before the macOS 27.0 upgrade; bd
+  `meal-planner-dx2`). `op read` blocked on a macOS dialog; the dialog said
+  "node" because TCC names the *responsible* process (launchd → node → op).
+  The 15s secrets timeout exited the process, `KeepAlive` relaunched it at
+  once, and each new process raised a fresh "Allow" prompt — endless dialogs
+  until the user set `KeepAlive=false` by hand. The likely source is `op`
+  probing the 1Password desktop app (installed; its group container is
+  `2BUA8C4S2C.com.1password`) even though a service-account token needs no
+  app integration. `OP_BIOMETRIC_UNLOCK_ENABLED=false` in the plist env
+  (PR #73) made the next boot load secrets cleanly — consistent with, not
+  proof of, that cause (the system log had already rotated). In hindsight the
+  August "op hangs, all threads parked in `__psynch_cvwait`" symptom is the
+  same shape: a process waiting on a dialog. Treat any headless `op` hang as
+  "who is it waiting on?" before blaming the network.
 
 ## Open questions
 
