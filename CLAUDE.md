@@ -96,38 +96,23 @@ evidence that consent was required. See the bd memory
 `workflow-land-work-by-default-when-told-to-finish` for the incident this
 encodes.
 
-## Beads Export Hygiene — never discard `.beads/issues.jsonl`
+## Beads State — Dolt only, the JSONL export is untracked
 
-**Dolt is authoritative; `.beads/issues.jsonl` is a passive export.** Reconcile
-*toward* Dolt, never away from it.
+**Dolt is authoritative and syncs via `refs/dolt/data` on origin; bead state
+never rides a git commit.** `.beads/issues.jsonl` is a local, gitignored export
+(untracked 2026-09-27) — every `bd` write used to rewrite it and dirty the tree,
+forcing a beads-only commit (or a direct push to `main`) after each claim or
+close. Now:
 
-**Never run `git checkout -- .beads/issues.jsonl`** to clean the tree. bd's
-export is not sorted by any stable key, so a rewritten row moves its line — a
-real `open → closed` transition and meaningless line movement look identical in
-`git diff`. Discarding the file on that assumption silently reverts real status
-(incident 2026-07-26, bead `meal-planner-p2p`; commits `a25c673` → `31939e6`).
-
-Before trusting or discarding any export diff, diff it **semantically**:
-
-```bash
-node scripts/beads-diff.mjs            # HEAD's committed export vs. live Dolt
-node scripts/beads-diff.mjs --staged   # staged export vs. live Dolt
-node scripts/beads-diff.mjs a.jsonl b.jsonl
-```
-
-It compares by issue id, not by line, and separates benign line movement and
-`updated_at` bumps from real status/priority/label deltas. Exit 1 means a real
-delta. If it reports anything significant, re-export (`bd export -o
-.beads/issues.jsonl`) and commit that — do not revert.
-
-**The commit is kept fresh automatically.** `.beads/hooks/pre-commit` carries a
-repo-owned block (below bd's managed `END BEADS INTEGRATION` marker) that runs
-an explicit `bd export` and re-stages the file when it was already staged, so a
-commit can't capture an export predating the `bd` writes it should record.
-Without it, bd's async exporter (`export.interval`, default 60s) refreshes the
-*working tree* but never stages it, so git commits the stale index and the
-correction shows up afterwards looking like churn. Set `BD_SKIP_EXPORT_REFRESH=1`
-to bypass. **After `bd hooks install` or a bd upgrade, check the block survived.**
+- **Change beads freely mid-session** (claim, comment, close) — nothing to
+  commit. Close a bead on its feature branch before merging if convenient; it
+  no longer matters for git.
+- **Push once at session close:** `bd dolt push`, and confirm with
+  `git ls-remote origin refs/dolt/data`. That push is what backs up bead state
+  off the machine — skipping it strands the session's issue changes locally.
+- `node scripts/beads-diff.mjs a.jsonl b.jsonl` still diffs two exports by
+  issue id (e.g. a fresh `bd export -o` vs. an older copy) if you need a
+  semantic comparison; its HEAD/`--staged` modes are moot now.
 
 ## Project Status
 
@@ -183,7 +168,6 @@ Model config (SPEC §9.3): `claude-sonnet-5` at medium effort, as per-context co
 - **Slack introspection with the prod bot token** — `TOK=$(op read "op://Meal-Planner/slack-app/credential")`, then `curl -H "Authorization: Bearer $TOK"` against `auth.test` / `conversations.history` / `conversations.replies` reads exactly what the daemon sees. Granted scopes appear **only** in the `x-oauth-scopes` response header (`curl -D - -o /dev/null`), never in the JSON body.
 - **The live plist holds the real `OP_SERVICE_ACCOUNT_TOKEN`** (`~/Library/LaunchAgents/com.backhaus.meal-planner.plist`) — list `EnvironmentVariables` key names only, never values. Edit it with `plutil -insert/-replace` (which drops its XML comments) after a `cp -fp` backup, and verify by comparing both versions' `plutil -convert json` output in-process. `KeepAlive` **and `RunAtLoad`** are currently **false** in the live copy until bd `dx2` (restart safety) lands — so the daemon neither restarts on crash nor starts on reboot/login; start it with `launchctl kickstart`.
 - **macOS unified log rotates within days** — capture TCC/Gatekeeper evidence during an incident, not after. In zsh, call `/usr/bin/log` (bare `log` is a shell builtin and fails with "too many arguments").
-- **Keep beads output out of context** — commit `bd` changes (export + interactions) as their own commit *before* other commits, or the pre-commit hook prints the full semantic export diff on every unrelated commit; check `node scripts/beads-diff.mjs` by exit code (`>/dev/null; echo $?`).
 
 ## Architecture Overview
 

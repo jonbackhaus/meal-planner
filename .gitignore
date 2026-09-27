@@ -4,6 +4,8 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+# Passive bd export, regenerated locally; issues sync via refs/dolt/data.
+.beads/issues.jsonl
 
 # Node / build
 node_modules/
