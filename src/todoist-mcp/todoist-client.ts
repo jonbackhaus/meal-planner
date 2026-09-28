@@ -54,12 +54,24 @@ export type FetchLike = (
 export class TodoistApiError extends Error {
   readonly status: number;
   readonly errorTag?: string;
+  /** The specific request argument Todoist rejected (from `error_extra.argument`
+   * on an `INVALID_ARGUMENT_VALUE`/`ARGUMENT_MISSING` body), when present —
+   * e.g. `"project_id"`. Also folded into `message` so it shows up in a bare
+   * `String(err)` log line (meal-planner-54i: a generic "Invalid argument
+   * value" message with no argument name took months to root-cause). */
+  readonly errorArgument?: string;
 
-  constructor(message: string, status: number, errorTag?: string) {
+  constructor(
+    message: string,
+    status: number,
+    errorTag?: string,
+    errorArgument?: string,
+  ) {
     super(message);
     this.name = "TodoistApiError";
     this.status = status;
     this.errorTag = errorTag;
+    this.errorArgument = errorArgument;
   }
 }
 
@@ -77,6 +89,7 @@ export interface TodoistClientOptions {
 interface TodoistErrorBody {
   error?: unknown;
   error_tag?: unknown;
+  error_extra?: unknown;
 }
 
 interface RawDue {
@@ -113,6 +126,22 @@ function extractErrorTag(body: unknown): string | undefined {
     const { error_tag: errorTag } = body as TodoistErrorBody;
     if (typeof errorTag === "string" && errorTag.length > 0) {
       return errorTag;
+    }
+  }
+  return undefined;
+}
+
+/** Pulls the rejected argument's name out of `error_extra.argument`, e.g.
+ * `{"error_extra":{"argument":"project_id", ...}}` (confirmed live against
+ * `/tasks/completed/by_completion_date` for meal-planner-54i). */
+function extractErrorArgument(body: unknown): string | undefined {
+  if (body && typeof body === "object") {
+    const { error_extra: errorExtra } = body as TodoistErrorBody;
+    if (errorExtra && typeof errorExtra === "object") {
+      const { argument } = errorExtra as { argument?: unknown };
+      if (typeof argument === "string" && argument.length > 0) {
+        return argument;
+      }
     }
   }
   return undefined;
@@ -161,10 +190,15 @@ export class TodoistClient {
       });
       const json = await response.json().catch(() => undefined);
       if (!response.ok) {
+        const errorArgument = extractErrorArgument(json);
+        const baseMessage = extractErrorMessage(json, response.status);
         throw new TodoistApiError(
-          extractErrorMessage(json, response.status),
+          errorArgument
+            ? `${baseMessage} (argument: ${errorArgument})`
+            : baseMessage,
           response.status,
           extractErrorTag(json),
+          errorArgument,
         );
       }
       return json;

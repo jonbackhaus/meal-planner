@@ -288,6 +288,37 @@ describe("TodoistClient.listCompletedByCompletionDate", () => {
       client.listCompletedByCompletionDate({ since: "", until: "" }),
     ).rejects.toMatchObject({ status: 400, errorTag: "ARGUMENT_MISSING" });
   });
+
+  it("surfaces the rejected argument name from error_extra.argument (repro meal-planner-54i: a legacy/malformed project_id is rejected by the live API with this exact body)", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(400, {
+        error: "Invalid argument value",
+        error_code: 20,
+        error_extra: {
+          argument: "project_id",
+          expected: "Value error, Invalid ProjectID",
+          retry_after: 3,
+        },
+        error_tag: "INVALID_ARGUMENT_VALUE",
+        http_code: 400,
+      }),
+    );
+    const client = new TodoistClient({ apiToken: "test-token", fetchImpl });
+
+    await expect(
+      client.listCompletedByCompletionDate({
+        since: "2026-08-01T00:00:00Z",
+        until: "2026-09-28T00:00:00Z",
+        project_id: "1111111111",
+      }),
+    ).rejects.toMatchObject({
+      name: "TodoistApiError",
+      status: 400,
+      errorTag: "INVALID_ARGUMENT_VALUE",
+      errorArgument: "project_id",
+      message: "Invalid argument value (argument: project_id)",
+    });
+  });
 });
 
 describe("TodoistClient timeout", () => {
