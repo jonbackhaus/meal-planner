@@ -9,6 +9,7 @@ import {
 import { type ProfileSettings, resolveProfile } from "./config/profile.js";
 import { CostMeter } from "./cost/cost-meter.js";
 import { meteredLlmClient } from "./cost/metered-llm-client.js";
+import { handleBootFailure } from "./daemon/boot-failure-guard.js";
 import { runDaemon } from "./daemon/daemon.js";
 import { makeHeartbeat } from "./daemon/heartbeat.js";
 import { withTimeout } from "./daemon/with-timeout.js";
@@ -1124,6 +1125,16 @@ export async function main(): Promise<void> {
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((error) => {
     console.error(error);
-    process.exit(1);
+    // A boot-time failure BEFORE main() reaches runDaemon (loadSecrets()
+    // timing out under withTimeout, most notably -- bd meal-planner-dx2) has
+    // no `alert`/fatal-handler apparatus available yet (both are built from
+    // `secrets`, which may not exist). handleBootFailure is deliberately
+    // secrets-free: it durably logs + dedup-alerts + backs off before
+    // exit(1), so launchd's KeepAlive relaunch can't crash-loop unbounded.
+    // Never awaited here -- this is already the top-level catch.
+    void handleBootFailure(error, {
+      logPath: process.env.MP_LOG_PATH || DEFAULT_LOG_PATH,
+      exit: (code) => process.exit(code),
+    });
   });
 }
