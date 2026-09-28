@@ -24,6 +24,19 @@ tracker.
   RUNBOOK's "does nothing, by design" line with this nuance: *by design*, not
   *impossible*.
 
+- **The planner had literal amnesia until 2026-09-27, and it showed.** Dedup
+  depends on the Todoist recency read, which failed every week (bd `54i`) and
+  whose data source (the v3.0 round-trip, `4sr`) isn't live — so across 7
+  weeks of plans the bot used only **17 distinct recipes out of 765**. The fix
+  (bd `5uy`, PR #75) treats each week's *initial* posted plan as accepted:
+  `session.initial_plan` is written once at suggest and never revised, and
+  `plan-memory.ts` unions the last 8 weeks' main dishes with the Todoist read.
+  Two design choices worth keeping in mind: (1) *initial*, not latest — the
+  user's explicit call, and `working_plan`/`last_posted_plan` both mutate on
+  revision, hence the new column; (2) the union catches a Todoist throw
+  *itself*, because `buildPlan`'s degrade-silently catch would otherwise
+  discard the local memory along with the failed Todoist result.
+
 ## Lessons & gotchas
 
 - **Model dependency edges from the durable work, not toward closed work.**
@@ -65,9 +78,10 @@ tracker.
      merely surfaced it.
   3. **Voided per-binary TCC grants.** TCC keys Automation/Calendar grants to
      the exact Cellar path/cdhash, so node 26.5.1 inherits none of node
-     26.5.0's grants. As of 2026-09-27 node 26.5.1 still lacks Full Disk
-     Access (`notes-tags: could not open NoteStore … unable to open database
-     file` every run; sync still works, only the tag refresh is skipped).
+     26.5.0's grants. node 26.5.1 lacked Full Disk Access until
+     2026-09-27 (`notes-tags: could not open NoteStore … unable to open
+     database file` every run; only the tag refresh was skipped). FDA is now
+     granted (TCC.db `auth_value=2`); the Oct 4 run is the first real proof.
   **Prevention now in place:** `brew pin node` + `brew pin 1password-cli` so a
   background `brew upgrade` can't silently replace them again. Diagnostic
   reflex for "op hangs": `sample <pid>` a stuck process (no sudo needed) and
@@ -93,7 +107,34 @@ tracker.
   same shape: a process waiting on a dialog. Treat any headless `op` hang as
   "who is it waiting on?" before blaming the network.
 
+- **Bead state no longer touches git (2026-09-27, PRs #77 + `37e8979`).** Both
+  `.beads/issues.jsonl` and `.beads/interactions.jsonl` are gitignored. The
+  tracked export was the source of constant tree churn — every claim, comment,
+  or close forced a beads-only commit or a direct push to `main` — and of the
+  July "discarded real statuses via `git checkout --`" incident; untracking
+  removes both. Bead state rides `refs/dolt/data` (`bd dolt push`). Caveat:
+  `interactions.jsonl` is bd's optional audit sidecar, **not** in Dolt, so its
+  entries after 2026-09-27 exist only on this Mac.
+
+- **Don't verify with real writes against the live tracker.** A "does a bd
+  write leave the tree clean?" check was done with `bd comments add ...
+  test-noise` on a real bead (54i) — and embedded-mode bd has no comment
+  delete (`bd sql` is unsupported there), so the noise is permanent. Use a
+  read-only check or a throwaway bead you can close.
+
+- **The Sep 23 lockdown turned off `RunAtLoad` as well as `KeepAlive`.** So
+  `launchctl unload`/`load` leaves the daemon *stopped* (runs = 0, no PID) —
+  it needs `launchctl kickstart`, and it won't come back after a reboot until
+  `dx2` lands and both are restored. Recognize it by: no new
+  `data/backups/session-*.sqlite` after a "reload".
+
 ## Open questions
+
+- **What happens to the plan memory once Todoist round-trip feedback flows?**
+  Today it's a union: "recommended" and "actually completed" both count as
+  recent. Once `4sr` is live, a recommended-but-rejected meal arguably
+  shouldn't be excluded for 8 weeks — the user said this behavior will be
+  "modified later to incorporate round-trip feedback," not yet designed.
 
 - **`4sr` (round-trip go-live) is ops-only, not agent-drivable end-to-end.**
   It's 1Password secret storage, Slack-dashboard config (Event Subscriptions +
