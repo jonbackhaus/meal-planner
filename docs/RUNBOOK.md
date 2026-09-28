@@ -718,10 +718,16 @@ config prerequisites — see below.
      existing `slack-app` item). **This is the master switch** — its presence is
      what opens Socket Mode.
    - `MP_OP_TODOIST_TOKEN_REF` → the Todoist token's `op://` ref.
-   - `MP_TODOIST_PROJECT_ID_PROD` → the target Todoist project **ID** (get it
-     from the project URL, or
-     `curl -s -H "Authorization: Bearer <token>" https://api.todoist.com/rest/v2/projects`).
-     Without it the commit has no destination.
+   - `MP_TODOIST_PROJECT_ID_PROD` → the target Todoist project **ID**. Get it
+     from the **v1** API — `curl -s -H "Authorization: Bearer <token>"
+     https://api.todoist.com/api/v1/projects` — and take the `id` of the
+     matching project. Without it the commit has no destination. **Do not**
+     source this from the project URL or from the deprecated
+     `rest/v2/projects` endpoint: both can hand back a pre-migration numeric
+     ID, which the v1 API's own `project_id` query param then rejects with
+     `TodoistApiError: Invalid argument value (argument: project_id)` on
+     every recency read (meal-planner-54i) — v1 requires the new
+     non-numeric/base32 ID format.
    - Optional (defaults shown): `MP_TODOIST_TITLE_TEMPLATE` (`{title}`),
      `MP_TODOIST_RECIPE_LINK_FORMAT` (empty), and the three revision cost caps
      `MP_REVISION_CYCLE_TOKEN_CAP` (150000 tokens/cycle),
