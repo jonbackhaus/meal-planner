@@ -30,6 +30,23 @@
 	<key>KeepAlive</key>
 	<true/>
 
+	<!--
+	  Bounds the crash-loop relaunch rate (bd meal-planner-dx2): a fatal boot
+	  error (e.g. loadSecrets() timing out, src/index.ts) makes main() reject
+	  and the process exit(1); without this, KeepAlive relaunches as fast as
+	  launchd's un-overridden 10s default throttle allows, which on a hung
+	  `op` CLI (macOS consent-prompt dialogs, 2026-09-23) or a wedged
+	  dependency produced an unbounded flood (~93k err-log lines, Aug
+	  outage). 60s is deliberately looser than the 15s secrets-load timeout
+	  itself, so a single genuine timeout doesn't trip it, but a real crash
+	  loop is throttled hard. Belt-and-suspenders with the in-process
+	  exponential backoff in src/daemon/boot-failure-guard.ts -- either alone
+	  bounds the rate; both together make it robust to a hand-run daemon
+	  (bypassing this plist) too.
+	-->
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+
 	<key>StandardOutPath</key>
 	<string>/Users/YOUR_USERNAME/meal-planner/logs/meal-planner.out.log</string>
 

@@ -455,11 +455,49 @@ boot-launch + restart-on-crash.
      created.
 
    The committed plist already fixes the invariant bits: `RunAtLoad` +
-   `KeepAlive` (boot-launch + restart-on-crash) and **no**
+   `KeepAlive` (boot-launch + restart-on-crash), `ThrottleInterval` (bounds
+   the crash-loop relaunch rate — see below), and **no**
    `StartCalendarInterval` — the weekly timing is owned in-process, never by
    launchd.
 3. Load it: `launchctl load ~/Library/LaunchAgents/com.backhaus.meal-planner.plist`
    (verify with `launchctl list | grep com.backhaus.meal-planner`).
+
+**Crash-loop bound (bd meal-planner-dx2).** A fatal boot error (e.g.
+`loadSecrets()` timing out under `withTimeout`, `src/index.ts`) makes `main()`
+reject and the process `exit(1)`; under `KeepAlive=true` with no throttle,
+launchd used to relaunch as fast as it could, and a hung `op` CLI (macOS
+consent-prompt dialogs, 2026-09-23) or wedged dependency produced an
+unbounded crash loop (the Aug outage: ~93k err-log lines). Two mitigations
+now bound that, applied together:
+- The template plist sets `ThrottleInterval` to `60` seconds (looser than
+  the 15s secrets-load timeout itself, so one genuine timeout doesn't trip
+  it, but a real loop is throttled hard).
+- `src/daemon/boot-failure-guard.ts` wraps the top-level `main().catch(...)`
+  boundary with an in-process exponential backoff (capped at 60s) before
+  `exit(1)`, and dedups the "repeated boot failure" alert to the durable
+  local log (`./data/meal-planner.log` by default) so a rapid loop logs
+  once per ~30 min window, not once per attempt — belt-and-suspenders with
+  the plist throttle, and the only one of the two that still applies to a
+  hand-run daemon outside launchd.
+
+  **Currently live (as of this bead landing): the deployed
+  `~/Library/LaunchAgents/com.backhaus.meal-planner.plist` has both
+  `KeepAlive` and `RunAtLoad` set to `false`** — a stopgap from before this
+  fix existed, so the daemon neither restarts on crash nor starts on
+  reboot/login (start it manually with
+  `launchctl kickstart gui/$(id -u)/com.backhaus.meal-planner`). Once this
+  fix is deployed (`pnpm build` + reload the live plist so `dist/` picks up
+  `boot-failure-guard.ts`), restore both to `true` in the live copy (see the
+  plist-editing gotcha in `CLAUDE.md` — `plutil -replace`, back up first,
+  diff both versions' `plutil -convert json` output) and reload:
+  ```bash
+  plutil -replace KeepAlive -bool true ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+  plutil -replace RunAtLoad -bool true ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+  launchctl unload ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+  launchctl load   ~/Library/LaunchAgents/com.backhaus.meal-planner.plist
+  ```
+  This restore is an ops step on the live machine, not part of landing the
+  code — it is NOT done by this bead's PR.
 
 **Crash-safety you get for free:** the orchestrator writes the session row at
 `generating` *before* posting, so a mid-flight crash is detectable. On restart,
