@@ -4,6 +4,7 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.beads.gate.lock
 # Passive bd exports, regenerated locally; issues sync via refs/dolt/data.
 .beads/issues.jsonl
 .beads/interactions.jsonl
