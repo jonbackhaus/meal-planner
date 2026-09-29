@@ -122,11 +122,28 @@ tracker.
   delete (`bd sql` is unsupported there), so the noise is permanent. Use a
   read-only check or a throwaway bead you can close.
 
-- **The Sep 23 lockdown turned off `RunAtLoad` as well as `KeepAlive`.** So
-  `launchctl unload`/`load` leaves the daemon *stopped* (runs = 0, no PID) —
-  it needs `launchctl kickstart`, and it won't come back after a reboot until
-  `dx2` lands and both are restored. Recognize it by: no new
-  `data/backups/session-*.sqlite` after a "reload".
+- **A handoff's "lead" is a hypothesis, not a diagnosis — 54i proved it.**
+  The recorded lead for "Todoist recency: Invalid argument value" was
+  `toISOString` millisecond precision; a read-only live repro disproved it in
+  minutes (ms precision returns 200). The real cause was the live plist's
+  `MP_TODOIST_PROJECT_ID_PROD` holding a **pre-2025 numeric Todoist project
+  id**, which the v1 API rejects (`error_extra.argument: "project_id"`); the
+  RUNBOOK had told us to source it from the deprecated v2 endpoint. Two
+  takeaways: the error body *named the field* all along but our client threw
+  it away (PR #79 now folds `error_extra.argument` into the message), and a
+  config-value bug survives every rebuild — "persists across builds" pointed
+  at env, not code. Fixed in prod 2026-09-29 (`6Crcx82JRXcwQQv3`); the Oct 4
+  run is the proof. Next layer down (bd `ww2`): completed meal tasks carry no
+  `mp:rid=` marker, so recency will still resolve zero recipe ids.
+
+- **Restart safety is back on (2026-09-29).** The Sep 23 lockdown had set
+  `KeepAlive` *and* `RunAtLoad` false (so unload/load left the daemon
+  stopped). `dx2` (PR #78) added a secrets-free boot-failure guard —
+  persisted streak in `data/boot-failure-state.json`, one log alert per 30
+  min, exponential backoff to 60s before `exit(1)` — and both flags were
+  restored. The guard alerts to the local log only (no Slack: secrets may be
+  what failed), so a boot crash-loop still shows up only in
+  `logs/meal-planner.err.log`.
 
 ## Open questions
 
