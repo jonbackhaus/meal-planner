@@ -1,0 +1,5 @@
+Review the working directory -- why are there pending changes?
+
+---
+
+`.claude/REFLECTIONS.md` is not supposed to be tracked. Add it to `.gitignore` and remove it from tracking. Amend the "Enable Entire" commit to add the hooks.

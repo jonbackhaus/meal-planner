@@ -3,7 +3,7 @@
   "checkpoint_id": "01M7RFW0M6Z863AKT230XE08ZX",
   "strategy": "manual-commit",
   "branch": "main",
-  "checkpoints_count": 6,
+  "checkpoints_count": 7,
   "files_touched": [
     ".beads/hooks/commit-msg",
     ".beads/hooks/post-commit",
@@ -20,14 +20,21 @@
       "compact_transcript": "/0/transcript.jsonl",
       "content_hash": "/0/content_hash.txt",
       "prompt": "/0/prompt.txt"
+    },
+    {
+      "metadata": "/1/metadata.json",
+      "transcript": "/1/full.jsonl",
+      "compact_transcript": "/1/transcript.jsonl",
+      "content_hash": "/1/content_hash.txt",
+      "prompt": "/1/prompt.txt"
     }
   ],
   "token_usage": {
-    "input_tokens": 46,
-    "cache_creation_tokens": 132250,
-    "cache_read_tokens": 3132316,
-    "output_tokens": 8099,
-    "api_call_count": 21
+    "input_tokens": 62,
+    "cache_creation_tokens": 179005,
+    "cache_read_tokens": 3665282,
+    "output_tokens": 12611,
+    "api_call_count": 29
   },
   "redaction": {
     "replacements": 0,
