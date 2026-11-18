@@ -1,0 +1,82 @@
+Base directory for this skill: /Users/jonathan/.claude/skills/session-begin
+
+# Session Begin
+
+The first command of a session — the mirror image of `/session-end`. Session-end wrote
+everything worth keeping to disk before the last session ended; session-begin reads
+it back so this session starts as smart as the last one finished. The output
+is a short briefing, not a report: what we understand, what's ready to do, and
+a suggested starting point.
+
+Everything here is read-only. Session-begin never modifies files, claims issues, or
+starts work on its own — it ends with the agent oriented and awaiting (or
+confirming) direction.
+
+## The flow
+
+### 1 — Locate the project
+
+Work from the project root: the git root if inside a repository, otherwise the
+current working directory. If the directory is clearly not a project (e.g., a
+home directory with no repo), say so and ask which project to wake up in.
+
+### 2 — Read the reflections
+
+Read `.claude/REFLECTIONS.md` at the project root — the whole file; it is
+deliberately kept short enough to read cold. This is the reflective memory
+`/session-end` maintains: current understanding, lessons and gotchas, failed
+approaches, open questions. It exists precisely for this moment, so don't skim
+it — the gotchas and dead ends are what stop this session from repeating the
+last one's mistakes.
+
+If the file doesn't exist, note that briefly (one line, not an apology) and
+move on. Don't go hunting for substitutes in other memory files — CLAUDE.md is
+already loaded by the harness, and git history is available if needed later.
+
+### 3 — Check the Beads backlog
+
+Beads is configured when the project root has a `.beads/` directory. If it
+doesn't, skip this step **silently** — don't mention Beads, `bd`, or the
+absence of a backlog anywhere in the briefing. The user asked to be caught up
+on their project, not for an inventory of tooling it doesn't use; "no backlog
+to check" is noise wearing the costume of information.
+
+When Beads is configured, do two things:
+
+**Find the ready work** — open issues with no blockers:
+
+- Prefer the `/beads:ready` skill (invoke `beads:ready` via the Skill tool) if
+  it's in your available-skills list — it uses the Beads MCP tools and handles
+  presentation and claiming.
+- Otherwise run `bd ready` directly. If it returns nothing, check `bd list
+  --status in_progress` and `bd blocked` — an empty ready list with
+  in-progress or blocked issues is a different situation than an empty
+  backlog, and the briefing should say which.
+
+**Read the handoff** — always, not just when the issues look thin. Session-end
+leaves handoff notes via `bd remember`, and they carry exactly what issue
+titles can't: design decisions already made, the file to start in, the trap
+the last session already stepped around. Run `bd memories` to list stored
+memories and `bd recall <key>` on anything that reads like a handoff or
+touches the ready work (the previews truncate — recall the full content
+before relying on it). Skipping this is how a session re-decides something
+that was settled yesterday.
+
+### 4 — Brief and hand over
+
+End with one compact briefing — a few lines per section, only sections that
+have content:
+
+- **Where we are** — two or three sentences of current understanding from
+  REFLECTIONS.md, plus any gotcha or open question likely to matter today.
+- **Ready work** — the ready issues (id, title, priority), or the honest state
+  of the backlog (all blocked, something already in progress, empty). Weave in
+  what the handoff memory settled — "design is fetch-then-merge, start in
+  engine.go" changes how the first hour goes.
+- **Suggested start** — one concrete recommendation: usually the highest
+  priority ready issue, or the open question blocking everything else.
+
+Then stop and let the user direct — or, if the user already said what they
+want ("wake up and get going on the next thing"), proceed straight into the
+suggested start. Don't pad the briefing with restated file contents; the value
+is selection, not coverage.
