@@ -1,0 +1,108 @@
+TASK
+Select a week of family dinners from the candidate pools below AND assign each selected meal to a specific night from the SCHEDULE below. Selection and placement are ONE decision: choose recipes WITH their night in mind (e.g. a make-ahead for a QUICK night, a heavier cook for a FULL night).
+
+HOUSEHOLD
+A family of four: two adults and two kids. One daughter is vegetarian (hard constraint) — every dinner must be either inherently vegetarian, cleanly separable (e.g. hold the meat), or paired with a second vegetarian dish made just for her. No other dietary restrictions are known yet.
+The vegetarian daughter is a HARD constraint that applies EVERY NIGHT, with no exceptions: every single selected meal must be satisfiable by her.
+
+SLOTS
+Select exactly 5 weeknight meals (slot_type "constrained") + 2 weekend meals (slot_type "relaxed"). Assign each meal a specific ISO-date `day` from the SCHEDULE below (see SCHEDULE for the per-night capacity and how it constrains placement).
+
+SCHEDULE
+The week's nights and each one's cooking capacity (FULL = normal cook, QUICK = tight on time, NONE = no cook possible):
+- 2026-11-15 (Sunday): FULL
+- 2026-11-16 (Monday): QUICK — blocked by: Charlotte/Hot Lunch (logistics), Emma/Hot Lunch (logistics), Charlotte/Therapy (cook)
+- 2026-11-17 (Tuesday): QUICK — blocked by: Charlotte/Hot Lunch (logistics), Mela/Bpt call (logistics), Charlotte/Gymnastics (logistics), Emma/Gymnastics (logistics)
+- 2026-11-18 (Wednesday): QUICK — blocked by: Charlotte/Hot Lunch (logistics), Mela/St. V’s call (logistics)
+- 2026-11-19 (Thursday): QUICK — blocked by: Mela/St. V’s call (logistics), Mela/Bpt call (logistics), Charlotte/Hip hop (logistics)
+- 2026-11-20 (Friday): QUICK — blocked by: Charlotte/Hot Lunch (logistics), Emma/Hot Lunch (logistics), Emma/Gymnastics (logistics)
+- 2026-11-21 (Saturday): FULL
+
+Assign each selected meal to one of these nights via its `day` field, using the EXACT ISO date shown above. A "constrained" (slot_type) meal must land on a weeknight (Mon-Fri) date; a "relaxed" meal must land on a weekend (Sat/Sun) date. NEVER assign a meal to a NONE night. Favor a QUICK night for a quick-to-cook or make-ahead meal, and reserve FULL nights for anything heavier.
+
+CANDIDATES
+Weeknight pool (19 candidates):
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p4003 | title="Vegan green goddess dressing" | time(active=15/total=15) | quality=untested | season_tags=[none] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3459 | title="Roasted Cauliflower with Lemon-Parsley Dressing" | time(active=15/total=30) | quality=3 | season_tags=[winter,spring,fall] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3408 | title="Roasted Brussels Sprouts, Carrots & Parsnips with Savory Sauce" | time(active=10/total=50) | quality=untested | season_tags=[winter,fall] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p702 | title="Chorizo Stout Chili" | time(active=30/total=150) | quality=4 | season_tags=[fall,winter] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3275 | title="Porchetta Pork Roast" | time(active=30/total=270) | quality=5 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3407 | title="Risotto with Butternut Squash and Pancetta" | time(active=30/total=40) | quality=3 | season_tags=[fall] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3109 | title="Pasta Puttanesca" | time(active=10/total=30) | quality=3 | season_tags=[winter,summer,fall] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p2621 | title="Green Curry Pork Tenderloin" | time(active=30/total=40) | quality=3 | season_tags=[summer,fall,winter] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p10587 | title="Linguine With Crisp Chickpeas and Rosemary Recipe" | time(active=20/total=20) | quality=untested | season_tags=[none] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p162 | title="Anchovy Pasta with Garlic Breadcrumbs" | time(active=40/total=40) | quality=4 | season_tags=[spring,winter,summer,fall] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3099 | title="Panang Curry" | time(active=35/total=45) | quality=4 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p11430 | title="Coconut Chicken Curry" | time(active=30/total=60) | quality=3 | season_tags=[winter,fall] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p584 | title="Chicken Broth" | time(active=30/total=150) | quality=4 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p10432 | title="Broccoli Pasta With Salami Bread Crumbs" | time(active=25/total=45) | quality=4 | season_tags=[winter,fall,spring] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p26 | title="Cold Sesame Noodles with Broccoli and Kale" | time(active=30/total=90) | quality=4 | season_tags=[winter,fall,summer] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p2915 | title="Lemon Thyme Meatballs with Pumpkin Orzo" | time(active=35/total=45) | quality=5 | season_tags=[winter,fall] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p644 | title="Chicken Tikka Masala" | time(active=30/total=480) | quality=4 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p288 | title="BA's Best Spaghetti and Meatballs Recipe | Bon Appetit" | time(active=45/total=150) | quality=4 | season_tags=[spring,fall,winter] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p770 | title="Citrus-Marinated Chicken Thighs" | time(active=30/total=50) | quality=5 | season_tags=[spring,fall,summer] | veg_status=contains_meat
+
+Weekend pool (10 candidates):
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p10610 | title="Spicy Salmon Roll Bowl" | time(active=unknown/total=unknown) | quality=4 | season_tags=[winter,fall,spring,summer] | veg_status=unknown
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3459 | title="Roasted Cauliflower with Lemon-Parsley Dressing" | time(active=15/total=30) | quality=3 | season_tags=[winter,spring,fall] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3408 | title="Roasted Brussels Sprouts, Carrots & Parsnips with Savory Sauce" | time(active=10/total=50) | quality=untested | season_tags=[winter,fall] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3393 | title="Ramen with Steak and Sesame-Ginger Dressing" | time(active=30/total=30) | quality=4 | season_tags=[summer,fall,winter] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p2621 | title="Green Curry Pork Tenderloin" | time(active=30/total=40) | quality=3 | season_tags=[summer,fall,winter] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p10587 | title="Linguine With Crisp Chickpeas and Rosemary Recipe" | time(active=20/total=20) | quality=untested | season_tags=[none] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p584 | title="Chicken Broth" | time(active=30/total=150) | quality=4 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p291 | title="Beer-Marinated Pork Tenderloin with Red Cabbage" | time(active=45/total=300) | quality=3 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p644 | title="Chicken Tikka Masala" | time(active=30/total=480) | quality=4 | season_tags=[none] | veg_status=contains_meat
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p709 | title="Chinois Salad" | time(active=unknown/total=unknown) | quality=4 | season_tags=[spring,winter,fall,summer] | veg_status=contains_meat
+
+Sides pool (2 candidates):
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3509 | title="Roasted cauliflower potato soup" | time(active=15/total=45) | quality=untested | season_tags=[none] | veg_status=vegetarian
+- id=x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3403 | title="Roasted Sheet Pan Potato Salad" | time(active=40/total=40) | quality=5 | season_tags=[none] | veg_status=vegetarian
+
+Reference candidates ONLY by their `id` field above; do not invent ids.
+
+RULES
+HARD:
+- Every meal must be veg-satisfiable for the vegetarian daughter, every night, no exceptions. STATE the path for each meal: either the dish is inherently vegetarian/separable, or, if a meat dish is not cleanly separable, add a second_dish — a vegetarian recipe_id drawn from one of the pools above — to cover her.
+- No recipe may be repeated within the week (each selected recipe_id, including any second_dish, appears at most once).
+SOFT:
+- Bias toward higher-quality candidates (prefer a higher numeric quality rating, all else equal).
+- Respect the current season ("fall"): prefer candidates whose season_tags include it.
+- This week's live forecast trends "mild": bias toward lighter, cooler dishes for "hot" and heartier, warming dishes for "cold" ("mild" implies no strong lean either way). This REFINES the season signal above — do NOT double-count it: a dish already penalized/rewarded for its season_tags should NOT ALSO be penalized/rewarded for this live reading; treat the two together as one seasonality judgment.
+- Penalize heavy total time on constrained (weeknight) slots.
+- Maximize variety within the week across protein, cuisine, and technique — avoid repeats of the same protein/cuisine/technique night after night.
+POOL:
+- You MAY include at most one "try this?" untested candidate (quality "untested") this week.
+- You MAY OPTIONALLY attach ONE side dish to a main via its `side` field, chosen ONLY from the Sides pool above (each main gets at most one side). This is optional: usually attach 0-1 sides across the WHOLE week, and NEVER more than 2. A paired side MUST be vegetarian so the vegetarian daughter can eat it too. A `side` is a shared accompaniment for everyone — distinct from a veg `second_dish` (her substitute main); a meal may have both.
+- Flag any make-ahead meal with the exact tag "do-ahead" (lowercase, hyphenated) in its flags array.
+
+OUTPUT
+Emit a SINGLE JSON object and nothing else — no prose, no markdown fences. It must have EXACTLY these keys and no others (this is the shape, not the values):
+{
+  "week_key": "2026-11-15",
+  "meals": [
+    {
+      "slot_type": "constrained" | "relaxed",
+      "recipe_id": "<an id from a pool above>",
+      "title": "<that recipe's title>",
+      "day": "<an ISO date from SCHEDULE above>",
+      "veg": { "kind": "inherent" }
+            | { "kind": "separable", "note": "<how she is served meat-free>" }
+            | { "kind": "second_dish", "recipe_id": "<a vegetarian id from a pool>", "title": "<its title>" },
+      "flags": ["<tag>"],
+      "side": { "recipe_id": "<a Sides-pool id>", "title": "<its title>" },   (OPTIONAL — omit entirely when no side)
+      "rationale": "<one sentence: why this meal>"
+    }
+  ],
+  "summary": "<optional: one short line about the week>"
+}
+Emit exactly 5 meals with slot_type "constrained" and 2 with slot_type "relaxed" — one object per selected meal. Do NOT wrap the object in any outer key (no "week_plan" envelope). Every key shown is required except "summary" and the OPTIONAL "side"; "flags" is [] when none apply; "day" must be an ISO date (YYYY-MM-DD) copied EXACTLY from the SCHEDULE above — the specific night this meal is assigned to, consistent with its slot_type per the SCHEDULE section's placement rules.
+
+REPAIR
+Your previous response below FAILED validation. Previous response:
+{"week_key":"2026-11-15","meals":[{"slot_type":"constrained","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p10587","title":"Linguine With Crisp Chickpeas and Rosemary Recipe","day":"2026-11-16","veg":{"kind":"inherent"},"flags":["untested"],"rationale":"A 20-minute inherently vegetarian pasta is perfect for the logistics-heavy Monday, and it's our one untested try this week."},{"slot_type":"constrained","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3109","title":"Pasta Puttanesca","day":"2026-11-17","veg":{"kind":"separable","note":"Omit the anchovies for her portion; the tomato-caper-olive base is already meat-free."},"flags":[],"rationale":"Ten active minutes makes this an easy win on another packed QUICK night, with a fall-friendly tomato base."},{"slot_type":"constrained","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p2915","title":"Lemon Thyme Meatballs with Pumpkin Orzo","day":"2026-11-18","veg":{"kind":"second_dish","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p26","title":"Cold Sesame Noodles with Broccoli and Kale"},"flags":[],"rationale":"Top-rated, fall-seasonal pumpkin orzo dish for the family; she gets an already-prepped cold sesame noodle dish alongside."},{"slot_type":"constrained","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p11430","title":"Coconut Chicken Curry","day":"2026-11-19","veg":{"kind":"second_dish","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3459","title":"Roasted Cauliflower with Lemon-Parsley Dressing"},"flags":[],"rationale":"Warming fall curry fits the mild-leaning-cool forecast, paired with a cauliflower dish that echoes the curry's spice profile for her."},{"slot_type":"constrained","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p770","title":"Citrus-Marinated Chicken Thighs","day":"2026-11-20","veg":{"kind":"second_dish","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3403","title":"Roasted Sheet Pan Potato Salad"},"flags":["do-ahead"],"rationale":"Top-quality chicken that marinates ahead of time, closing the week on a high note with a hearty potato salad for her."},{"slot_type":"relaxed","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3393","title":"Ramen with Steak and Sesame-Ginger Dressing","day":"2026-11-15","veg":{"kind":"separable","note":"Serve her ramen without the steak—broth, noodles, and vegetables are meat-free."},"flags":[],"rationale":"A relaxed Sunday is a good spot for a slightly more involved ramen build, with fall seasonality and a fresh protein (beef) for variety."},{"slot_type":"relaxed","recipe_id":"x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p291","title":"Beer-Marinated Pork Tenderloin with Red Cabbage","day":"2026-11-21","veg":{"kind":"separable","note":"Her plate is the braised red cabbage and sides, skipping the pork tenderloin."},"flags":["do-ahead"],"rationale":"The long marinate and roast time suit a free Saturday, rounding out the week's protein variety with pork."}],"summary":"A pasta-forward, fall-leaning week with one untested chickpea linguine trial, two make-ahead marinated proteins for the weekend, and vegetarian pairings that keep every night fully satisfiable for the vegetarian daughter."}
+
+Problems (fix EVERY one of these; do not introduce new ones):
+- meal 5 (recipe_id="x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p770", slot_type=constrained): second_dish.recipe_id="x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p3403" is not a real candidate in any pool
+- meal 3 (recipe_id="x-coredata://7C025071-100B-40DE-966B-108CD7AE845B/ICNote/p2915", slot_type=constrained): assigned to day="2026-11-18", a QUICK-capacity night, but its active time (35 min) exceeds the 30-min quick ceiling and it is not flagged "do-ahead"
+
+Return ONLY a corrected WeekPlan JSON object, in the exact same shape as before, that resolves every problem above. No prose, no markdown fences.
