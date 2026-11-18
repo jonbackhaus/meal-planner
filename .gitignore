@@ -36,3 +36,6 @@ logs/
 .env
 *.env
 !.env.example
+
+# Local-only session reflections (not tracked)
+.claude/REFLECTIONS.md
