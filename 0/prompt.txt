@@ -1,0 +1,33 @@
+yes, file the bead and walk me through re-granting
+
+---
+
+done, FDA granted for the new node
+
+---
+
+done, clicked OK on the Notes dialog
+
+---
+
+run the ekreader probe under launchd now
+
+---
+
+I had to click "Allow"
+
+---
+
+(No prompt this time)
+
+---
+
+If I install the official nodejs, how will I keep it updated? And how do I manage inter-version dependencies? (This breaks compartmentalization, so I want to understand the implications.)
+
+---
+
+No decision right now -- file a follow-up Bead to resolve the Node version and install issue. Document the options as described with the recommendation.
+
+---
+
+/session-end

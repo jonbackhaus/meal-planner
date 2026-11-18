@@ -1,0 +1,64 @@
+{
+  "cli_version": "0.13.4",
+  "checkpoint_id": "01M7RBCZJYSWHP7SZ9FRK833SR",
+  "session_id": "d362be69-dc44-4bf4-b0d5-a7b72775241f",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-18T22:10:55.587096Z",
+  "branch": "main",
+  "checkpoints_count": 19,
+  "save_step_count": 19,
+  "files_touched": [],
+  "agent": "Claude Code",
+  "model": "claude-opus-5-5",
+  "turn_id": "ee17807524c6",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 166,
+    "cache_creation_tokens": 113666,
+    "cache_read_tokens": 8031947,
+    "output_tokens": 39272,
+    "api_call_count": 72
+  },
+  "redaction": {
+    "replacements": 0,
+    "layers": {
+      "betterleaks": 0,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 0,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "skill_events_version": 1,
+  "skill_events": [
+    {
+      "id": "prompt-skill-claude-code-session-end-2026-11-18T22:09:12.805857Z",
+      "event_type": "prompt_invocation",
+      "skill": {
+        "name": "session-end"
+      },
+      "source": {
+        "agent": "claude-code",
+        "signal": "prompt_slash_command",
+        "confidence": "explicit"
+      },
+      "turn_id": "ee17807524c6",
+      "timestamp": "2026-11-18T22:09:12.805857Z",
+      "native": {
+        "command": "/session-end"
+      },
+      "collapse": {
+        "target": "user_message",
+        "label": "/session-end",
+        "default_collapsed": true
+      }
+    }
+  ],
+  "session_metrics": {
+    "turn_count": 19
+  }
+}
